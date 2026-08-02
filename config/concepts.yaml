@@ -1,0 +1,162 @@
+# Concept Taxonomy (~25 concepts)
+# Each concept is a learnable skill tracked by BKT mastery
+
+concepts:
+  # SQL
+  sql.select:
+    id: sql.select
+    name: SQL SELECT basics
+    typical_evidence: "Basic SELECT queries working"
+    difficulty: 0.3
+    prerequisites: []
+
+  sql.joins:
+    id: sql.joins
+    name: SQL JOINs and aggregations
+    typical_evidence: "Multi-table queries passing"
+    difficulty: 0.5
+    prerequisites: [sql.select]
+
+  sql.window_functions:
+    id: sql.window_functions
+    name: SQL window functions
+    typical_evidence: "Window functions correctly used"
+    difficulty: 0.6
+    prerequisites: [sql.joins]
+
+  sql.indexing:
+    id: sql.indexing
+    name: SQL indexing and performance
+    typical_evidence: "Index creation and query optimization"
+    difficulty: 0.7
+    prerequisites: [sql.joins]
+
+  # PySpark
+  spark.rdd:
+    id: spark.rdd
+    name: Spark RDD fundamentals
+    typical_evidence: "RDD transformations working"
+    difficulty: 0.4
+    prerequisites: []
+
+  spark.dataframe:
+    id: spark.dataframe
+    name: Spark DataFrame API
+    typical_evidence: "DataFrame operations correct"
+    difficulty: 0.5
+    prerequisites: [spark.rdd]
+
+  spark.aggregation:
+    id: spark.aggregation
+    name: Spark aggregations and grouping
+    typical_evidence: "GroupBy/agg operations passing"
+    difficulty: 0.6
+    prerequisites: [spark.dataframe]
+
+  spark.performance:
+    id: spark.performance
+    name: Spark performance tuning
+    typical_evidence: "Partitioning and caching used correctly"
+    difficulty: 0.7
+    prerequisites: [spark.aggregation]
+
+  # Airflow
+  airflow.dag:
+    id: airflow.dag
+    name: Airflow DAG basics
+    typical_evidence: "DAG creation and structure correct"
+    difficulty: 0.4
+    prerequisites: []
+
+  airflow.operators:
+    id: airflow.operators
+    name: Airflow operators
+    typical_evidence: "Operators used correctly"
+    difficulty: 0.5
+    prerequisites: [airflow.dag]
+
+  airflow.scheduling:
+    id: airflow.scheduling
+    name: Airflow scheduling and timing
+    typical_evidence: "Cron scheduling and timing correct"
+    difficulty: 0.6
+    prerequisites: [airflow.dag]
+
+  airflow.idempotency:
+    id: airflow.idempotency
+    name: Airflow idempotency
+    typical_evidence: "Idempotent task design"
+    difficulty: 0.7
+    prerequisites: [airflow.operators]
+
+  # Python fundamentals
+  python.basics:
+    id: python.basics
+    name: Python fundamentals
+    typical_evidence: "Basic Python syntax correct"
+    difficulty: 0.2
+    prerequisites: []
+
+  python.control_flow:
+    id: python.control_flow
+    name: Python control flow and loops
+    typical_evidence: "Conditionals and loops working"
+    difficulty: 0.3
+    prerequisites: [python.basics]
+
+  python.functions:
+    id: python.functions
+    name: Python functions
+    typical_evidence: "Functions defined and called correctly"
+    difficulty: 0.4
+    prerequisites: [python.control_flow]
+
+  python.error_handling:
+    id: python.error_handling
+    name: Python error handling
+    typical_evidence: "Try/except blocks working"
+    difficulty: 0.5
+    prerequisites: [python.functions]
+
+  # Engineering practices
+  testing:
+    id: testing
+    name: Unit testing
+    typical_evidence: "Tests present and passing"
+    difficulty: 0.6
+    prerequisites: [python.functions]
+
+  documentation:
+    id: documentation
+    name: Code documentation
+    typical_evidence: "Docstrings and comments present"
+    difficulty: 0.4
+    prerequisites: []
+
+  git:
+    id: git
+    name: Git version control
+    typical_evidence: "Git commits with good messages"
+    difficulty: 0.3
+    prerequisites: []
+
+  ci_cd:
+    id: ci_cd
+    name: CI/CD pipelines
+    typical_evidence: "GitHub Actions workflow passing"
+    difficulty: 0.6
+    prerequisites: [git]
+
+  debugging:
+    id: debugging
+    name: Debugging and logging
+    typical_evidence: "Debugging output and logging correct"
+    difficulty: 0.5
+    prerequisites: [python.error_handling]
+
+  performance:
+    id: performance
+    name: Performance optimization
+    typical_evidence: "Code runs efficiently"
+    difficulty: 0.7
+    prerequisites: [python.functions]
