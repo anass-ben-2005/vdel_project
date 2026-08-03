@@ -1,7 +1,8 @@
 """Seed reference data from config/roster.yaml, and derived data from the taxonomy.
 
 Refuses to invent anything. If roster.yaml is missing it says so and stops, rather than
-filling the Pace clock with plausible-looking timestamps nobody chose.
+filling the Pace clock with plausible-looking timestamps nobody chose -- released_at is
+the zero point for Learning Pace (sql/01, "start clock for Pace").
 
 Run:  python -m scripts.seed_data
 """
@@ -16,7 +17,6 @@ from psycopg2.extras import execute_values
 
 from config import concepts as taxonomy
 from system import db
-from variables.mastery import BKTParams
 
 ROSTER = Path(__file__).resolve().parent.parent / "config" / "roster.yaml"
 
@@ -38,7 +38,7 @@ def validate(roster: dict) -> list[str]:
     known = taxonomy.ids()
 
     for student in roster.get("students", []):
-        if "CHANGE_ME" in str(student.values()):
+        if "CHANGE_ME" in str(list(student.values())):
             problems.append(f"student {student.get('student_id')}: CHANGE_ME left in place")
 
     student_ids = {s["student_id"] for s in roster.get("students", [])}
@@ -64,7 +64,6 @@ def main() -> int:
         sys.exit(f"\n{len(problems)} problem(s) in {ROSTER}. Nothing was written.")
 
     concepts = taxonomy.load()
-    defaults = BKTParams()
 
     with db.cursor() as cur:
         execute_values(
@@ -88,26 +87,38 @@ def main() -> int:
             ],
         )
 
-        # Derived from the taxonomy, not invented: KT-IDEM reads item difficulty.
+        # kt_params: one cold-start row per concept. The column defaults in sql/03 are
+        # the document's literature-grounded priors, so DEFAULT is used rather than
+        # restating the numbers here -- one definition, not two.
         execute_values(
             cur,
-            "INSERT INTO items (concept_id, difficulty) VALUES %s"
-            " ON CONFLICT (concept_id) DO UPDATE SET difficulty = EXCLUDED.difficulty",
-            [(c.id, c.difficulty) for c in concepts.values()],
+            "INSERT INTO kt_params (param_set, concept_id) VALUES %s"
+            " ON CONFLICT (param_set, concept_id) DO NOTHING",
+            [("bkt_v1", cid) for cid in sorted(concepts)],
         )
 
-        execute_values(
-            cur,
-            "INSERT INTO kt_params (param_set, concept_id, p_l0, p_t, p_guess, p_slip)"
-            " VALUES %s ON CONFLICT (param_set, concept_id) DO NOTHING",
-            [
-                ("bkt_v1", c.id, defaults.p_l0, defaults.p_t, defaults.p_guess, defaults.p_slip)
-                for c in concepts.values()
-            ],
-        )
+        # items: the KT-IDEM item bank. One item per assignment, tagged with the
+        # concepts that assignment tests, seeded at the taxonomy's cold-start
+        # difficulty. difficulty/n_cohort_obs are then owned by the cohort estimator --
+        # DO NOTHING so seeding never overwrites a learned value.
+        items = []
+        for a in roster["assignments"]:
+            cids = a.get("concepts") or []
+            if not cids:
+                continue
+            seed = sum(concepts[c].difficulty for c in cids) / len(cids)
+            items.append((a["assignment_id"], cids, round(seed, 3), 0))
+        if items:
+            execute_values(
+                cur,
+                "INSERT INTO items (item_id, concept_ids, difficulty, n_cohort_obs)"
+                " VALUES %s ON CONFLICT (item_id) DO NOTHING",
+                items,
+            )
 
     print(f"seeded {len(roster['students'])} student(s), "
-          f"{len(roster['assignments'])} assignment(s), {len(concepts)} concepts")
+          f"{len(roster['assignments'])} assignment(s), {len(concepts)} concepts, "
+          f"{len(items)} item(s)")
     return 0
 
 

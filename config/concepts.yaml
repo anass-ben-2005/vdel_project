@@ -1,158 +1,136 @@
-# The concept taxonomy.
+# Concept taxonomy v1.
 #
-# WARNING -- these IDs are schema. CLAUDE.md section 8: they appear in columns, prompts
-# and error mappings, and renaming one breaks history. That makes this file the most
-# expensive thing in the repo to get wrong.
+# Every id below is one that actually appears in the source documents -- in
+# collectors/error_classifier.py's rule table, the Code Agent's anti-pattern table
+# (VDEL_Modules_3_9_Build.md), or the worked examples. Nothing here is invented: the
+# design document specifies "~25 curriculum concepts, area.concept IDs" but never
+# enumerates the list, so the ids that are attested are the ones present.
 #
-# TODO(verify): the real ~25 concepts live in VDEL_Modules_1_2_Build.md, which is not in
-# this repo. The list below is a working placeholder chosen to match the identifiers
-# CLAUDE.md cites by name (sql.joins, spark.aggregation, airflow.idempotency) and the
-# ones collectors/error_classifier.py maps to. Reconcile before any real student data is
-# collected -- after that, renames cost a migration.
+# 19 of ~25. The remaining gap is real and should be closed from the VDEL curriculum,
+# not from imagination -- CLAUDE.md section 8: these ids ARE schema. They appear in
+# columns, prompts and error mappings, and renaming one breaks history.
 #
-# difficulty feeds KT-IDEM (variables/mastery.py) and is seeded into the items table.
+# `difficulty` here is a COLD-START SEED only. The live value is items.difficulty =
+# 1 - Beta-smoothed cohort pass rate (variables/mastery.py, DifficultyEstimator), which
+# supersedes this seed as soon as n_cohort_obs > 0. BUILD_PLAN 1.1 asks for a difficulty
+# field; the module document sources it from the cohort. Both are satisfied: this is the
+# prior, the cohort provides the posterior.
 
 concepts:
-  - id: python.basics
-    name: Python fundamentals
-    typical_evidence: Syntax and imports resolve; script runs
-    difficulty: 0.15
+  # --- PySpark ---
+  - id: spark.df_basics
+    name: DataFrame basics
+    typical_evidence: Column references resolve; schema understood
+    difficulty: 0.4
     prerequisites: []
 
-  - id: python.control_flow
-    name: Control flow and collections
-    typical_evidence: Loops, conditionals and indexing behave as intended
-    difficulty: 0.25
-    prerequisites: [python.basics]
+  - id: spark.transform_action
+    name: Transformations vs actions
+    typical_evidence: Lazy evaluation understood; actions triggered deliberately
+    difficulty: 0.4
+    prerequisites: [spark.df_basics]
 
-  - id: python.functions
-    name: Functions and types
-    typical_evidence: Functions compose; arguments and return types line up
+  - id: spark.read
+    name: Reading data sources
+    typical_evidence: Sources read with explicit schema and options
     difficulty: 0.35
-    prerequisites: [python.control_flow]
-
-  - id: python.error_handling
-    name: Error handling
-    typical_evidence: Failure paths handled rather than allowed to crash
-    difficulty: 0.45
-    prerequisites: [python.functions]
-
-  - id: sql.select
-    name: SELECT and filtering
-    typical_evidence: Single-table queries return the expected rows
-    difficulty: 0.20
-    prerequisites: []
-
-  - id: sql.joins
-    name: Joins and grouping
-    typical_evidence: Multi-table queries with correct grain and no fan-out
-    difficulty: 0.45
-    prerequisites: [sql.select]
-
-  - id: sql.window_functions
-    name: Window functions
-    typical_evidence: Ranking and running totals without self-joins
-    difficulty: 0.60
-    prerequisites: [sql.joins]
-
-  - id: sql.indexing
-    name: Indexing and query plans
-    typical_evidence: Indexes chosen from the plan, not from guesswork
-    difficulty: 0.70
-    prerequisites: [sql.joins]
-
-  - id: spark.rdd
-    name: RDD fundamentals
-    typical_evidence: Transformations and actions distinguished correctly
-    difficulty: 0.40
-    prerequisites: [python.functions]
-
-  - id: spark.dataframe
-    name: DataFrame API
-    typical_evidence: Schema-aware operations rather than row-at-a-time Python
-    difficulty: 0.50
-    prerequisites: [spark.rdd]
+    prerequisites: [spark.df_basics]
 
   - id: spark.aggregation
     name: Aggregation and grouping
-    typical_evidence: groupBy/agg producing the intended grain
+    typical_evidence: groupBy/agg produces the intended grain
     difficulty: 0.55
-    prerequisites: [spark.dataframe]
+    prerequisites: [spark.df_basics]
 
   - id: spark.joins
-    name: Joins and shuffles
-    typical_evidence: Join strategy suits the data sizes; broadcast used deliberately
+    name: Joins
+    typical_evidence: Join keys unambiguous; no accidental cartesian product
+    difficulty: 0.55
+    prerequisites: [spark.df_basics]
+
+  - id: spark.window
+    name: Window functions
+    typical_evidence: Partitioning and ordering express the intended frame
     difficulty: 0.65
     prerequisites: [spark.aggregation]
 
-  - id: spark.performance
-    name: Partitioning and caching
-    typical_evidence: Partition counts and persistence chosen with a reason
-    difficulty: 0.75
+  - id: spark.udf
+    name: User-defined functions
+    typical_evidence: UDFs used only where built-ins cannot serve
+    difficulty: 0.6
+    prerequisites: [spark.df_basics]
+
+  - id: spark.partitioning
+    name: Partitioning
+    typical_evidence: Partition counts chosen with a reason; no OOM from skew
+    difficulty: 0.7
     prerequisites: [spark.joins]
 
-  - id: airflow.dag
-    name: DAG construction
-    typical_evidence: DAG parses; dependencies express the real ordering
-    difficulty: 0.35
-    prerequisites: [python.functions]
+  - id: spark.caching
+    name: Caching and persistence
+    typical_evidence: Reused DataFrames persisted; cache released
+    difficulty: 0.6
+    prerequisites: [spark.transform_action]
 
+  - id: spark.perf_tuning
+    name: Performance tuning
+    typical_evidence: Shuffles and broadcasts chosen from the plan
+    difficulty: 0.75
+    prerequisites: [spark.partitioning, spark.caching]
+
+  # --- SQL ---
+  - id: sql.select_filter
+    name: SELECT and filtering
+    typical_evidence: Single-table queries return the expected rows
+    difficulty: 0.2
+    prerequisites: []
+
+  - id: sql.joins
+    name: Joins
+    typical_evidence: Multi-table queries with correct grain and no fan-out
+    difficulty: 0.45
+    prerequisites: [sql.select_filter]
+
+  - id: sql.aggregation
+    name: Aggregation and GROUP BY
+    typical_evidence: Every selected column grouped or aggregated
+    difficulty: 0.5
+    prerequisites: [sql.select_filter]
+
+  # --- Python ---
+  - id: py.data_structures
+    name: Data structures
+    typical_evidence: Keys and indices accessed safely
+    difficulty: 0.3
+    prerequisites: []
+
+  - id: py.pandas
+    name: pandas
+    typical_evidence: Views and copies handled deliberately
+    difficulty: 0.45
+    prerequisites: [py.data_structures]
+
+  - id: py.errors_debugging
+    name: Errors and debugging
+    typical_evidence: Syntax clean; failures diagnosed from the traceback
+    difficulty: 0.35
+    prerequisites: []
+
+  - id: py.testing
+    name: Testing
+    typical_evidence: Assertions present and meaningful; tests fail when code is wrong
+    difficulty: 0.5
+    prerequisites: [py.data_structures]
+
+  # --- Airflow ---
   - id: airflow.operators
     name: Operators and task design
-    typical_evidence: Work sits in the right operator with the right granularity
+    typical_evidence: Work sits in the right operator at the right granularity
     difficulty: 0.45
-    prerequisites: [airflow.dag]
-
-  - id: airflow.scheduling
-    name: Scheduling and backfill
-    typical_evidence: Schedule interval and catchup behave as intended
-    difficulty: 0.55
-    prerequisites: [airflow.dag]
+    prerequisites: []
 
   - id: airflow.idempotency
     name: Idempotency
     typical_evidence: Re-running a task produces no duplicates and no drift
-    difficulty: 0.70
+    difficulty: 0.7
     prerequisites: [airflow.operators]
-
-  - id: data_modelling
-    name: Data modelling
-    typical_evidence: Grain, keys and types declared and respected
-    difficulty: 0.55
-    prerequisites: [sql.joins]
-
-  - id: data_quality
-    name: Data quality checks
-    typical_evidence: Nulls, duplicates and ranges asserted rather than assumed
-    difficulty: 0.60
-    prerequisites: [data_modelling]
-
-  - id: testing
-    name: Testing
-    typical_evidence: Tests exist, run in CI, and fail when the code is wrong
-    difficulty: 0.50
-    prerequisites: [python.functions]
-
-  - id: documentation
-    name: Readability and documentation
-    typical_evidence: Names and docstrings explain intent; linter is clean
-    difficulty: 0.30
-    prerequisites: []
-
-  - id: git
-    name: Version control
-    typical_evidence: Focused commits with messages that describe the change
-    difficulty: 0.25
-    prerequisites: []
-
-  - id: ci_cd
-    name: CI pipelines
-    typical_evidence: Workflow runs green and fails loudly when it should
-    difficulty: 0.50
-    prerequisites: [git, testing]
-
-  - id: debugging
-    name: Debugging
-    typical_evidence: Failures diagnosed from evidence rather than by trial and error
-    difficulty: 0.55
-    prerequisites: [python.error_handling]

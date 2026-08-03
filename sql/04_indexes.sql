@@ -1,34 +1,23 @@
--- Indexes.
---
--- Ordering note: this file indexes `traces`, which is created in 05_memory_tables.sql.
--- CLAUDE.md section 5 fixes both filenames and BUILD_PLAN 0.3 puts the traces indexes
--- here, so filename order and dependency order genuinely disagree. scripts/init_db.py
--- therefore runs 01, 02, 03, 05, 04 -- stated there explicitly rather than left as a
--- silent reordering someone has to rediscover.
+-- Transcribed from VDEL_Modules_1_2_Build.md Part C (the optimization pass, Flaw 4).
 
--- Hot path: "what has this student done lately".
+-- Match the access pattern of feature queries: filter by (student, assignment), sort by time
+CREATE INDEX IF NOT EXISTS idx_commits_student_assignment
+  ON raw_commits (student_id, assignment_id, committed_at);
+
+CREATE INDEX IF NOT EXISTS idx_runs_student_assignment
+  ON raw_workflow_runs (student_id, assignment_id, started_at);
+
+-- Partial index: only failed runs carry an error concept -> smaller, faster
+CREATE INDEX IF NOT EXISTS idx_runs_concept
+  ON raw_workflow_runs (concept_id) WHERE conclusion = 'failure';
+
+-- --------------------------------------------------------------------------------
+-- Additive, not from Module 1-2: the module document's sql/ stops at 04 because
+-- `traces` belongs to Module 3. BUILD_PLAN 0.3 requires the traces indexes to live in
+-- this file, so they are appended here rather than moved into 05. Ordering consequence
+-- is handled in scripts/init_db.py, which runs 05 before 04.
 CREATE INDEX IF NOT EXISTS idx_traces_student_ts
   ON traces (student_id, ts DESC);
 
--- Hot path: "which traces touch this concept" -- array containment needs GIN.
 CREATE INDEX IF NOT EXISTS idx_traces_concept_ids
   ON traces USING GIN (concept_ids);
-
--- Raw tables: the collector's incremental `since=` watermark and the feature
--- window both scan (student_id, timestamp).
-CREATE INDEX IF NOT EXISTS idx_raw_commits_student_ts
-  ON raw_commits (student_id, committed_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_raw_workflow_runs_student_ts
-  ON raw_workflow_runs (student_id, completed_at DESC);
-
--- Per-assignment rollups (pace, mastery-by-assignment).
-CREATE INDEX IF NOT EXISTS idx_raw_commits_assignment
-  ON raw_commits (assignment_id, committed_at);
-
-CREATE INDEX IF NOT EXISTS idx_raw_workflow_runs_assignment
-  ON raw_workflow_runs (assignment_id, completed_at);
-
--- "Latest features for this student" -- used by the dirty-student filter.
-CREATE INDEX IF NOT EXISTS idx_learner_features_student_ts
-  ON learner_features (student_id, computed_at DESC);

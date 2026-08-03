@@ -10,3 +10,7 @@ build/
 htmlcov/
 .DS_Store
 *.log
+
+# Source-of-truth design documents (large, and the authority for all formulas).
+# Committed deliberately: the code is a transcription of them and cannot be reviewed
+# without them.

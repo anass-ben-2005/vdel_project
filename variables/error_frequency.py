@@ -1,36 +1,30 @@
-"""V6 -- Error frequency: how often errors happen, normalised by opportunity.
-
-"Opportunity-normalised" means the denominator is attempts, not calendar time. Ten
-failures across two hundred runs is not the same as ten across twelve, and a per-day
-rate would call them equal for a student who simply works more.
-
-Pairs with V5 (error_response). High frequency plus fast recovery reads as learning by
-experimentation; high frequency plus no recovery reads as being stuck. Neither variable
-can distinguish those alone, which is exactly why they are two variables.
 """
+variables/error_frequency.py — Error Frequency (V6).
 
-from __future__ import annotations
+Raw error counts predict little on their own (Jadud, 2006) — the load-bearing outputs
+are the per-concept histogram (feeds mastery) and the recurrence rule (opens weaknesses;
+Becker, 2016, Repeated Error Density).
 
-from variables import clamp01
+Transcribed from VDEL_Modules_1_2_Build.md, Variable 6.
+"""
+from statistics import mean
 
 
-def error_frequency(attempts: int, failures: int) -> dict:
-    """V6 from raw attempt counts.
+def _clamp(x, lo, hi):
+    return max(lo, min(hi, x))
 
-    No confidence shrinkage is applied. The previous version pulled the score towards
-    0.5 by a sqrt(n)/sqrt(20) factor, which quietly mixes "how often do errors happen"
-    with "how sure are we" -- two things invariant 8 keeps separate by shipping `n`
-    alongside every estimate and letting the consumer weigh it.
-    """
-    if attempts <= 0:
-        return {"score": None, "n": 0}
 
-    failures = max(0, min(failures, attempts))
-    rate = failures / attempts
+def error_frequency(failed_runs, total_runs, errors, changed_loc,
+                    by_concept, weekly_slope):
+    fail_ratio = failed_runs / total_runs if total_runs else 0.0
+    per_100 = errors / (changed_loc / 100.0) if changed_loc else 0.0
+    score = 1.0 - _clamp(mean([fail_ratio, min(1.0, per_100 / 5.0)]), 0, 1)
+    return {"score": round(score, 3), "fail_ratio": round(fail_ratio, 3),
+            "by_concept": by_concept,   # {concept_id: count} -> mastery + weaknesses
+            "trend": ("worsening" if weekly_slope > 0
+                      else "improving" if weekly_slope < 0 else "flat")}
 
-    return {
-        "score": round(clamp01(1 - rate), 4),
-        "n": attempts,
-        "failures": failures,
-        "failure_rate": round(rate, 4),
-    }
+
+def recurrence_check(error_class_counts_this_assignment):
+    """Same error class >=2 within one assignment -> open a weakness now."""
+    return [ec for ec, n in error_class_counts_this_assignment.items() if n >= 2]

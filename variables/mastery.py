@@ -1,217 +1,171 @@
-"""V1 -- Concept mastery: BKT + KT-IDEM difficulty conditioning + Beta posterior.
-
-Why BKT and not EWMA or DKT (CLAUDE.md section 8): BKT yields a calibrated probability
-that predicts next-attempt correctness, so it is falsifiable. It models guess and slip,
-so a single failure at high mastery bends the belief instead of breaking it. DKT was
-rejected as uninterpretable, which auditability does not permit.
-
-References:
-  Corbett & Anderson (1995)  -- Bayesian Knowledge Tracing.
-  Pardos & Heffernan (2011)  -- KT-IDEM: item difficulty effect model.
-  Beck & Chang (2007)        -- identifiability; guess and slip must stay below 0.5.
-
-`update()` is a pure function of (state, outcome, difficulty, params) with no I/O, so
-the formulas are unit-testable in isolation (BUILD_PLAN 1.6).
 """
+variables/mastery.py — Concept-mastery estimation for the VDEL Learner Digital Twin.
 
+Model: Bayesian Knowledge Tracing (Corbett & Anderson, 1994)
+       + item-difficulty conditioning (KT-IDEM, Pardos & Heffernan, 2011)
+       + Beta-Bernoulli companion posterior for calibrated uncertainty.
+
+Design contract:
+  - update() is a PURE function of (prior_state, outcome, difficulty, params).
+  - p_mastery is a CALIBRATED probability; p_correct_next is externally testable.
+  - Identifiability guard (Beck & Chang, 2007): guess, slip clamped < 0.5.
+
+Transcribed from VDEL_Modules_1_2_Build.md, Variable 1. The formulas, constants and
+clamps are the document's, not this file's. Nothing here is a design choice; see
+BUILD_PLAN.md ("Your job is largely to transcribe... If you believe it needs changing,
+stop and ask").
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from math import sqrt
 
-from scipy.stats import beta as beta_dist
+try:
+    from scipy.stats import beta as _beta
+    _HAVE_SCIPY = True
+except ImportError:
+    _HAVE_SCIPY = False
 
-# Ceiling from Beck & Chang (2007). At or above 0.5 the model stops being identifiable:
-# "always guessing" and "always knowing" fit the data equally well.
-IDENTIFIABILITY_CEILING = 0.49
 
-# Mastery is never allowed to reach exactly 0 or 1.
-#
-# Not cosmetic. p_new = posterior + (1 - posterior) * p_t drives p towards 1, and in
-# floating point it arrives: after eight consecutive passes p_mastery was exactly
-# 1.0000. At p = 1 the incorrect-branch posterior is p*slip / (p*slip + 0) = 1, so the
-# state becomes absorbing -- no future failure can ever move it. An unfalsifiable belief
-# is precisely what BKT was chosen over DKT to avoid. With guess and slip above zero the
-# model can never justify certainty anyway, so the bound states what the maths already
-# implies.
-MASTERY_FLOOR = 0.001
-MASTERY_CEILING = 0.999
-
-# TODO(verify): CLAUDE.md gives p_l0=0.30 and p_t=0.15 but no guess/slip values.
-# These are placeholders until VDEL_Modules_1_2_Build.md is available. They are the
-# single definition point -- sql/03 leaves kt_params.p_guess/p_slip nullable so the
-# unknown lives here and nowhere else.
-DEFAULT_GUESS = 0.20
-DEFAULT_SLIP = 0.10
+def _clamp(x, lo, hi):
+    return max(lo, min(hi, x))
 
 
 @dataclass(frozen=True)
 class BKTParams:
-    """The four BKT parameters for one concept."""
+    """Per-concept BKT parameters. Defaults are literature-grounded cold-start
+    priors; replace with EM-fitted values once >~100 sequences per concept exist."""
 
-    p_l0: float = 0.30      # prior probability the concept is already known
-    p_t: float = 0.15       # probability of learning it at each opportunity
-    p_guess: float = DEFAULT_GUESS   # answering correctly without knowing
-    p_slip: float = DEFAULT_SLIP     # answering incorrectly while knowing
+    p_l0:    float = 0.30
+    p_t:     float = 0.15
+    p_guess: float = 0.20
+    p_slip:  float = 0.10
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "p_guess", min(self.p_guess, IDENTIFIABILITY_CEILING))
-        object.__setattr__(self, "p_slip", min(self.p_slip, IDENTIFIABILITY_CEILING))
+    def guarded(self) -> "BKTParams":
+        return replace(self,
+                       p_guess=_clamp(self.p_guess, 0.01, 0.45),
+                       p_slip=_clamp(self.p_slip,  0.00, 0.45))
 
-    def for_difficulty(self, difficulty: float) -> BKTParams:
-        """KT-IDEM: condition guess and slip on item difficulty.
-
-        Difficulty conditions guess/slip, not p_t -- that is what makes this KT-IDEM
-        rather than plain BKT with a fudge factor. A hard item is harder to fluke
-        (lower guess) and easier to trip over (higher slip).
-
-        TODO(verify): the linear mapping below is a placeholder. Pardos & Heffernan fit
-        per-item guess/slip from data; CLAUDE.md does not specify the interim mapping.
-        Confined to this one method so it can be swapped without touching update().
-        """
-        d = max(0.0, min(1.0, difficulty))
-        return replace(
-            self,
-            p_guess=self.p_guess * (1.0 - d),
-            p_slip=min(self.p_slip * (1.0 + d), IDENTIFIABILITY_CEILING),
-        )
+    def for_item(self, difficulty: float) -> "BKTParams":
+        d = _clamp(difficulty, 0.0, 1.0)
+        g = self.p_guess * (1.0 - d)
+        s = self.p_slip + (0.40 - self.p_slip) * d * 0.5
+        return replace(self, p_guess=g, p_slip=s).guarded()
 
 
-@dataclass(frozen=True)
+@dataclass
 class MasteryState:
-    """The belief about one concept, plus the counts that quantify its uncertainty."""
+    p_mastery: float = 0.30
+    n_obs:     int = 0
+    a:         float = 0.5     # Beta posterior — passes + 0.5 (Jeffreys prior)
+    b:         float = 0.5     # Beta posterior — fails  + 0.5
+    history:   tuple = ()
 
-    p_mastery: float
-    n_correct: int = 0
-    n_incorrect: int = 0
-    previous_p: float | None = None
-    param_set: str = "bkt_v1"
+    def credible_interval(self, level: float = 0.90):
+        lo_q, hi_q = (1 - level) / 2, 1 - (1 - level) / 2
+        if _HAVE_SCIPY:
+            return float(_beta.ppf(lo_q, self.a, self.b)), \
+                   float(_beta.ppf(hi_q, self.a, self.b))
+        m, v = self.a / (self.a + self.b), self.variance
+        return _clamp(m - 1.645 * sqrt(v), 0, 1), _clamp(m + 1.645 * sqrt(v), 0, 1)
 
     @property
-    def n(self) -> int:
-        """Observation count. Invariant 8: never ship a mastery estimate without it."""
-        return self.n_correct + self.n_incorrect
+    def variance(self):
+        a, b = self.a, self.b
+        return (a * b) / ((a + b) ** 2 * (a + b + 1))
 
-    def p_correct_next(self, params: BKTParams) -> float:
-        """P(correct on the next attempt) -- the falsifiable prediction."""
-        return self.p_mastery * (1 - params.p_slip) + (1 - self.p_mastery) * params.p_guess
+    @property
+    def confidence(self):
+        return 1.0 - min(1.0, sqrt(self.variance) / 0.35)
 
-    def ci90(self) -> tuple[float, float]:
-        """90% credible interval from a Beta posterior over the success rate.
+    def trend(self):
+        if len(self.history) < 2:
+            return "flat"
+        slope = self.history[-1] - self.history[0]
+        return "up" if slope > 0.03 else "down" if slope < -0.03 else "flat"
 
-        Beta(1 + correct, 1 + incorrect): a uniform prior updated by the observations.
 
-        TODO(verify): CLAUDE.md section 8 shows n=3 -> ci90 [0.18, 0.71]. This
-        parameterisation gives [0.10, 0.75] for one correct and two incorrect. The
-        documented interval is narrower than any uniform-prior Beta at n=3 (it implies
-        about 6 pseudo-observations), so the source document uses a stronger prior that
-        the example alone does not determine. tests/test_documented_vectors.py holds the
-        documented numbers as a pending check.
-        """
-        if self.n == 0:
-            return (0.0, 1.0)
-        a, b = 1 + self.n_correct, 1 + self.n_incorrect
-        # float() is load-bearing: scipy returns numpy scalars and psycopg2 cannot adapt
-        # numpy types to JSONB. Casting at the boundary keeps numpy out of the database.
-        return (
-            round(float(beta_dist.ppf(0.05, a, b)), 4),
-            round(float(beta_dist.ppf(0.95, a, b)), 4),
-        )
+def _posterior_given_obs(p_L, correct, g, s):
+    if correct:
+        num = p_L * (1.0 - s)
+        den = num + (1.0 - p_L) * g
+    else:
+        num = p_L * s
+        den = num + (1.0 - p_L) * (1.0 - g)
+    return num / den if den > 1e-9 else p_L
 
-    def confidence(self) -> float:
-        """How much the estimate should be trusted: narrow interval means confident.
 
-        Derived from the interval rather than picked, so it moves with the evidence.
-        TODO(verify) against the documented example (n=3 -> 0.31; this gives 0.35).
-        """
-        lo, hi = self.ci90()
-        return round(1.0 - (hi - lo), 4)
+def _apply_learning(p_L_post, t):
+    return p_L_post + (1.0 - p_L_post) * t
 
-    def trend(self, epsilon: float = 0.05) -> str:
-        """Direction of the last update. epsilon is a reporting threshold, not a model
-        parameter: below it, movement is noise and should not be shown to a student."""
-        if self.previous_p is None:
-            return "stable"
-        delta = self.p_mastery - self.previous_p
-        if delta > epsilon:
-            return "up"
-        if delta < -epsilon:
-            return "down"
-        return "stable"
 
-    def to_dict(self, params: BKTParams | None = None) -> dict:
-        """The stored shape from CLAUDE.md section 8."""
-        params = params or BKTParams()
+def predict_correct(p_L, params):
+    p = params.guarded()
+    return p_L * (1.0 - p.p_slip) + (1.0 - p_L) * p.p_guess
+
+
+class MasteryEstimator:
+    """One instance manages the full mastery vector for one student."""
+
+    def __init__(self, params_by_concept=None,
+                 default_params=BKTParams(), history_len=6):
+        self.params_by_concept = params_by_concept or {}
+        self.default_params = default_params
+        self.history_len = history_len
+        self.states: dict[str, MasteryState] = {}
+
+    def _params(self, concept):
+        return self.params_by_concept.get(concept, self.default_params).guarded()
+
+    def _state(self, concept):
+        if concept not in self.states:
+            p = self._params(concept)
+            self.states[concept] = MasteryState(p_mastery=p.p_l0, history=(p.p_l0,))
+        return self.states[concept]
+
+    def update(self, concept, correct, item_difficulty=0.5):
+        st = self._state(concept)
+        params = self._params(concept).for_item(item_difficulty)
+        before = st.p_mastery
+        post = _posterior_given_obs(st.p_mastery, correct, params.p_guess, params.p_slip)
+        st.p_mastery = _apply_learning(post, params.p_t)
+        st.a += 1.0 if correct else 0.0
+        st.b += 0.0 if correct else 1.0
+        st.n_obs += 1
+        st.history = (st.history + (round(st.p_mastery, 4),))[-self.history_len:]
+        lo, hi = st.credible_interval(0.90)
         return {
-            "p_mastery": round(self.p_mastery, 4),
-            "p_correct_next": round(self.p_correct_next(params), 4),
-            "n": self.n,
-            "confidence": self.confidence(),
-            "ci90": list(self.ci90()),
-            "trend": self.trend(),
-            "param_set": self.param_set,
+            "concept": concept,
+            "p_mastery": round(st.p_mastery, 4),
+            "p_mastery_before": round(before, 4),
+            "p_correct_next": round(predict_correct(st.p_mastery, self._params(concept)), 4),
+            "n_obs": st.n_obs, "confidence": round(st.confidence, 3),
+            "ci90": [round(lo, 3), round(hi, 3)], "variance": round(st.variance, 4),
+            "trend": st.trend(), "item_difficulty": round(item_difficulty, 3),
+            "eff_guess": round(params.p_guess, 3), "eff_slip": round(params.p_slip, 3),
         }
 
-
-def initial(params: BKTParams | None = None, param_set: str = "bkt_v1") -> MasteryState:
-    """A student we have never observed on this concept."""
-    params = params or BKTParams()
-    return MasteryState(p_mastery=params.p_l0, param_set=param_set)
-
-
-def update(
-    state: MasteryState,
-    correct: bool,
-    difficulty: float = 0.5,
-    params: BKTParams | None = None,
-) -> MasteryState:
-    """One BKT step. Pure: no I/O, no globals, same inputs give the same output.
-
-    Two stages, in this order:
-      1. Evidence. Bayes' rule, conditioned on which outcome was observed.
-      2. Learning. The attempt itself was a chance to learn, so p_t is applied after.
-
-    The evidence stage is where the previous implementation was wrong: it used the
-    correct-answer numerator for both outcomes, so passing and failing produced the
-    identical posterior (0.30 -> 0.825 either way). Both branches are needed.
-    """
-    params = (params or BKTParams()).for_difficulty(difficulty)
-    p = state.p_mastery
-
-    if correct:
-        # P(knew | answered correctly)
-        numerator = p * (1 - params.p_slip)
-        denominator = numerator + (1 - p) * params.p_guess
-    else:
-        # P(knew | answered incorrectly) -- knowing it but slipping
-        numerator = p * params.p_slip
-        denominator = numerator + (1 - p) * (1 - params.p_guess)
-
-    posterior = numerator / denominator if denominator > 0 else p
-
-    # Learning happens whether or not the attempt succeeded.
-    p_new = posterior + (1 - posterior) * params.p_t
-
-    return MasteryState(
-        p_mastery=min(MASTERY_CEILING, max(MASTERY_FLOOR, p_new)),
-        n_correct=state.n_correct + (1 if correct else 0),
-        n_incorrect=state.n_incorrect + (0 if correct else 1),
-        previous_p=p,
-        param_set=state.param_set,
-    )
+    def snapshot(self):
+        out = {}
+        for c, st in self.states.items():
+            lo, hi = st.credible_interval(0.90)
+            out[c] = {"p_mastery": round(st.p_mastery, 4), "n": st.n_obs,
+                      "confidence": round(st.confidence, 3),
+                      "ci90": [round(lo, 3), round(hi, 3)], "trend": st.trend()}
+        return out
 
 
-def replay(
-    outcomes: list[bool],
-    difficulty: float = 0.5,
-    params: BKTParams | None = None,
-    param_set: str = "bkt_v1",
-) -> MasteryState:
-    """Fold a whole attempt sequence into one state.
+class DifficultyEstimator:
+    """difficulty = 1 - Beta-smoothed cohort pass rate, per item."""
 
-    Event sourcing in miniature: the state is always a function of the ordered events,
-    never something accumulated in place, so it can always be rebuilt.
-    """
-    state = initial(params, param_set)
-    for correct in outcomes:
-        state = update(state, correct, difficulty, params)
-    return state
+    def __init__(self, prior_a=2.0, prior_b=2.0):
+        self.counts: dict[str, list] = {}
+        self.prior = (prior_a, prior_b)
+
+    def observe(self, item_id, passed):
+        a, b = self.counts.get(item_id, list(self.prior))
+        self.counts[item_id] = [a + (1 if passed else 0), b + (0 if passed else 1)]
+
+    def difficulty(self, item_id):
+        a, b = self.counts.get(item_id, self.prior)
+        return 1.0 - a / (a + b)

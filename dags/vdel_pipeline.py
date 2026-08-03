@@ -1,56 +1,48 @@
-"""collect -> compute_features -> update_profiles.
-
-The tasks shell out to this repo's module entrypoints rather than importing them.
-Airflow requires Python <3.12 and pins its own pydantic/psycopg2, so it lives in a
-separate environment (requirements-airflow.txt); crossing that boundary by import would
-force the two environments to be one. The previous version did
-`sys.path.insert(0, '/opt/airflow')` inside each task -- a hardcoded container path that
-cannot work when the repo is checked out anywhere else.
-
-Set VDEL_HOME (Airflow Variable or environment variable) to the repo root.
 """
+dags/vdel_pipeline.py — daily: collect -> compute_features -> update_profiles.
+Runs on VDEL's own Airflow stack (the intelligence layer dogfoods the platform).
+Daily batch is sufficient: adaptive tutoring does not need second-by-second freshness.
 
-from __future__ import annotations
-
-import os
+Transcribed from VDEL_Modules_1_2_Build.md Part C. Two changes, both marked:
+  - the repo list is loaded from config/roster.yaml instead of the document's
+    `repos=[]` placeholder, so the task actually collects something;
+  - start_date is timezone-aware, which Airflow requires.
+"""
 from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
-from airflow.operators.bash import BashOperator
-from airflow.operators.empty import EmptyOperator
+from airflow.operators.python import PythonOperator
 
-VDEL_HOME = os.environ.get("VDEL_HOME", "/opt/vdel")
-PYTHON = os.environ.get("VDEL_PYTHON", "python")
+default_args = {"owner": "anas", "retries": 1, "retry_delay": timedelta(minutes=5)}
 
-default_args = {
-    "owner": "anas",
-    "retries": 1,
-    "retry_delay": timedelta(minutes=5),
-}
+with DAG("vdel_pipeline", default_args=default_args,
+         schedule="@daily", start_date=datetime(2026, 1, 1, tzinfo=UTC),
+         catchup=False,      # backfill would re-collect the same GitHub history
+         max_active_runs=1   # concurrent runs would race on the same raw tables
+         ) as dag:
 
-with DAG(
-    dag_id="vdel_pipeline",
-    default_args=default_args,
-    description="GitHub telemetry -> the seven variables -> learner profiles",
-    start_date=datetime(2026, 1, 1, tzinfo=UTC),  # Airflow requires tz-aware
-    schedule="0 */6 * * *",
-    catchup=False,   # backfilling this pipeline would re-collect the same GitHub history
-    max_active_runs=1,  # two concurrent runs would race on the same raw tables
-    tags=["vdel", "m1"],
-) as dag:
+    def _collect(**_):
+        from collectors.collect_github import collect_all
+        from scripts.seed_data import load_roster
+        from system import db
 
-    collect = BashOperator(
-        task_id="collect",
-        bash_command=f"cd {VDEL_HOME} && {PYTHON} -m scripts.collect",
-    )
+        # CHANGED: load the repo list for the active cohort from config/roster.yaml.
+        roster = load_roster()
+        repos = [{"owner": a["owner"], "repo": a["repo"],
+                  "student_id": a["student_id"], "assignment_id": a["assignment_id"]}
+                 for a in roster.get("assignments", [])]
+        with db.connect() as conn:
+            print(collect_all(conn, repos))
 
-    compute_features = BashOperator(
-        task_id="compute_features",
-        bash_command=f"cd {VDEL_HOME} && {PYTHON} -m features.compute_features",
-    )
+    def _compute(**ctx):
+        from features.compute_features import run
+        last = (ctx["data_interval_start"] - timedelta(days=1)).isoformat()
+        run(last)
 
-    # Stub until M2 builds memory/memory.py. Present so the shape of the pipeline is
-    # visible now and the milestone only has to swap the operator.
-    update_profiles = EmptyOperator(task_id="update_profiles")
+    def _update_profiles(**_):
+        pass   # Module 3: fold new features into learner_profile (fast path)
 
-    collect >> compute_features >> update_profiles
+    t1 = PythonOperator(task_id="collect", python_callable=_collect)
+    t2 = PythonOperator(task_id="compute_features", python_callable=_compute)
+    t3 = PythonOperator(task_id="update_profiles", python_callable=_update_profiles)
+    t1 >> t2 >> t3

@@ -1,23 +1,17 @@
-"""The seven variables.
+"""The seven evaluation variables (Module 1).
 
-Every module here exposes one function returning a plain dict shaped:
+Every module here is transcribed from VDEL_Modules_1_2_Build.md Part B. The function
+signatures, formulas, constants and return shapes are the document's. This package
+deliberately imposes no uniform return contract of its own -- the variables return
+different shapes because they answer different questions, and normalising them here
+would mean rewriting the documented interfaces.
 
-    {"score": float | None, "n": int, ...detail}
+  mastery.py          V1  BKT + KT-IDEM + Beta posterior
+  habits.py           V2  Engineering Discipline, V3  Effort Regulation
+  pace.py             V4  Learning Pace (censoring-aware)
+  error_response.py   V5  Jadud/Watwin + wheel-spinning
+  error_frequency.py  V6  opportunity-normalised + recurrence
 
-with, per CLAUDE.md section 8:
-  * `score` scaled to [0, 1], higher is better -- or None when there is nothing to
-    measure. None is not the same as 0.0: 0.0 means "measured, bad"; None means "not
-    observed". The previous version collapsed the two by inventing values for unmeasured
-    inputs, which wrote fiction into the database.
-  * `n`, the observation count. Invariant 8: 0.9 from n=2 is a rumour, from n=20 a fact.
-
-A dict rather than a dataclass because these go straight into a JSONB column, and every
-translation layer between the formula and the column is somewhere a bug can hide.
+V7 (Help-Seeking) has no module: it needs the coach's interaction log, which does not
+exist until Module 7. The nullable learner_features.help_seeking column is its seam.
 """
-
-from __future__ import annotations
-
-
-def clamp01(x: float) -> float:
-    """Hold a score inside [0, 1]. The one place the range contract is enforced."""
-    return max(0.0, min(1.0, float(x)))

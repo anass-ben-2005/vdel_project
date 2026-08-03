@@ -1,88 +1,105 @@
-"""V2 -- Engineering discipline, and V3 -- Effort regulation.
-
-V2 asks whether the student writes code an engineer would keep: linted, tested, green.
-V3 asks whether they work steadily or in panics before a deadline.
 """
+variables/habits.py — Engineering Discipline (V2) + Effort Regulation (V3).
 
+Split from the original "coding habits" per Zimmerman's SRL framework:
+  - Engineering Discipline = cognition/skill (cleanliness, testing)
+  - Effort Regulation      = behavior (commit regularity, procrastination)
+
+Fixes vs. baseline:
+  - CV-based regularity (unstable at low n) -> burstiness (Goh & Barabási, 2008)
+  - fixed magic-number thresholds -> cohort-relative percentiles
+  - equal-weight averaging with no justification -> Cronbach's alpha gate (Cronbach 1951)
+
+Transcribed from VDEL_Modules_1_2_Build.md, Variables 2 & 3.
+"""
 from __future__ import annotations
 
-import statistics
-from datetime import datetime
-from itertools import pairwise
-
-from variables import clamp01
-
-# TODO(verify): the density at which lint quality scores zero. 10 findings per 100 lines
-# is an anchor, not a measurement -- VDEL_Modules_1_2_Build.md should replace it.
-LINT_ZERO_AT_PER_100_LOC = 10.0
+from dataclasses import dataclass
+from statistics import mean, pstdev, variance
 
 
-def engineering_discipline(
-    lint_findings: int | None,
-    lines_of_code: int | None,
-    tests_present: bool | None,
-    tests_green: bool | None,
-) -> dict:
-    """V2, from ruff/sqlfluff findings per 100 LOC plus test presence and result.
+def _clamp(x, lo, hi):
+    return max(lo, min(hi, x))
 
-    Every argument is optional and None means "not measured". The previous version
-    invented all four (`violations = commit_count // 20`, `tests_present=True`
-    hardcoded) and wrote the result to the database as though it were observed. A
-    variable with nothing behind it reports None.
 
-    Components are weighted equally: with no data on their relative predictive value,
-    equal weights are the assumption that adds least. TODO(verify) against the source
-    document.
-    """
-    components: list[float] = []
-    detail: dict = {}
+# ----- Effort Regulation: regularity via burstiness -----
+def burstiness_regularity(gap_hours):
+    """B in [-1,1]: -1 periodic, 0 random, +1 bursty. Mapped to [0,1], regular=high.
+    Returns None if too few gaps (do NOT fabricate from 1 gap)."""
+    if len(gap_hours) < 2:
+        return None
+    mu, sigma = mean(gap_hours), pstdev(gap_hours)
+    if mu + sigma == 0:
+        return 1.0
+    B = (sigma - mu) / (sigma + mu)
+    return round((1.0 - B) / 2.0, 3)
 
-    if lint_findings is not None and lines_of_code:
-        density = lint_findings / lines_of_code * 100
-        detail["lint_per_100_loc"] = round(density, 2)
-        components.append(clamp01(1 - density / LINT_ZERO_AT_PER_100_LOC))
 
-    if tests_present is not None:
-        detail["tests_present"] = tests_present
-        components.append(1.0 if tests_present else 0.0)
-
-    if tests_green is not None:
-        detail["tests_green"] = tests_green
-        components.append(1.0 if tests_green else 0.0)
-
+def effort_regulation(gap_hours, release_to_first_commit_h):
     return {
-        "score": round(sum(components) / len(components), 4) if components else None,
-        "n": len(components),
-        **detail,
+        "regularity": burstiness_regularity(gap_hours),
+        "burstiness": (round((pstdev(gap_hours) - mean(gap_hours)) /
+                             (pstdev(gap_hours) + mean(gap_hours)), 3)
+                       if len(gap_hours) >= 2 and (pstdev(gap_hours) + mean(gap_hours)) > 0
+                       else None),
+        "procrastination_h": round(release_to_first_commit_h, 1),  # tracked, NOT scored
     }
 
 
-def effort_regulation(commit_times: list[datetime]) -> dict:
-    """V3, from the burstiness of inter-commit gaps.
+# ----- Engineering Discipline: cleanliness + testing -----
+def cleanliness(lint_violations, changed_loc):
+    if changed_loc <= 0:
+        return None
+    per_100 = lint_violations / (changed_loc / 100.0)
+    return round(1.0 - min(1.0, per_100 / 10.0), 3)
 
-    Burstiness B = (sigma - mu) / (sigma + mu), from Goh & Barabasi (2008). Chosen
-    because it is bounded in [-1, 1] by construction, so mapping it to a score needs no
-    invented divisor: B = -1 is perfectly regular work, B = +1 is maximally bursty, and
-    score = (1 - B) / 2 lands in [0, 1] with no free parameter. The previous version
-    used sigma/mu divided by an arbitrary 3, which is unbounded and clipped silently.
 
-    Steady work scores high; long silences broken by a cramming burst score low.
-    """
-    if len(commit_times) < 3:
-        # Two commits give one gap, and one gap has no dispersion to measure.
-        return {"score": None, "n": len(commit_times), "reason": "need >= 3 commits"}
+def testing_signal(state):  # 'wired' | 'present' | 'absent'
+    return {"wired": 1.0, "present": 0.5, "absent": 0.0}[state]
 
-    ordered = sorted(commit_times)
-    gaps_h = [(b - a).total_seconds() / 3600 for a, b in pairwise(ordered)]
 
-    mu = statistics.fmean(gaps_h)
-    sigma = statistics.stdev(gaps_h)
-    burstiness = (sigma - mu) / (sigma + mu) if (sigma + mu) > 0 else 0.0
+def cronbachs_alpha(item_matrix):
+    """rows=students, cols=sub-signals in [0,1]. >=0.70 => composite defensible."""
+    if len(item_matrix) < 10:
+        return None
+    k = len(item_matrix[0])
+    item_vars = [variance([row[c] for row in item_matrix]) for c in range(k)]
+    total_var = variance([sum(row) for row in item_matrix])
+    if total_var == 0:
+        return None
+    return round((k / (k - 1)) * (1 - sum(item_vars) / total_var), 3)
 
-    return {
-        "score": round(clamp01((1 - burstiness) / 2), 4),
-        "n": len(commit_times),
-        "burstiness": round(burstiness, 4),
-        "mean_gap_h": round(mu, 2),
-        "max_gap_h": round(max(gaps_h), 2),
-    }
+
+@dataclass
+class DisciplineResult:
+    cleanliness: float | None
+    testing: float
+    composite: float | None
+    composite_valid: bool
+    alpha: float | None
+
+    def to_dict(self) -> dict:
+        """JSONB-ready. Added for the features layer; the fields are the document's.
+
+        Note the composite is None until a cohort exists: with fewer than ten students
+        cronbachs_alpha() cannot be computed, so the gate cannot open. That is the
+        document's own honesty mechanism, not a gap -- an unjustified composite is worse
+        than none, so the components are reported instead.
+        """
+        return {
+            "cleanliness": self.cleanliness,
+            "testing": self.testing,
+            "composite": self.composite,
+            "composite_valid": self.composite_valid,
+            "alpha": self.alpha,
+        }
+
+
+def engineering_discipline(lint_violations, changed_loc, tests_state,
+                           cohort_alpha=None):
+    C = cleanliness(lint_violations, changed_loc)
+    T = testing_signal(tests_state)
+    valid = cohort_alpha is not None and cohort_alpha >= 0.70
+    comps = [v for v in (C, T) if v is not None]
+    composite = round(mean(comps), 3) if (comps and valid) else None
+    return DisciplineResult(C, T, composite, valid, cohort_alpha)

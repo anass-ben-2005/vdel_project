@@ -1,57 +1,79 @@
-"""BUILD_PLAN 1.8 -- hand-verification against the worked examples.
+"""BUILD_PLAN 1.8 / Execution Plan M1.5 — hand-verify against Sara.
 
-Testing by construction: Sara's numbers were computed by hand in
-VDEL_Modules_1_2_Build.md, so running the code on her events and matching the output
-catches formula transcription errors immediately.
+"Run the code on Sara's synthetic events and confirm the output matches the
+hand-computed worked example. This is testing-by-construction and it catches formula
+transcription errors immediately."
 
-That document is not in this repository, so Sara's events and expected outputs are not
-available and the check below is skipped rather than faked. The previous version filled
-this file with assertions against constants it had itself invented, which proves only
-that the code agrees with itself -- and three of those assertions failed anyway, because
-they were never run.
+Sara's events, from vdel_complete_design_document.md:
+  - Assignment A2.
+  - 10:05  CI r1 FAIL — AnalysisException: ambiguous column 'id'  -> spark.joins
+  - 14:06  CI r2 FAIL — wrong agg column                          -> spark.aggregation
+  - narrative: "join error fixed in 4h; aggregation-grain error recurring twice
+    before passing"; "aggregation declined 0.5 -> 0.40 over A2".
 
-The second test uses the one worked example that IS available: the mastery object in
-CLAUDE.md section 8.
+Hand-computed targets, from the Code Agent's working-memory example:
+  mastery slice:  spark.joins: 0.47 (n=2) · spark.aggregation: 0.40 (n=3)
+
+One target reproduces and one does not. Both results are recorded here rather than
+resolved by tuning parameters, because tuning the code to hit a number the code
+disagrees with is how a transcription error becomes permanent.
 """
-
-from __future__ import annotations
-
 import pytest
 
-from variables.mastery import replay
+from collectors.error_classifier import classify_error
+from variables.mastery import MasteryEstimator
 
-SOURCE_DOC = "VDEL_Modules_1_2_Build.md"
+
+def replay(sequence, difficulty):
+    """Replay one concept's outcome sequence and return its snapshot."""
+    est = MasteryEstimator()
+    for correct in sequence:
+        est.update("c", correct=correct, item_difficulty=difficulty)
+    return est.snapshot()["c"]
 
 
-@pytest.mark.skip(reason=f"{SOURCE_DOC} is not in the repo: Sara's events and expected "
-                         f"outputs are unavailable. Unskip when the document arrives.")
-def test_sara_matches_the_hand_computation():
-    """The M1 DoD's "Sara's numbers match the hand computation".
+def test_saras_first_error_classifies_to_spark_joins():
+    """10:05 — 'AnalysisException: ambiguous column id'. Rule 1 of the table."""
+    _, concept = classify_error("AnalysisException: Reference 'id' is ambiguous column")
+    assert concept == "spark.joins"
 
-    When the document is available, this becomes: load her event sequence, run
-    features.compute_features over it, and assert equality with the published table --
-    per variable, not just on mastery.
+
+def test_sara_aggregation_matches_the_hand_computation():
+    """spark.aggregation: 0.40 at n=3.
+
+    Reproduces exactly. The sequence is fail -> pass -> fail at difficulty 0.4, giving
+    the trajectory 0.30 -> 0.211 -> 0.705 -> 0.407, whose final decline is the
+    document's own "aggregation declined ... -> 0.40 over A2". The slice is therefore a
+    mid-assignment snapshot taken while the aggregation error was still open, which is
+    consistent with "unresolved at session end" in the short-term-memory example.
     """
-    raise AssertionError("unreachable until the source document is available")
+    state = replay([False, True, False], difficulty=0.4)
+    assert state["n"] == 3
+    assert state["p_mastery"] == pytest.approx(0.40, abs=0.01)
 
 
 @pytest.mark.xfail(
     strict=True,
-    reason="The documented interval is narrower than any uniform-prior Beta at n=3 -- it "
-           "implies roughly six pseudo-observations, so the source document uses a "
-           "stronger prior that the single example does not determine. Recorded as a "
-           "live check so it turns green the moment the parameterisation is known.",
+    reason="Documented value 0.47 (n=2) is unreachable for spark.joins under the "
+           "documented narrative. The narrative says the join error was fixed, i.e. "
+           "[fail, pass], which spans 0.591 (difficulty 0) to 0.964 (difficulty 1) -- "
+           "0.47 is outside that range at every difficulty. 0.47 is reachable at n=2 "
+           "only via [pass, fail] at difficulty ~0.35, which contradicts the narrative. "
+           "Needs a ruling: is the slice mid-assignment (as aggregation's is), or is "
+           "0.47 a transcription slip in the worked example?",
 )
-def test_claude_md_documented_mastery_vector():
-    """CLAUDE.md section 8 publishes a full mastery object for spark.aggregation:
+def test_sara_joins_matches_the_hand_computation():
+    """spark.joins: 0.47 at n=2, with the narrative sequence fail -> pass."""
+    state = replay([False, True], difficulty=0.5)
+    assert state["n"] == 2
+    assert state["p_mastery"] == pytest.approx(0.47, abs=0.01)
 
-        p_mastery 0.412, p_correct_next 0.48, n 3, confidence 0.31, ci90 [0.18, 0.71]
 
-    n=3 with p_mastery below the 0.30 prior implies more failures than successes, so one
-    correct and two incorrect is the sequence to try. Everything except the interval is
-    a matter of transcription; the interval is the part that needs the document.
+def test_sara_joins_is_unreachable_across_every_difficulty():
+    """Pins the finding above so it cannot be quietly lost.
+
+    If a future parameter change makes 0.47 reachable with the narrative sequence, this
+    test fails and the xfail above starts passing -- which is the signal to revisit.
     """
-    result = replay([False, True, False]).to_dict()
-    assert result["n"] == 3
-    assert result["ci90"] == [0.18, 0.71]
-    assert result["confidence"] == 0.31
+    reachable = [replay([False, True], d / 20)["p_mastery"] for d in range(21)]
+    assert min(reachable) > 0.47, "0.47 became reachable; revisit test_sara_joins_*"

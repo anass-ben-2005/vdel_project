@@ -17,6 +17,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# pytest's default is "test*", which collects the document's testing_signal() as a test
+# function the moment a test module imports it. Requiring the underscore keeps
+# collection to things actually written as tests.
+python_functions = "test_*"
 
 [tool.ruff]
 line-length = 100
@@ -32,3 +36,17 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "DTZ", "BLE", "RUF"]
 [tool.ruff.lint.per-file-ignores]
 # Airflow DAGs are declarative: the operators are wired by `>>`, not by being referenced.
 "dags/*" = ["F841"]
+
+# Verbatim transcriptions from VDEL_Modules_1_2_Build.md. These files are held
+# character-for-character against the source document so that a diff between the two is
+# empty and any future divergence is visible. Restyling them to satisfy a linter would
+# destroy that property for no behavioural gain, so the cosmetic rules are turned off
+# here rather than the code being edited.
+#   UP037  quoted forward-reference annotations
+#   RUF005 tuple concatenation instead of unpacking
+#   B008   BKTParams() as a default argument -- safe: the dataclass is frozen
+"variables/mastery.py" = ["UP037", "RUF005", "B008"]
+# DTZ007: the document parses GitHub's "...Z" timestamps with a naive %Y-%m-%dT%H:%M:%SZ
+# format. Both operands are naive-UTC and only their difference is used (duration_s), so
+# the arithmetic is correct; adopting %z here would be a change to transcribed code.
+"collectors/collect_github.py" = ["DTZ007"]

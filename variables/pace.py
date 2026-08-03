@@ -1,80 +1,44 @@
-"""V4 -- Learning pace: released -> first commit -> first pass, censoring-aware.
-
-"Censored" means the student has not passed yet, so their time-to-pass is unknown --
-but not uninformative. Someone eight days into a ten-day window with no pass has a
-time-to-pass of at least eight days, which bounds their score from above. Reporting that
-bound is honest; the previous version invented `pass_rate * 1.2` for censored cases,
-which is a fabricated point estimate for a quantity that has not been observed.
 """
+variables/pace.py — Learning Pace: cohort-normalized, censoring-aware.
 
-from __future__ import annotations
+Baseline bug fixed: computing the cohort median from PASSERS ONLY drops students
+still stuck (survivorship bias). Non-passers are kept as censored lower bounds.
+Upgrade path: lifelines CoxPHFitter -> per-student hazard ratio.
 
-from datetime import UTC, datetime
+Transcribed from VDEL_Modules_1_2_Build.md, Variable 4.
 
-from variables import clamp01
+Operational note for M1: this variable is cohort-relative by construction, and the
+cohort is currently one student (CLAUDE.md section 2 -- Anas is the first student in the
+system). With n=1 the cohort median is the student's own time, so the ratio is 1.0 and
+the score is pinned at 0.5 by definition. That is not a bug and not a measurement; it is
+the variable correctly reporting that it has no cohort to compare against. Read it as
+"undefined until a cohort exists", and see features/compute_features.py where the
+degenerate case is labelled explicitly.
+"""
+from math import log2
 
-# Fallback window when an assignment has no due date. TODO(verify).
-DEFAULT_WINDOW_DAYS = 14.0
+
+def _clamp(x, lo, hi):
+    return max(lo, min(hi, x))
 
 
-def _utc(ts: datetime) -> datetime:
-    """Force timezone-awareness.
-
-    The previous version mixed naive datetime.utcnow() with timezone-aware TIMESTAMPTZ
-    values from the database, which raises TypeError on subtraction at runtime.
+def learning_pace(time_to_pass_h, cohort_median_h, elapsed_h=None, censored=False):
     """
-    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
-
-
-def learning_pace(
-    released_at: datetime,
-    due_at: datetime | None,
-    first_commit_at: datetime | None,
-    first_pass_at: datetime | None,
-    attempts: int,
-    now: datetime | None = None,
-) -> dict:
-    """V4 for one assignment.
-
-    The score is elapsed time to first pass as a fraction of the assignment's own
-    window, so the yardstick is the real released->due interval rather than a constant
-    someone picked.
+    time_to_pass_h : hours from release to first passing run (if passed)
+    cohort_median_h: median time-to-pass over PASSERS on this assignment
+    elapsed_h      : hours since release so far (used when censored)
+    censored       : True if the student has NOT passed yet
     """
-    released_at = _utc(released_at)
-    now = _utc(now or datetime.now(UTC))
+    if censored:
+        r = max((elapsed_h or 0) / cohort_median_h, 1.0)   # lower bound only
+        return {"score": round(_clamp(0.5 - 0.25 * log2(r), 0, 0.5), 3),
+                "censored": True,
+                "note": "lower-bound; excluded from cohort median calc"}
+    r = time_to_pass_h / cohort_median_h
+    return {"score": round(_clamp(0.5 - 0.25 * log2(r), 0, 1), 3),
+            "ratio": round(r, 3), "censored": False}
 
-    window_days = (
-        (_utc(due_at) - released_at).total_seconds() / 86400 if due_at else DEFAULT_WINDOW_DAYS
-    )
-    window_days = max(window_days, 0.5)  # a zero-length window would divide by zero
 
-    def days_since_release(ts: datetime) -> float:
-        return max(0.0, (_utc(ts) - released_at).total_seconds() / 86400)
-
-    result: dict = {
-        "n": attempts,
-        "window_days": round(window_days, 2),
-        "days_to_first_commit": (
-            round(days_since_release(first_commit_at), 3) if first_commit_at else None
-        ),
-    }
-
-    if first_pass_at:
-        days = days_since_release(first_pass_at)
-        result |= {
-            "censored": False,
-            "days_to_first_pass": round(days, 3),
-            "score": round(clamp01(1 - days / window_days), 4),
-        }
-    else:
-        # Not passed yet. Time-to-pass exceeds the elapsed time, so the score it would
-        # eventually earn cannot be higher than the score for the time already spent.
-        elapsed = days_since_release(now)
-        result |= {
-            "censored": True,
-            "days_elapsed": round(elapsed, 3),
-            "score": None,
-            "score_upper_bound": round(clamp01(1 - elapsed / window_days), 4),
-        }
-
-    return result
+def cohort_censoring_rate(n_not_passed, n_total):
+    """Assignment-level signal: high rate => assignment may be too hard/unclear."""
+    return round(n_not_passed / n_total, 3) if n_total else 0.0
