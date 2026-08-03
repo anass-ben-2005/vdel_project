@@ -1,12 +1,19 @@
-psycopg2-binary==2.9.9
-pydantic==2.5.0
-pyyaml==6.0.1
-python-dotenv==1.0.0
-matplotlib==3.8.2
-scipy==1.11.4
-ruff==0.1.8
-sqlfluff==2.3.0
-apache-airflow==2.7.3
-pytest==7.4.3
-PyGithub==1.60.0
-requests==2.31.0
+# Core runtime. Floors, not pins: the previous hard pins (psycopg2-binary==2.9.9,
+# scipy==1.11.4) have no wheels for Python 3.13 and made `pip install` unresolvable.
+psycopg2-binary>=2.9.10
+pydantic>=2.9
+pyyaml>=6.0.2
+python-dotenv>=1.0.1
+requests>=2.32
+scipy>=1.14.1
+matplotlib>=3.9
+
+# Deterministic tools used by V2 (engineering discipline) and, later, the Code Agent.
+ruff>=0.6
+sqlfluff>=3.1
+
+# Tests
+pytest>=8.3
+
+# NOTE: Airflow is deliberately NOT here. It constrains Python to <3.12 and pins
+# conflicting versions of pydantic/psycopg2. See requirements-airflow.txt.

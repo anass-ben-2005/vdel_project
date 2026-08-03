@@ -1,102 +1,115 @@
-#!/usr/bin/env python3
-"""Seed initial students and assignments."""
+"""Seed reference data from config/roster.yaml, and derived data from the taxonomy.
 
-import os
+Refuses to invent anything. If roster.yaml is missing it says so and stops, rather than
+filling the Pace clock with plausible-looking timestamps nobody chose.
+
+Run:  python -m scripts.seed_data
+"""
+
+from __future__ import annotations
+
 import sys
-from datetime import datetime, timedelta
-import psycopg2
-from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+import yaml
+from psycopg2.extras import execute_values
 
-def get_connection():
-    """Connect to PostgreSQL."""
-    dsn = os.getenv('PG_DSN')
-    if not dsn:
-        print("ERROR: PG_DSN not set")
-        sys.exit(1)
-    return psycopg2.connect(dsn)
+from config import concepts as taxonomy
+from system import db
+from variables.mastery import BKTParams
 
-def seed_students():
-    """Insert the first student (Anas)."""
-    conn = get_connection()
-    cursor = conn.cursor()
+ROSTER = Path(__file__).resolve().parent.parent / "config" / "roster.yaml"
 
-    # Insert Anas as the first student
-    try:
-        cursor.execute("""
-            INSERT INTO students (student_id, github_username, cohort)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (student_id) DO NOTHING
-        """, ('anas-001', 'anas', 'cohort-2024'))
-        conn.commit()
-        print("✓ Student Anas inserted")
-    except Exception as e:
-        print(f"✗ Error inserting student: {e}")
-        conn.rollback()
-    finally:
-        cursor.close()
-        conn.close()
 
-def seed_assignments():
-    """Insert sample assignments."""
-    conn = get_connection()
-    cursor = conn.cursor()
+def load_roster() -> dict:
+    if not ROSTER.exists():
+        sys.exit(
+            f"{ROSTER} not found.\n"
+            "Copy config/roster.example.yaml to config/roster.yaml and fill in your real\n"
+            "GitHub username, repos and start dates. There is no default: released_at\n"
+            "starts the Learning Pace clock and a made-up date makes V4 meaningless."
+        )
+    return yaml.safe_load(ROSTER.read_text(encoding="utf-8")) or {}
 
-    assignments = [
-        {
-            'assignment_id': 'project-1',
-            'repo_prefix': 'kaggle-pipeline-1',
-            'released_at': datetime.utcnow() - timedelta(days=30),
-            'due_at': datetime.utcnow() - timedelta(days=10),
-            'concepts': ['python.basics', 'python.control_flow', 'git', 'testing']
-        },
-        {
-            'assignment_id': 'project-2',
-            'repo_prefix': 'kaggle-pipeline-2',
-            'released_at': datetime.utcnow() - timedelta(days=15),
-            'due_at': datetime.utcnow() + timedelta(days=5),
-            'concepts': ['sql.select', 'sql.joins', 'python.functions', 'testing']
-        },
-        {
-            'assignment_id': 'project-3',
-            'repo_prefix': 'kaggle-pipeline-3',
-            'released_at': datetime.utcnow() - timedelta(days=5),
-            'due_at': datetime.utcnow() + timedelta(days=20),
-            'concepts': ['spark.dataframe', 'spark.aggregation', 'ci_cd', 'documentation']
-        }
-    ]
 
-    for a in assignments:
-        try:
-            cursor.execute("""
-                INSERT INTO assignments
-                (assignment_id, repo_prefix, released_at, due_at, concepts)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (assignment_id) DO NOTHING
-            """, (
-                a['assignment_id'],
-                a['repo_prefix'],
-                a['released_at'],
-                a['due_at'],
-                a['concepts']
-            ))
-            print(f"✓ Assignment {a['assignment_id']} inserted")
-        except Exception as e:
-            print(f"✗ Error inserting assignment {a['assignment_id']}: {e}")
-            conn.rollback()
-            continue
+def validate(roster: dict) -> list[str]:
+    """Every problem at once, rather than one per run."""
+    problems = []
+    known = taxonomy.ids()
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+    for student in roster.get("students", []):
+        if "CHANGE_ME" in str(student.values()):
+            problems.append(f"student {student.get('student_id')}: CHANGE_ME left in place")
 
-def main():
-    """Seed the database."""
-    print("Seeding reference data...\n")
-    seed_students()
-    seed_assignments()
-    print("\n✅ Seeding complete")
+    student_ids = {s["student_id"] for s in roster.get("students", [])}
+    for a in roster.get("assignments", []):
+        aid = a.get("assignment_id")
+        if "CHANGE_ME" in {aid, a.get("owner"), a.get("repo")}:
+            problems.append(f"assignment {aid}: CHANGE_ME left in place")
+        if a.get("student_id") not in student_ids:
+            problems.append(f"assignment {aid}: unknown student_id {a.get('student_id')!r}")
+        if not a.get("released_at"):
+            problems.append(f"assignment {aid}: released_at is required (starts the Pace clock)")
+        for cid in a.get("concepts") or []:
+            if cid not in known:
+                problems.append(f"assignment {aid}: {cid!r} is not in config/concepts.yaml")
+    return problems
 
-if __name__ == '__main__':
-    main()
+
+def main() -> int:
+    roster = load_roster()
+    if problems := validate(roster):
+        for p in problems:
+            print(f"  {p}")
+        sys.exit(f"\n{len(problems)} problem(s) in {ROSTER}. Nothing was written.")
+
+    concepts = taxonomy.load()
+    defaults = BKTParams()
+
+    with db.cursor() as cur:
+        execute_values(
+            cur,
+            "INSERT INTO students (student_id, github_username, cohort) VALUES %s"
+            " ON CONFLICT (student_id) DO UPDATE SET"
+            "   github_username = EXCLUDED.github_username, cohort = EXCLUDED.cohort",
+            [(s["student_id"], s["github_username"], s["cohort"]) for s in roster["students"]],
+        )
+
+        execute_values(
+            cur,
+            "INSERT INTO assignments (assignment_id, repo_prefix, released_at, due_at, concepts)"
+            " VALUES %s ON CONFLICT (assignment_id) DO UPDATE SET"
+            "   repo_prefix = EXCLUDED.repo_prefix, released_at = EXCLUDED.released_at,"
+            "   due_at = EXCLUDED.due_at, concepts = EXCLUDED.concepts",
+            [
+                (a["assignment_id"], f"{a['owner']}/{a['repo']}", a["released_at"],
+                 a.get("due_at"), a.get("concepts") or [])
+                for a in roster["assignments"]
+            ],
+        )
+
+        # Derived from the taxonomy, not invented: KT-IDEM reads item difficulty.
+        execute_values(
+            cur,
+            "INSERT INTO items (concept_id, difficulty) VALUES %s"
+            " ON CONFLICT (concept_id) DO UPDATE SET difficulty = EXCLUDED.difficulty",
+            [(c.id, c.difficulty) for c in concepts.values()],
+        )
+
+        execute_values(
+            cur,
+            "INSERT INTO kt_params (param_set, concept_id, p_l0, p_t, p_guess, p_slip)"
+            " VALUES %s ON CONFLICT (param_set, concept_id) DO NOTHING",
+            [
+                ("bkt_v1", c.id, defaults.p_l0, defaults.p_t, defaults.p_guess, defaults.p_slip)
+                for c in concepts.values()
+            ],
+        )
+
+    print(f"seeded {len(roster['students'])} student(s), "
+          f"{len(roster['assignments'])} assignment(s), {len(concepts)} concepts")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

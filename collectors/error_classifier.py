@@ -1,91 +1,114 @@
-"""Classify CI errors to concepts."""
+"""Map a CI failure log to (error_class, concept_id).
+
+Precision over recall, deliberately. Invariant 10 says an unclassified error updates no
+mastery, which makes a miss cheap: one lost observation. A false positive is expensive:
+it moves a mastery score for a concept the student never touched, and mastery scores are
+what the grade is defended with.
+
+The previous rule set optimised the wrong way. `r'DataFrame|RDD|transformation|action'`
+matches the word "action", which appears in the header of every GitHub Actions log, so
+every failure would have been classified as spark.dataframe. A bare `JOIN` matches any
+traceback containing str.join(). The match rate would have looked excellent and the
+concept mapping would have been noise.
+
+TODO(verify): BUILD_PLAN 1.5 specifies roughly ten rules from
+VDEL_Modules_1_2_Build.md. That document is not in the repo, so these are placeholders
+built to the right shape. Replace the table, keep the machinery.
+"""
+
+from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
+
+UNCLASSIFIED = "unclassified"
 
 
-class ErrorClassifier:
-    """Map error messages to error class and concept."""
+def _rule(error_class: str, concept_id: str, pattern: str, flags: int = re.MULTILINE):
+    """One rule. MULTILINE by default so `^` anchors to a line, not to the whole log --
+    which is what makes "the line that starts with TypeError:" expressible at all."""
+    return (error_class, concept_id, re.compile(pattern, flags))
 
-    # (pattern, error_class, concept_id)
-    RULES = [
-        # SQL errors
-        (r'syntax error|SQL syntax|unexpected token', 'sql_syntax', 'sql.select'),
-        (r'JOIN|column.*not found|ambiguous|undefined|table.*does not exist', 'sql_join', 'sql.joins'),
-        (r'GROUP BY|HAVING|aggregate', 'sql_aggregation', 'sql.joins'),
-        (r'INDEX|performance|slow query|query timeout', 'sql_performance', 'sql.indexing'),
 
-        # Python errors
-        (r'SyntaxError|IndentationError|invalid syntax', 'python_syntax', 'python.basics'),
-        (r'NameError|undefined.*variable|not defined', 'python_name', 'python.control_flow'),
-        (r'TypeError|wrong.*type|expected.*got', 'python_type', 'python.functions'),
-        (r'AttributeError|no attribute|object.*has no', 'python_attribute', 'python.functions'),
-        (r'IndexError|KeyError|out of range', 'python_access', 'python.control_flow'),
-        (r'ImportError|ModuleNotFoundError|cannot import', 'python_import', 'python.basics'),
-        (r'ValueError|invalid.*value', 'python_value', 'python.error_handling'),
-        (r'ZeroDivisionError|division by zero', 'python_math', 'python.basics'),
+IGNORE_CASE = re.MULTILINE | re.IGNORECASE
 
-        # Spark errors
-        (r'DataFrame|RDD|transformation|action', 'spark_dataframe', 'spark.dataframe'),
-        (r'shuffle|partition|repartition', 'spark_partition', 'spark.aggregation'),
-        (r'join|broadcast|reduce', 'spark_join', 'spark.dataframe'),
+# (error_class, concept_id, pattern). First match wins, so order is meaningful:
+# specific patterns precede general ones.
+RULES: list[tuple[str, str, re.Pattern[str]]] = [
+    # Python exceptions, anchored to the traceback's final line ("SomeError: message"),
+    # so the word only counts where the interpreter actually raised it.
+    _rule("python_syntax", "python.basics", r"^\s*(SyntaxError|IndentationError|TabError):"),
+    _rule("python_import", "python.basics", r"^\s*(ImportError|ModuleNotFoundError):"),
+    _rule("python_name", "python.control_flow", r"^\s*NameError:"),
+    _rule("python_type", "python.functions", r"^\s*TypeError:"),
+    _rule("python_attribute", "python.functions", r"^\s*AttributeError:"),
+    _rule("python_key_index", "python.control_flow", r"^\s*(KeyError|IndexError):"),
+    _rule("python_value", "python.error_handling", r"^\s*ValueError:"),
+    _rule("python_zero_div", "python.basics", r"^\s*ZeroDivisionError:"),
 
-        # Airflow errors
-        (r'DAG|task|dependency|upstream|downstream', 'airflow_dag', 'airflow.dag'),
-        (r'operator|execute|run_task', 'airflow_operator', 'airflow.operators'),
-        (r'schedule|cron|interval', 'airflow_schedule', 'airflow.scheduling'),
-        (r'idempotent|duplicate|transaction', 'airflow_idempotency', 'airflow.idempotency'),
+    # SQL. Requires SQL-shaped context, not a bare keyword that appears in prose.
+    _rule("sql_syntax", "sql.select", r"syntax error at or near|SQLSyntaxError", IGNORE_CASE),
+    _rule("sql_unknown_column", "sql.joins",
+          r'column "[^"]+" does not exist|Unknown column', IGNORE_CASE),
+    _rule("sql_ambiguous_column", "sql.joins",
+          r'column reference "[^"]+" is ambiguous', IGNORE_CASE),
+    _rule("sql_grouping", "sql.joins", r"must appear in the GROUP BY clause", IGNORE_CASE),
 
-        # Testing
-        (r'AssertionError|assert.*failed|expected.*got', 'test_assertion', 'testing'),
-        (r'test.*failed|test.*passed', 'test_general', 'testing'),
+    # Spark. Anchored to exception class names, never to English words.
+    _rule("spark_analysis", "spark.dataframe",
+          r"AnalysisException|pyspark\.sql\.utils\.\w*Exception"),
+    _rule("spark_shuffle_oom", "spark.performance",
+          r"SparkOutOfMemoryError|ExecutorLostFailure"),
+    _rule("spark_py4j", "spark.dataframe", r"Py4JJavaError"),
 
-        # CI/CD
-        (r'build failed|compilation error|link error', 'build_error', 'ci_cd'),
-        (r'deployment failed|deploy error', 'deploy_error', 'ci_cd'),
-    ]
+    # Airflow.
+    _rule("airflow_import", "airflow.dag",
+          r"DagBag import (timeout|error)|Broken DAG", IGNORE_CASE),
+    _rule("airflow_dependency", "airflow.dag",
+          r"AirflowFailException|Task .* is in the 'upstream_failed'", IGNORE_CASE),
+    _rule("airflow_duplicate", "airflow.idempotency",
+          r"duplicate key value violates unique constraint", IGNORE_CASE),
 
-    @classmethod
-    def classify(cls, error_text: str) -> Optional[Tuple[str, str]]:
-        """
-        Classify an error message.
+    # Tests. Must indicate an actual failure, not merely mention the word "test".
+    _rule("test_assertion", "testing", r"^\s*AssertionError\b|^E\s+assert\b"),
+    _rule("test_failed", "testing", r"^=+ .*\d+ failed"),
 
-        Returns:
-            (error_class, concept_id) or None if unclassified
-        """
-        if not error_text:
-            return None
+    # Tooling.
+    _rule("lint_failed", "documentation",
+          r"^\s*(ruff|sqlfluff) (check )?failed|Found \d+ error", IGNORE_CASE),
+]
 
-        error_text_lower = error_text.lower()
 
-        for pattern, error_class, concept_id in cls.RULES:
-            if re.search(pattern, error_text_lower, re.IGNORECASE):
-                return (error_class, concept_id)
+def classify(log_text: str | None) -> tuple[str, str | None]:
+    """Return (error_class, concept_id). concept_id is None when unclassified.
 
-        return None
+    A None concept_id is the signal that no mastery update may follow (invariant 10).
+    """
+    if not log_text:
+        return (UNCLASSIFIED, None)
+    for error_class, concept_id, pattern in RULES:
+        if pattern.search(log_text):
+            return (error_class, concept_id)
+    return (UNCLASSIFIED, None)
 
-    @classmethod
-    def classify_workflow_run(cls, run_conclusion: str, error_log: Optional[str] = None) -> Optional[Tuple[str, str]]:
-        """
-        Classify a workflow run based on conclusion and optional error log.
 
-        Args:
-            run_conclusion: 'success', 'failure', 'cancelled', etc.
-            error_log: Optional error message text
+def classify_run(conclusion: str | None, log_text: str | None) -> tuple[str | None, str | None]:
+    """Classify a workflow run. Successful runs are not errors and get no class."""
+    if conclusion == "success":
+        return (None, None)
+    if conclusion in {"cancelled", "skipped", "stale", None}:
+        # Not the student's doing -- must not count against a concept.
+        return (conclusion or UNCLASSIFIED, None)
+    return classify(log_text)
 
-        Returns:
-            (error_class, concept_id) or None
-        """
-        if run_conclusion == 'success':
-            return None
 
-        if run_conclusion == 'failure' and error_log:
-            return cls.classify(error_log)
+def match_rate(results: list[tuple[str | None, str | None]]) -> float:
+    """Share of classified failures that mapped to a concept.
 
-        # Generic error classes for non-failure conclusions
-        if run_conclusion == 'cancelled':
-            return ('cancelled', None)
-        elif run_conclusion == 'timed_out':
-            return ('timeout', 'performance')
-
-        return None
+    BUILD_PLAN 1.5 requires this to be logged and reported. It is the honest measure of
+    how much of the telemetry the taxonomy actually reaches -- and a low number is a
+    finding to report, not a number to inflate by loosening the rules.
+    """
+    considered = [r for r in results if r[0] not in {None, "cancelled", "skipped", "stale"}]
+    if not considered:
+        return 0.0
+    return round(sum(1 for _, cid in considered if cid) / len(considered), 4)

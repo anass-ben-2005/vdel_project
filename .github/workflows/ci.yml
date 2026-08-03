@@ -1,0 +1,52 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # The M0 DoD is "on a machine that has never seen this project, the schema builds
+    # and the smoke test passes". CI is that machine, every push.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: vdel
+          POSTGRES_USER: vdel
+          POSTGRES_PASSWORD: vdel
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vdel -d vdel"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PG_DSN: postgresql://vdel:vdel@localhost:5432/vdel
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt && pip install -e .
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Build schema
+        run: python -m scripts.init_db
+
+      - name: Build schema again (idempotency)
+        run: python -m scripts.init_db
+
+      - name: Smoke test
+        run: python -m scripts.smoke_test
+
+      - name: Unit tests
+        run: pytest -q

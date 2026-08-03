@@ -1,76 +1,56 @@
-"""VDEL telemetry pipeline: collect → compute_features → update_profiles."""
+"""collect -> compute_features -> update_profiles.
 
-from datetime import datetime, timedelta
+The tasks shell out to this repo's module entrypoints rather than importing them.
+Airflow requires Python <3.12 and pins its own pydantic/psycopg2, so it lives in a
+separate environment (requirements-airflow.txt); crossing that boundary by import would
+force the two environments to be one. The previous version did
+`sys.path.insert(0, '/opt/airflow')` inside each task -- a hardcoded container path that
+cannot work when the repo is checked out anywhere else.
+
+Set VDEL_HOME (Airflow Variable or environment variable) to the repo root.
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import UTC, datetime, timedelta
+
 from airflow import DAG
-from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
+from airflow.operators.empty import EmptyOperator
+
+VDEL_HOME = os.environ.get("VDEL_HOME", "/opt/vdel")
+PYTHON = os.environ.get("VDEL_PYTHON", "python")
 
 default_args = {
-    'owner': 'anas',
-    'depends_on_past': False,
-    'start_date': datetime(2024, 1, 1),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
+    "owner": "anas",
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
 }
 
-dag = DAG(
-    'vdel_pipeline',
+with DAG(
+    dag_id="vdel_pipeline",
     default_args=default_args,
-    description='VDEL telemetry pipeline',
-    schedule_interval='0 */6 * * *',  # Every 6 hours
-    catchup=False,
-)
+    description="GitHub telemetry -> the seven variables -> learner profiles",
+    start_date=datetime(2026, 1, 1, tzinfo=UTC),  # Airflow requires tz-aware
+    schedule="0 */6 * * *",
+    catchup=False,   # backfilling this pipeline would re-collect the same GitHub history
+    max_active_runs=1,  # two concurrent runs would race on the same raw tables
+    tags=["vdel", "m1"],
+) as dag:
 
+    collect = BashOperator(
+        task_id="collect",
+        bash_command=f"cd {VDEL_HOME} && {PYTHON} -m scripts.collect",
+    )
 
-def collect_github():
-    """Collect GitHub commits and workflow runs."""
-    import sys
-    sys.path.insert(0, '/opt/airflow')
-    from collectors.collect_github import GitHubCollector
+    compute_features = BashOperator(
+        task_id="compute_features",
+        bash_command=f"cd {VDEL_HOME} && {PYTHON} -m features.compute_features",
+    )
 
-    collector = GitHubCollector()
-    # TODO: Configure with actual repos
-    # collector.collect_for_repo('anas', 'kaggle-pipeline-1', 'anas-001', 'project-1')
-    print("GitHub collection task (stub)")
+    # Stub until M2 builds memory/memory.py. Present so the shape of the pipeline is
+    # visible now and the milestone only has to swap the operator.
+    update_profiles = EmptyOperator(task_id="update_profiles")
 
-
-def compute_features():
-    """Compute the seven variables from raw events."""
-    import sys
-    sys.path.insert(0, '/opt/airflow')
-    from features.compute_features import FeatureComputer
-
-    computer = FeatureComputer()
-    computer.run()
-
-
-def update_profiles():
-    """Update learner profiles (stub for M2)."""
-    print("Profile update task (stub until M2)")
-
-
-# Task 1: Collect
-collect_task = PythonOperator(
-    task_id='collect_github',
-    python_callable=collect_github,
-    dag=dag,
-)
-
-# Task 2: Compute features
-compute_task = PythonOperator(
-    task_id='compute_features',
-    python_callable=compute_features,
-    dag=dag,
-)
-
-# Task 3: Update profiles (stub)
-update_task = PythonOperator(
-    task_id='update_profiles',
-    python_callable=update_profiles,
-    dag=dag,
-)
-
-# Dependencies
-collect_task >> compute_task >> update_task
+    collect >> compute_features >> update_profiles

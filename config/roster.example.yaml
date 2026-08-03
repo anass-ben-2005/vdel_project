@@ -1,0 +1,27 @@
+# Copy to config/roster.yaml and fill in with REAL values, then run:
+#   python -m scripts.seed_data
+#
+# There is deliberately no default. CLAUDE.md section 2 says the telemetry source is
+# Anas's own GitHub repos, and BUILD_PLAN 1.2 says to seed real repos with real release
+# dates. The previous version invented three repos ("kaggle-pipeline-1") and derived
+# released_at from `utcnow() - 30 days`, which put fabricated timestamps into the column
+# that starts the Pace clock -- every V4 number downstream would have been fiction.
+#
+# released_at must be the date the work actually began (first commit, or when the
+# assignment was set). It is the zero point for Learning Pace.
+
+students:
+  - student_id: anas
+    github_username: CHANGE_ME        # your real GitHub login
+    cohort: vdel-2026
+
+assignments:
+  - assignment_id: CHANGE_ME          # e.g. kaggle-pipeline
+    owner: CHANGE_ME                  # GitHub owner of the repo
+    repo: CHANGE_ME                   # GitHub repo name
+    student_id: anas
+    released_at: 2026-01-01T00:00:00Z # real start date -- starts the Pace clock
+    due_at: null                      # optional; null falls back to DEFAULT_WINDOW_DAYS
+    concepts:                         # must be ids from config/concepts.yaml
+      - python.functions
+      - testing

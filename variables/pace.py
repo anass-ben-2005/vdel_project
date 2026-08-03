@@ -1,104 +1,80 @@
-"""Learning pace (V4): censoring-aware time to mastery."""
+"""V4 -- Learning pace: released -> first commit -> first pass, censoring-aware.
 
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Optional
+"Censored" means the student has not passed yet, so their time-to-pass is unknown --
+but not uninformative. Someone eight days into a ten-day window with no pass has a
+time-to-pass of at least eight days, which bounds their score from above. Reporting that
+bound is honest; the previous version invented `pass_rate * 1.2` for censored cases,
+which is a fabricated point estimate for a quantity that has not been observed.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from variables import clamp01
+
+# Fallback window when an assignment has no due date. TODO(verify).
+DEFAULT_WINDOW_DAYS = 14.0
 
 
-@dataclass
-class PaceState:
-    """Learning pace metrics."""
-    days_since_release: float = 0.0  # Days elapsed since assignment released
-    days_to_first_commit: float = 0.0  # Time to first attempt
-    days_to_first_pass: float = 0.0  # Time to first success
-    pass_rate: float = 0.0  # Successes / attempts
-    is_censored: bool = False  # True if still in progress (no pass yet)
-    n: int = 0
+def _utc(ts: datetime) -> datetime:
+    """Force timezone-awareness.
+
+    The previous version mixed naive datetime.utcnow() with timezone-aware TIMESTAMPTZ
+    values from the database, which raises TypeError on subtraction at runtime.
+    """
+    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
 
 
-def compute_pace(
+def learning_pace(
     released_at: datetime,
-    due_at: Optional[datetime],
-    first_commit_at: Optional[datetime],
-    first_pass_at: Optional[datetime],
-    total_attempts: int,
-    total_passes: int,
-    current_time: datetime = None,
-) -> PaceState:
+    due_at: datetime | None,
+    first_commit_at: datetime | None,
+    first_pass_at: datetime | None,
+    attempts: int,
+    now: datetime | None = None,
+) -> dict:
+    """V4 for one assignment.
+
+    The score is elapsed time to first pass as a fraction of the assignment's own
+    window, so the yardstick is the real released->due interval rather than a constant
+    someone picked.
     """
-    Compute pace metrics: time-to-mastery with censoring.
+    released_at = _utc(released_at)
+    now = _utc(now or datetime.now(UTC))
 
-    "Censoring" means: if student hasn't passed yet, we don't know their time-to-pass.
-    A censored observation is still informative (e.g., 3 days in, 0 passes yet = struggling).
-
-    Args:
-        released_at: Assignment release date
-        due_at: Assignment due date (optional)
-        first_commit_at: Timestamp of first commit (optional)
-        first_pass_at: Timestamp of first passing run (optional)
-        total_attempts: Total workflow runs
-        total_passes: Total passing runs
-        current_time: Current time (defaults to now)
-
-    Returns:
-        PaceState
-    """
-    if current_time is None:
-        current_time = datetime.utcnow()
-
-    days_since_release = (current_time - released_at).total_seconds() / (24 * 3600)
-
-    # Time to first commit
-    if first_commit_at:
-        days_to_first_commit = (first_commit_at - released_at).total_seconds() / (24 * 3600)
-    else:
-        days_to_first_commit = None
-
-    # Time to first pass
-    if first_pass_at:
-        days_to_first_pass = (first_pass_at - released_at).total_seconds() / (24 * 3600)
-        is_censored = False
-    else:
-        days_to_first_pass = None
-        is_censored = True  # Still waiting for first pass
-
-    # Pass rate
-    if total_attempts > 0:
-        pass_rate = total_passes / total_attempts
-    else:
-        pass_rate = 0.0
-
-    return PaceState(
-        days_since_release=max(0, days_since_release),
-        days_to_first_commit=days_to_first_commit or 0.0,
-        days_to_first_pass=days_to_first_pass or 0.0,
-        pass_rate=pass_rate,
-        is_censored=is_censored,
-        n=total_attempts,
+    window_days = (
+        (_utc(due_at) - released_at).total_seconds() / 86400 if due_at else DEFAULT_WINDOW_DAYS
     )
+    window_days = max(window_days, 0.5)  # a zero-length window would divide by zero
 
+    def days_since_release(ts: datetime) -> float:
+        return max(0.0, (_utc(ts) - released_at).total_seconds() / 86400)
 
-def pace_score(state: PaceState) -> float:
-    """
-    Aggregate pace into [0, 1] score (higher = faster learning).
+    result: dict = {
+        "n": attempts,
+        "window_days": round(window_days, 2),
+        "days_to_first_commit": (
+            round(days_since_release(first_commit_at), 3) if first_commit_at else None
+        ),
+    }
 
-    For censored observations, we estimate based on pass rate.
-    For uncensored: reward quick time-to-pass.
-    """
-    if state.n == 0:
-        return 0.5  # Neutral
-
-    if not state.is_censored:
-        # Uncensored: reward quick pass (< 1 day = 1.0, > 7 days = 0.3)
-        days = max(0, state.days_to_first_pass)
-        if days < 1:
-            return 1.0
-        elif days > 7:
-            return 0.3
-        else:
-            return 1.0 - (0.7 * (days - 1) / 6)
+    if first_pass_at:
+        days = days_since_release(first_pass_at)
+        result |= {
+            "censored": False,
+            "days_to_first_pass": round(days, 3),
+            "score": round(clamp01(1 - days / window_days), 4),
+        }
     else:
-        # Censored: use pass rate as proxy for learning speed
-        # 80%+ pass rate on censored = fast learner
-        # 0% pass rate = struggling
-        return min(1.0, state.pass_rate * 1.2)
+        # Not passed yet. Time-to-pass exceeds the elapsed time, so the score it would
+        # eventually earn cannot be higher than the score for the time already spent.
+        elapsed = days_since_release(now)
+        result |= {
+            "censored": True,
+            "days_elapsed": round(elapsed, 3),
+            "score": None,
+            "score_upper_bound": round(clamp01(1 - elapsed / window_days), 4),
+        }
+
+    return result

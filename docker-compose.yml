@@ -1,22 +1,25 @@
-version: '3.8'
-
 services:
   postgres:
-    image: pgvector/pgvector:pg16-latest
+    image: pgvector/pgvector:pg16
     container_name: vdel-postgres
     environment:
       POSTGRES_DB: vdel
-      POSTGRES_USER: vdel_user
-      POSTGRES_PASSWORD: vdel_password
+      POSTGRES_USER: vdel
+      POSTGRES_PASSWORD: vdel
     ports:
-      - "5432:5432"
+      # Host 5433, not 5432. This machine runs a native postgresql-x64-13 service that
+      # already owns 5432; Docker published the port without error but every host
+      # connection reached PostgreSQL 13, which has no vdel role, and surfaced only as
+      # "password authentication failed". Publishing on 5433 makes the project immune to
+      # whatever the host already runs, which is the point of the M0 DoD: clone and run.
+      - "5433:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - vdel_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vdel_user -d vdel"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U vdel -d vdel"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
 volumes:
-  postgres_data:
+  vdel_pgdata:

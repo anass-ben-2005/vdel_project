@@ -1,93 +1,36 @@
-"""Error frequency (V6): opportunity-normalised error rate."""
+"""V6 -- Error frequency: how often errors happen, normalised by opportunity.
 
-from dataclasses import dataclass
-from typing import Optional
+"Opportunity-normalised" means the denominator is attempts, not calendar time. Ten
+failures across two hundred runs is not the same as ten across twelve, and a per-day
+rate would call them equal for a student who simply works more.
+
+Pairs with V5 (error_response). High frequency plus fast recovery reads as learning by
+experimentation; high frequency plus no recovery reads as being stuck. Neither variable
+can distinguish those alone, which is exactly why they are two variables.
+"""
+
+from __future__ import annotations
+
+from variables import clamp01
 
 
-@dataclass
-class ErrorFrequencyState:
-    """Error frequency metrics."""
-    total_attempts: int = 0
-    total_failures: int = 0
-    error_rate: float = 0.0  # failures / attempts
-    error_rate_normalized: float = 0.0  # Accounting for concept difficulty
-    n: int = 0
+def error_frequency(attempts: int, failures: int) -> dict:
+    """V6 from raw attempt counts.
 
-
-def compute_error_frequency(
-    total_attempts: int,
-    total_failures: int,
-    concept_difficulty: Optional[float] = None,
-    time_window_days: int = 14,
-) -> ErrorFrequencyState:
+    No confidence shrinkage is applied. The previous version pulled the score towards
+    0.5 by a sqrt(n)/sqrt(20) factor, which quietly mixes "how often do errors happen"
+    with "how sure are we" -- two things invariant 8 keeps separate by shipping `n`
+    alongside every estimate and letting the consumer weigh it.
     """
-    Compute error frequency (V6): how often errors occur.
+    if attempts <= 0:
+        return {"score": None, "n": 0}
 
-    Normalized by: concept difficulty + time window (avoid penalizing early attempts).
+    failures = max(0, min(failures, attempts))
+    rate = failures / attempts
 
-    **Important boundary (CLAUDE.md §8):**
-    - Error frequency = how often errors happen (a rate)
-    - Error response = what student does about them (a behaviour)
-
-    High frequency + high engagement = learning by experimentation, not struggling.
-
-    Args:
-        total_attempts: Total workflow runs attempted
-        total_failures: Workflow runs that failed
-        concept_difficulty: Difficulty of concepts tested (0-1, affects baseline)
-        time_window_days: Observation window (affects interpretation)
-
-    Returns:
-        ErrorFrequencyState
-    """
-    if total_attempts == 0:
-        return ErrorFrequencyState()
-
-    # Raw error rate
-    error_rate = total_failures / total_attempts
-
-    # Normalize by difficulty: harder concepts = more errors expected
-    # Difficulty 0.5 (medium) = baseline; 0.8 (hard) = higher baseline acceptable
-    if concept_difficulty is not None:
-        # Baseline error rate for this difficulty
-        baseline = 0.3 + (0.4 * concept_difficulty)  # 0.3-0.7 range
-        normalized_rate = error_rate / (baseline + 1e-6)
-    else:
-        normalized_rate = error_rate
-
-    return ErrorFrequencyState(
-        total_attempts=total_attempts,
-        total_failures=total_failures,
-        error_rate=error_rate,
-        error_rate_normalized=normalized_rate,
-        n=total_attempts,
-    )
-
-
-def error_frequency_score(state: ErrorFrequencyState) -> float:
-    """
-    Aggregate error frequency into [0, 1] score (higher = better).
-
-    Rules:
-    - 0% error rate: perfect, but suspicious if only 1 attempt
-    - ~30% error rate: healthy learning rate
-    - >70% error rate: struggling
-    - Adjustment: few attempts = higher uncertainty
-    """
-    if state.n == 0:
-        return 0.5  # Neutral
-
-    # Invert error rate (higher error_rate = lower score)
-    # 0% errors = 1.0, 50% errors = 0.5, 100% errors = 0.0
-    base_score = 1.0 - state.error_rate
-
-    # Adjust for observation count: high variance with few attempts
-    # Confidence increases with sqrt(n)
-    import math
-    confidence_factor = min(1.0, math.sqrt(state.n) / math.sqrt(20))
-
-    # Confidence-weighted score
-    neutral_baseline = 0.5
-    adjusted_score = neutral_baseline + (base_score - neutral_baseline) * confidence_factor
-
-    return adjusted_score
+    return {
+        "score": round(clamp01(1 - rate), 4),
+        "n": attempts,
+        "failures": failures,
+        "failure_rate": round(rate, 4),
+    }

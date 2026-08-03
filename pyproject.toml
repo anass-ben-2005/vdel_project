@@ -1,0 +1,34 @@
+# Deliberately minimal. BUILD_PLAN M0 warns against spending day 1 on packaging
+# ceremony; this file exists only so `pip install -e .` makes the top-level packages
+# importable from any working directory. Without it, `python scripts/init_db.py`
+# puts scripts/ on sys.path instead of the repo root and every import fails.
+
+[project]
+name = "vdel-student-side"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["variables", "collectors", "features", "memory", "agents", "system", "config"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+# Selected explicitly, not left to ruff's defaults. Defaults vary by ruff version and a
+# developer's global config bleeds into a bare `ruff check .`, so CI on a clean machine
+# would enforce a different set than the one this code was written against -- including
+# flagging the `noqa` codes below as unused. Pinning the selection makes the lint
+# reproducible, which is the same reason the schema and the prompts are versioned.
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "DTZ", "BLE", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Airflow DAGs are declarative: the operators are wired by `>>`, not by being referenced.
+"dags/*" = ["F841"]

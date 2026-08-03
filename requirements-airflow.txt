@@ -1,0 +1,11 @@
+# Airflow lives in its own environment.
+#
+# Why separate: apache-airflow requires Python <3.12 and pins its own versions of
+# pydantic, psycopg2 and pyyaml. Installing it alongside requirements.txt makes the
+# dependency set unresolvable. The DAG in dags/ only shells out to this repo's
+# entrypoints, so the two environments never need to be the same one.
+#
+# Install with the official constraint file (Airflow will not resolve without it):
+#   pip install "apache-airflow==2.10.5" \
+#     --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.5/constraints-3.11.txt"
+apache-airflow==2.10.5
