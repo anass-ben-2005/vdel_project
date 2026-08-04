@@ -21,7 +21,7 @@ assignments:
     repo: CHANGE_ME                   # GitHub repo name
     student_id: anas
     released_at: 2026-01-01T00:00:00Z # real start date -- starts the Pace clock
-    due_at: null                      # optional; null falls back to DEFAULT_WINDOW_DAYS
+    due_at: null                      # optional; not read by pace.py (cohort-relative, not deadline-relative)
     concepts:                         # must be ids from config/concepts.yaml
-      - python.functions
-      - testing
+      - py.data_structures
+      - py.testing

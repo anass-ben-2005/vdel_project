@@ -11,6 +11,13 @@ htmlcov/
 .DS_Store
 *.log
 
-# Source-of-truth design documents (large, and the authority for all formulas).
-# Committed deliberately: the code is a transcription of them and cannot be reviewed
-# without them.
+# Internal source-of-truth design documents and generated explainer. Kept locally as
+# the authority every formula in variables/ is transcribed from and reviewed against,
+# but not meant for the public repo.
+BUILD_PLAN.md
+CLAUDE.md
+VDEL_Modules_1_2_Build.md
+VDEL_Modules_3_9_Build.md
+VDEL_v1_Execution_Plan.md
+vdel_complete_design_document.md
+explanation.md
