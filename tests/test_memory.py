@@ -221,15 +221,24 @@ def test_verdict_is_excluded_pending_m4():
 
 # ---------- update_mastery: the replay ----------
 
-def ci_run(mem, conn, concept, conclusion, difficulty=0.5):
+def ci_run(mem, conn, concept, conclusion, difficulty=0.5, assignment_id=ASSIGNMENT,
+          error_class=None):
     """Log one assessed attempt. Returns its trace_id.
+
+    Defaults `assignment_id` to the fixture's ASSIGNMENT: mastery replay doesn't care about
+    it, but `apply_recurrence_rule`'s window does ("within one assignment"), so a trace
+    with no assignment_id would silently never match its `WHERE assignment_id = %s`.
+
+    `error_class` defaults to None -- mastery replay never reads it; only recurrence tests
+    pass one, mirroring `classify_error()`'s real return shape (error_class, concept).
 
     Replay order is (ts, trace_id); traces logged in sequence here share a ts to the
     microsecond only rarely, and trace_id breaks the tie deterministically either way.
     """
-    payload = {"conclusion": conclusion, "item_difficulty": difficulty}
+    payload = {"conclusion": conclusion, "item_difficulty": difficulty,
+              "error_class": error_class}
     return mem.log_trace(STUDENT, "system", "ci_run", payload,
-                         concept_ids=[concept], conn=conn)
+                         concept_ids=[concept], assignment_id=assignment_id, conn=conn)
 
 
 def test_one_pass_reproduces_the_hand_computed_bkt_update(mem, conn):
@@ -435,3 +444,252 @@ def test_rebuild_skips_unclassified(mem, conn):
     ci_run(mem, conn, "unclassified", "failure")
     ci_run(mem, conn, "spark.joins", "success")
     assert set(mem.rebuild_mastery_from_traces(STUDENT, conn=conn)) == {"spark.joins"}
+
+
+# ---------- open_weakness: the raw primitive ----------
+
+def test_open_weakness_returns_the_id_of_the_trace_it_writes(mem, conn):
+    """w-{trace_id}, not a length-based counter -- collision-free by construction."""
+    wid = mem.open_weakness(STUDENT, "spark.joins", "note", [1, 2], conn=conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT trace_id FROM traces WHERE student_id = %s AND kind = 'profile_update'"
+            " AND payload->>'action' = 'weakness_opened'",
+            (STUDENT,),
+        )
+        trace_id = cur.fetchone()[0]
+    assert wid == f"w-{trace_id}"
+
+
+def test_open_weakness_writes_a_complete_object(mem, conn):
+    wid = mem.open_weakness(STUDENT, "spark.joins", "recurring grain errors", [10, 11],
+                            conn=conn)
+    weaknesses = mem.get_profile(STUDENT, conn=conn)["weaknesses"]
+    assert len(weaknesses) == 1
+    w = weaknesses[0]
+    assert w["id"] == wid
+    assert w["concept"] == "spark.joins"
+    assert w["status"] == "open"
+    assert w["note"] == "recurring grain errors"
+    assert w["evidence"] == [10, 11]
+    assert w["interventions"] == []
+    assert "T" in w["opened_at"]                    # a real ISO timestamp, not "now"
+
+
+def test_open_weakness_truncates_the_note_to_120_chars(mem, conn):
+    wid = mem.open_weakness(STUDENT, "spark.joins", "x" * 200, [1], conn=conn)
+    w = mem.get_profile(STUDENT, conn=conn)["weaknesses"][0]
+    assert w["id"] == wid
+    assert len(w["note"]) == 120
+
+
+def test_two_opens_do_not_clobber_each_other(mem, conn):
+    """The SQL-merge property, for weaknesses instead of mastery."""
+    w1 = mem.open_weakness(STUDENT, "spark.joins", "n1", [1], conn=conn)
+    w2 = mem.open_weakness(STUDENT, "sql.joins", "n2", [2], conn=conn)
+    ids = {w["id"] for w in mem.get_profile(STUDENT, conn=conn)["weaknesses"]}
+    assert ids == {w1, w2}
+
+
+# ---------- apply_recurrence_rule ----------
+#
+# error_class strings below are chosen to match real collectors/error_classifier.py RULES
+# entries (e.g. "ambiguous column" -> spark.joins, "cartesian product|cross join" ->
+# spark.joins) for realism, without calling the classifier itself -- that module has its
+# own test suite; these tests are about apply_recurrence_rule's logic, not classification.
+
+def test_recurrence_rule_does_nothing_below_threshold(mem, conn):
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    wid = mem.apply_recurrence_rule(STUDENT, ASSIGNMENT, "ambiguous column", "spark.joins",
+                                    conn=conn)
+    assert wid is None
+    assert mem.get_profile(STUDENT, conn=conn)["weaknesses"] == []
+
+
+def test_recurrence_rule_opens_on_the_second_occurrence_of_the_same_error_class(mem, conn):
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    wid = mem.apply_recurrence_rule(STUDENT, ASSIGNMENT, "ambiguous column", "spark.joins",
+                                    conn=conn)
+    assert wid is not None
+    w = mem.get_profile(STUDENT, conn=conn)["weaknesses"][0]
+    assert w["id"] == wid
+    assert w["concept"] == "spark.joins"               # tagged by concept, triggered by error_class
+    assert len(w["evidence"]) == 2
+
+
+def test_two_different_error_classes_on_the_same_concept_do_not_recur(mem, conn):
+    """The D-011 regression test. D-009's original (wrong) reading counted by concept, so
+    two DIFFERENT error classes mapping to the same concept, once each, would have opened a
+    weakness. recurrence_check counts by error_class -- Becker's signal is the SAME mistake
+    repeating, not merely the same topic area -- so this must NOT open one."""
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    ci_run(mem, conn, "spark.joins", "failure", error_class="cartesian product|cross join")
+    assert mem.apply_recurrence_rule(
+        STUDENT, ASSIGNMENT, "ambiguous column", "spark.joins", conn=conn) is None
+    assert mem.apply_recurrence_rule(
+        STUDENT, ASSIGNMENT, "cartesian product|cross join", "spark.joins", conn=conn) is None
+    assert mem.get_profile(STUDENT, conn=conn)["weaknesses"] == []
+
+
+def test_recurrence_rule_is_idempotent(mem, conn):
+    """Safe to call after every failure, not just the one that crosses the threshold."""
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    first = mem.apply_recurrence_rule(STUDENT, ASSIGNMENT, "ambiguous column", "spark.joins",
+                                      conn=conn)
+
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    second = mem.apply_recurrence_rule(STUDENT, ASSIGNMENT, "ambiguous column", "spark.joins",
+                                       conn=conn)
+
+    assert first is not None
+    assert second is None                             # already open -- dedup, not a re-open
+    assert len(mem.get_profile(STUDENT, conn=conn)["weaknesses"]) == 1
+
+
+def test_recurrence_rule_does_not_cross_assignments(mem, conn):
+    """"Within one assignment" is the window -- one occurrence in each of two assignments
+    must not sum to a recurrence."""
+    other_assignment = "_test_mem_a2"
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO assignments (assignment_id, repo_prefix, released_at, concepts)"
+            " VALUES (%s, 'org/a2', '2026-03-02 09:00+00', ARRAY['spark.joins'])",
+            (other_assignment,),
+        )
+
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column",
+          assignment_id=ASSIGNMENT)
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column",
+          assignment_id=other_assignment)
+
+    assert mem.apply_recurrence_rule(
+        STUDENT, ASSIGNMENT, "ambiguous column", "spark.joins", conn=conn) is None
+    assert mem.apply_recurrence_rule(
+        STUDENT, other_assignment, "ambiguous column", "spark.joins", conn=conn) is None
+    assert mem.get_profile(STUDENT, conn=conn)["weaknesses"] == []
+
+
+def test_recurrence_rule_ignores_unclassified(mem, conn):
+    ci_run(mem, conn, "unclassified", "failure", error_class="totally unrecognised text")
+    ci_run(mem, conn, "unclassified", "failure", error_class="totally unrecognised text")
+    assert mem.apply_recurrence_rule(
+        STUDENT, ASSIGNMENT, "totally unrecognised text", "unclassified", conn=conn) is None
+
+
+def test_recurrence_rule_empty_error_class_short_circuits(mem, conn):
+    """An empty/falsy error_class is treated like `UNCLASSIFIED`'s guard -- nothing to
+    count, so it returns before ever querying."""
+    assert mem.apply_recurrence_rule(STUDENT, ASSIGNMENT, "", "spark.joins", conn=conn) is None
+
+
+def test_ci_run_traces_without_an_error_class_contribute_to_no_count(mem, conn):
+    """A ci_run trace logged with no error_class (nothing production writes yet, per the
+    module docstring's known gaps) must not silently satisfy a real error_class's count."""
+    ci_run(mem, conn, "spark.joins", "failure")   # error_class defaults to None
+    ci_run(mem, conn, "spark.joins", "failure")
+    wid = mem.apply_recurrence_rule(STUDENT, ASSIGNMENT, "ambiguous column", "spark.joins",
+                                    conn=conn)
+    assert wid is None
+
+
+def test_recurrence_rule_reopens_after_a_closed_weakness(mem, conn):
+    """Dedup is against OPEN weaknesses only. A concept recurring after its earlier
+    weakness closed is new evidence and gets a new weakness, not silence."""
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    first = mem.apply_recurrence_rule(STUDENT, ASSIGNMENT, "ambiguous column", "spark.joins",
+                                      conn=conn)
+
+    # No close_weakness() exists yet (piece 4 / the slow path) -- this simulates its
+    # eventual effect directly on learner_profile so this test doesn't have to wait for it.
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE learner_profile SET weaknesses = "
+            "  jsonb_set(weaknesses, '{0,status}', '\"closed\"')"
+            " WHERE student_id = %s",
+            (STUDENT,),
+        )
+
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    second = mem.apply_recurrence_rule(STUDENT, ASSIGNMENT, "ambiguous column", "spark.joins",
+                                       conn=conn)
+
+    assert second is not None
+    assert second != first
+    statuses = {w["id"]: w["status"] for w in mem.get_profile(STUDENT, conn=conn)["weaknesses"]}
+    assert statuses == {first: "closed", second: "open"}
+
+
+def test_recurrence_evidence_is_only_the_matching_error_class(mem, conn):
+    """A different error_class on the same concept, and a pass, are both noise here."""
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    ci_run(mem, conn, "spark.joins", "success", error_class=None)
+    ci_run(mem, conn, "spark.joins", "failure", error_class="cartesian product|cross join")
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    wid = mem.apply_recurrence_rule(STUDENT, ASSIGNMENT, "ambiguous column", "spark.joins",
+                                    conn=conn)
+    assert wid is not None
+    assert len(mem.get_profile(STUDENT, conn=conn)["weaknesses"][0]["evidence"]) == 2
+
+
+# ---------- link_intervention ----------
+
+def test_link_intervention_appends_the_trace_id(mem, conn):
+    wid = mem.open_weakness(STUDENT, "spark.joins", "n", [1], conn=conn)
+    hint_id = mem.log_trace(STUDENT, "coach", "intervention", {"hint": "check the join key"},
+                            concept_ids=["spark.joins"], conn=conn)
+
+    mem.link_intervention(STUDENT, wid, hint_id, conn=conn)
+
+    w = mem.get_profile(STUDENT, conn=conn)["weaknesses"][0]
+    assert w["interventions"] == [hint_id]
+
+
+def test_link_intervention_is_idempotent(mem, conn):
+    wid = mem.open_weakness(STUDENT, "spark.joins", "n", [1], conn=conn)
+    hint_id = mem.log_trace(STUDENT, "coach", "intervention", {}, conn=conn)
+
+    mem.link_intervention(STUDENT, wid, hint_id, conn=conn)
+    mem.link_intervention(STUDENT, wid, hint_id, conn=conn)
+
+    w = mem.get_profile(STUDENT, conn=conn)["weaknesses"][0]
+    assert w["interventions"] == [hint_id]           # not [hint_id, hint_id]
+
+
+def test_link_intervention_does_not_touch_other_weaknesses(mem, conn):
+    w1 = mem.open_weakness(STUDENT, "spark.joins", "n1", [1], conn=conn)
+    w2 = mem.open_weakness(STUDENT, "sql.joins", "n2", [2], conn=conn)
+    hint_id = mem.log_trace(STUDENT, "coach", "intervention", {}, conn=conn)
+
+    mem.link_intervention(STUDENT, w1, hint_id, conn=conn)
+
+    profile = mem.get_profile(STUDENT, conn=conn)
+    weaknesses = {w["id"]: w["interventions"] for w in profile["weaknesses"]}
+    assert weaknesses == {w1: [hint_id], w2: []}
+
+
+def test_link_intervention_raises_on_an_unknown_weakness_id(mem, conn):
+    """B.5 silently no-ops here. A hint recorded against a typo'd id is a broken link that
+    should fail loudly, immediately -- not days later in the reflection job's validation."""
+    with pytest.raises(ValueError, match="unknown weakness_id"):
+        mem.link_intervention(STUDENT, "w-does-not-exist", 1, conn=conn)
+
+
+def test_link_intervention_records_its_own_trace(mem, conn):
+    wid = mem.open_weakness(STUDENT, "spark.joins", "n", [1], conn=conn)
+    hint_id = mem.log_trace(STUDENT, "coach", "intervention", {}, conn=conn)
+    mem.link_intervention(STUDENT, wid, hint_id, conn=conn)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT payload, parent_trace_id FROM traces WHERE student_id = %s"
+            " AND kind = 'profile_update' AND payload->>'action' = 'intervention_linked'",
+            (STUDENT,),
+        )
+        payload, parent = cur.fetchone()
+    assert payload["weakness_id"] == wid
+    assert payload["intervention_trace_id"] == hint_id
+    assert parent == hint_id

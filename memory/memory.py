@@ -31,12 +31,31 @@ how many observations accumulated, and made the incremental and rebuild paths di
 the same events. Replay means `update_mastery` and `rebuild_mastery_from_traces` are one
 implementation, so the M2 DoD holds by construction instead of by two code paths agreeing.
 
+Piece 3 adds a fifth and sixth deviation:
+
+5. **The recurrence rule is `variables.error_frequency.recurrence_check`, called, not
+   re-implemented** -- see the comment above the recurrence-rule section for the
+   correction this went through (D-011, superseding D-009's first, incomplete reading).
+6. **A weakness's id is `w-{trace_id}` of the trace that opened it**, not B.5's
+   `f"w-{len(weaknesses)+1:03d}"` counter, which two concurrent opens could compute
+   identically. `traces.trace_id` is a Postgres `BIGSERIAL`; collision-free by
+   construction, the same argument D-007 made for mastery, applied here to identity (D-010).
+
 Written for BUILD_PLAN 2.1. Known gaps, all deliberate and none silent:
   - `kt_params` rows are seeded but not read; see PARAM_SET for why that is currently a
     no-op and when it stops being one.
-  - The recurrence rule, `open_weakness`, `link_intervention` and the broad
-    `rebuild_from_traces` (all four profile columns) are pieces 3 and 4.
+  - Nothing yet writes real `ci_run` traces. When something does, its payload must carry
+    `conclusion`, `item_difficulty` AND `error_class` -- three requirements on piece 5 or
+    later, not two; recurrence silently sees nothing without the third.
+  - The 30-day staleness transition (`open` -> `stale`) is not implemented: it depends on
+    elapsed time regardless of new events, so it belongs to a scheduled job (like
+    `sessionize.py`'s), not the fast path. Piece 4 or later.
+  - The broad `rebuild_from_traces` (all four profile columns, not just mastery) is piece 4.
   - `verdict` traces do not feed mastery yet -- see NON_MASTERY_KINDS for the reason.
+  - `apply_recurrence_rule`'s dedup is check-then-act, not atomic against a second,
+    genuinely concurrent caller for the same student -- accepted at today's scale (one
+    fast-path writer processing one event at a time), the same category of accepted
+    limitation as V4's cohort-of-one degeneracy. Revisit if concurrent writers arrive.
 
 The reading artifact `docs/reading/2026-08-11-memory-py-method-surface.md` has the full
 method surface and the divergences found while reading B.5.
@@ -46,12 +65,14 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 # Imported rather than redefined: one definition of the sentinel, so it cannot drift.
 # error_classifier is a pure module (it imports only `re`), so this adds no I/O and no cycle.
 from collectors.error_classifier import UNCLASSIFIED
 from system import db
+from variables.error_frequency import recurrence_check
 from variables.mastery import MasteryEstimator
 
 # The trace vocabulary, as the UNION of its two authorities -- each contains something the
@@ -116,6 +137,35 @@ OUTCOME = {"success": True, "failure": False}
 # identical to BKTParams' defaults, so loading them today would change no number. That stops
 # being true the moment any row is EM-fitted -- see the module docstring's known gaps.
 PARAM_SET = "bkt_v1"
+
+# ---- The recurrence rule (D-011, correcting D-009) ---------------------------------------
+#
+# "Same error class >=2 within one assignment -> open a weakness now" is
+# `variables/error_frequency.py`'s `recurrence_check`, already transcribed from
+# VDEL_Modules_1_2_Build.md Variable 6 and cited to Becker 2016 (Repeated Error Density).
+# `apply_recurrence_rule` below calls it directly rather than re-implementing the ">=2"
+# threshold -- D-007's argument again, applied to a second piece of math: one
+# implementation of the check, not two that must be kept in agreement by hand.
+#
+# D-009 originally read "error class" as CONCEPT, reasoning that the weakness schema is
+# concept-keyed and BUILD_PLAN 2.2 says "concept". That count was wrong: it never checked
+# for an existing implementation, and `recurrence_check` -- live, tested, cited, and
+# already named in `docs/explanation.md` §7.6 as "the seam [M2] will plug into" -- counts
+# by the raw error_class string, not concept. Two error classes mapping to the SAME concept
+# ("ambiguous column", "cartesian product|cross join" -> both spark.joins) occurring once
+# each is not a recurrence under this rule, even though they share a concept: Becker's
+# signal is the SAME mistake repeating, not merely the same topic area.
+#
+# "Within one assignment" is unchanged from D-009: traces.assignment_id, not a calendar
+# span -- CLAUDE.md's assignments.concepts[] already scopes concepts per assignment, and
+# no document specifies a duration.
+#
+# The resulting weakness is still concept-tagged (the schema has no error_class field);
+# only the trigger's counting key changed.
+
+# B.5's own cap on a weakness's `note` (`note[:120]`) -- named so `open_weakness`'s two
+# call sites can't drift to different numbers.
+WEAKNESS_NOTE_MAX_CHARS = 120
 
 # learner_profile's JSONB columns, and the shape get_profile guarantees to its callers.
 # Kept as a tuple because the SELECT order and the returned keys must not drift apart.
@@ -227,10 +277,14 @@ def _replay_concept(conn, student_id: str, concept: str) -> dict[str, Any] | Non
         if correct is None:
             continue          # not an assessed outcome -- see OUTCOME
         # Absent difficulty falls back to the estimator's own neutral default rather than
-        # guessing. This is a REQUIREMENT ON PIECE 3, not a description of today: nothing
-        # in the repo writes ci_run traces yet, so every such trace is currently hand-made
-        # in tests. When the fast path is wired it must write item_difficulty from the
-        # item bank, or replay silently flattens every attempt to average difficulty.
+        # guessing. This is a REQUIREMENT ON WHOEVER WIRES THE FAST PATH, not a description
+        # of today: nothing in the repo writes ci_run traces yet, so every such trace is
+        # currently hand-made in tests. That writer must set item_difficulty from the item
+        # bank (this function) AND assignment_id (apply_recurrence_rule's window) AND
+        # error_class (apply_recurrence_rule's counting key) -- three payload fields this
+        # module depends on, none of them optional in practice even though the schema
+        # allows all three to be absent. Absent difficulty flattens replay to the estimator's
+        # default; absent assignment_id or error_class makes a real recurrence invisible.
         difficulty = (payload or {}).get("item_difficulty", 0.5)
         result = est.update(concept, correct, difficulty)
 
@@ -269,6 +323,106 @@ def _concepts_with_evidence(conn, student_id: str) -> list[str]:
             (student_id, sorted(MASTERY_TRACE_KINDS)),
         )
         return [row[0] for row in cur.fetchall() if row[0] != UNCLASSIFIED]
+
+
+def _failure_evidence_by_error_class(conn, student_id: str,
+                                     assignment_id: str) -> dict[str, list[int]]:
+    """This assignment's `ci_run` failures, grouped by `error_class`, oldest first.
+
+    One query for the whole assignment rather than one per error_class: `recurrence_check`
+    wants a full `{error_class: count}` dict anyway, and this shape gives both the counts
+    (via `len`) and each qualifying class's evidence trace_ids from a single pass.
+
+    Traces without an `error_class` in their payload (nothing currently writes real
+    `ci_run` traces -- see the module docstring) contribute to no count; there is nothing
+    to attribute them to. Reuses `MASTERY_TRACE_KINDS`/`OUTCOME` rather than a second
+    definition of "what counts as a failure" for this purpose.
+
+    ALSO REQUIRES `assignment_id` ON THE TRACE ITSELF, not just in payload: a `ci_run`
+    trace logged without one will silently never count toward any assignment's recurrence,
+    the same caution as `item_difficulty` in `_replay_concept`.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT trace_id, payload FROM traces
+            WHERE student_id = %s AND assignment_id = %s AND kind = ANY(%s)
+            ORDER BY ts, trace_id
+            """,
+            (student_id, assignment_id, sorted(MASTERY_TRACE_KINDS)),
+        )
+        rows = cur.fetchall()
+
+    grouped: dict[str, list[int]] = {}
+    for trace_id, payload in rows:
+        payload = payload or {}
+        if OUTCOME.get(payload.get("conclusion")) is False:
+            error_class = payload.get("error_class")
+            if error_class:
+                grouped.setdefault(error_class, []).append(trace_id)
+    return grouped
+
+
+def _has_open_weakness(conn, student_id: str, concept: str) -> bool:
+    profile = _select_profile(conn, student_id)
+    return any(w["concept"] == concept and w["status"] == "open"
+               for w in profile["weaknesses"])
+
+
+def _append_weakness(conn, student_id: str, weakness: dict) -> None:
+    """SQL-side array append, matching `_merge_mastery`'s reasoning: a Python
+    read-modify-write of the whole `weaknesses` array would make two concurrent opens for
+    different concepts race, with the slower write silently discarding the faster one's.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO learner_profile (student_id, weaknesses)
+            VALUES (%s, %s::jsonb)
+            ON CONFLICT (student_id) DO UPDATE
+            SET weaknesses = learner_profile.weaknesses || EXCLUDED.weaknesses,
+                updated_at = now()
+            """,
+            (student_id, json.dumps([weakness])),
+        )
+
+
+def _link_intervention_sql(conn, student_id: str, weakness_id: str,
+                           intervention_trace_id: int) -> bool:
+    """Atomic: find `weakness_id` inside the JSONB array and append to its
+    `interventions` sub-array, entirely in one SQL statement rather than a Python
+    read-modify-write -- same race `_merge_mastery`/`_append_weakness` avoid, applied to a
+    mutation *inside* one array element instead of the array itself.
+
+    The `WHERE ... @>` containment check means the UPDATE only touches a row that actually
+    contains a weakness with this id, so `cur.rowcount` doubles as "did it exist" without a
+    separate SELECT. The CASE's own containment check on `interventions` makes a second
+    call with the same ids a no-op, matching `update_mastery`'s idempotence.
+
+    Returns whether a matching weakness existed.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE learner_profile
+            SET weaknesses = (
+                    SELECT jsonb_agg(
+                        CASE WHEN elem->>'id' = %(wid)s
+                                  AND NOT (elem->'interventions' @> to_jsonb(%(tid)s::bigint))
+                             THEN jsonb_set(elem, '{interventions}',
+                                    (elem->'interventions') || to_jsonb(%(tid)s::bigint))
+                             ELSE elem
+                        END
+                    )
+                    FROM jsonb_array_elements(weaknesses) AS elem
+                ),
+                updated_at = now()
+            WHERE student_id = %(sid)s
+              AND weaknesses @> jsonb_build_array(jsonb_build_object('id', %(wid)s::text))
+            """,
+            {"wid": weakness_id, "tid": intervention_trace_id, "sid": student_id},
+        )
+        return cur.rowcount == 1
 
 
 def _select_profile(conn, student_id: str) -> dict[str, Any]:
@@ -411,3 +565,115 @@ class Memory:
                     rebuilt[concept] = shape
                     _merge_mastery(c, student_id, concept, shape)
             return rebuilt
+
+    # ---------- FAST PATH: open a weakness (the raw primitive) ----------
+    def open_weakness(self, student_id: str, concept: str, note: str,
+                      evidence_trace_ids: list[int], *, conn=None) -> str:
+        """Append a structured weakness. Unconditional -- the decision about WHEN to call
+        this belongs to `apply_recurrence_rule`; this method just does it, so it stays
+        callable directly (BUILD_PLAN 2.1 names it as one of the door's methods) without
+        forcing every caller through the recurrence rule's threshold and dedup logic.
+
+        Two deviations from B.5:
+
+        - **The id is `w-{trace_id}` of the trace this call writes**, not a
+          `len(weaknesses)+1` counter. `traces.trace_id` is a Postgres `BIGSERIAL`, so this
+          is collision-free by construction. B.5's counter is not: two concurrent opens for
+          the same student could both read the same length and mint the same id -- the same
+          category of bug replay fixed for mastery (D-007), applied here to identity instead
+          of arithmetic.
+        - **`opened_at` is a real timestamp**, not B.5's literal string `"now"`.
+
+        Logs the trace before appending the weakness, not after, precisely because the
+        weakness's own id depends on it.
+        """
+        with _session(conn) as c:
+            trace_id = _insert_trace(
+                c, student_id=student_id, actor="system", kind="profile_update",
+                payload={"action": "weakness_opened", "concept": concept,
+                         "note": note[:WEAKNESS_NOTE_MAX_CHARS],
+                         "evidence": list(evidence_trace_ids)},
+                assignment_id=None, concept_ids=[concept],
+                parent_trace_id=None, session_id=None,
+            )
+            wid = f"w-{trace_id}"
+            _append_weakness(c, student_id, {
+                "id": wid, "concept": concept, "status": "open",
+                "note": note[:WEAKNESS_NOTE_MAX_CHARS],
+                "evidence": list(evidence_trace_ids),
+                "opened_at": datetime.now(UTC).isoformat(),
+                "interventions": [],
+            })
+        return wid
+
+    # ---------- FAST PATH: the recurrence rule ----------
+    def apply_recurrence_rule(self, student_id: str, assignment_id: str,
+                              error_class: str, concept: str, *,
+                              conn=None) -> str | None:
+        """The same `error_class` recurring within one assignment opens a weakness.
+
+        Wired to `variables.error_frequency.recurrence_check` -- the module-level comment
+        above explains why this call exists instead of a second ">=2" check, and what
+        changed from this method's first draft (D-011, correcting D-009).
+
+        Takes BOTH `error_class` and `concept` because a caller always has both together:
+        they are `collectors.error_classifier.classify_error()`'s return value, produced
+        by classifying the one failure that just happened. `error_class` decides whether
+        this is a recurrence; `concept` is what the resulting weakness gets tagged with,
+        since the weakness schema has no `error_class` field.
+
+        Deduplicates against any currently-**open** weakness for the concept -- not
+        closed, escalated or stale ones. A concept recurring after its weakness was closed
+        is new evidence, not a repeat of old evidence, and deserves a new weakness.
+
+        **Idempotent**, deliberately: calling it after every failure (not just the one that
+        first crosses the threshold) is safe, because it no-ops once a weakness is already
+        open. That lets the fast path call it unconditionally rather than tracking whether
+        it already fired for this student and concept.
+
+        Returns the newly opened weakness's id, or `None` if nothing changed this call:
+        the concept is unclassified, `error_class` hasn't recurred yet, or a weakness for
+        the concept is already open.
+        """
+        if concept == UNCLASSIFIED or not error_class:
+            return None
+        with _session(conn) as c:
+            if _has_open_weakness(c, student_id, concept):
+                return None
+            grouped = _failure_evidence_by_error_class(c, student_id, assignment_id)
+            counts = {ec: len(ids) for ec, ids in grouped.items()}
+            if error_class not in recurrence_check(counts):
+                return None
+            evidence = grouped[error_class]
+            note = f"{len(evidence)}x {error_class!r} in assignment {assignment_id}"
+            return self.open_weakness(student_id, concept, note, evidence, conn=c)
+
+    # ---------- Close the loop: link a coach hint to the weakness it targeted ----------
+    def link_intervention(self, student_id: str, weakness_id: str,
+                          intervention_trace_id: int, *, conn=None) -> None:
+        """Record that a coach hint targeted a weakness.
+
+        This is the array (`weaknesses[i].interventions`) that makes "after we intervened,
+        did verdicts on that concept improve?" answerable later -- the reflection job's
+        golden question (Modules_3_9 B.4). Without this link, "we gave 40 hints" and "did
+        they work" are two different, disconnected claims.
+
+        **Raises if `weakness_id` does not exist**, rather than silently doing nothing as
+        B.5 does: its loop falls through on no match with no error, and still re-writes an
+        unchanged `weaknesses` array. A hint recorded against a typo'd weakness id is a
+        broken link that would otherwise surface only when the reflection job's own
+        validation catches it, days later.
+        """
+        with _session(conn) as c:
+            found = _link_intervention_sql(c, student_id, weakness_id, intervention_trace_id)
+            if not found:
+                raise ValueError(
+                    f"unknown weakness_id {weakness_id!r} for student {student_id!r}"
+                )
+            _insert_trace(
+                c, student_id=student_id, actor="system", kind="profile_update",
+                payload={"action": "intervention_linked", "weakness_id": weakness_id,
+                         "intervention_trace_id": intervention_trace_id},
+                assignment_id=None, concept_ids=None,
+                parent_trace_id=intervention_trace_id, session_id=None,
+            )
