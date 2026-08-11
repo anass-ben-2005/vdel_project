@@ -11,6 +11,10 @@ htmlcov/
 .DS_Store
 *.log
 
+# Real personal data: student's GitHub username and repo names (BUILD_PLAN 1.2). The
+# template, config/roster.example.yaml, stays tracked -- same split as .env/.env.example.
+config/roster.yaml
+
 # Internal source-of-truth design documents and generated explainer. Kept locally as
 # the authority every formula in variables/ is transcribed from and reviewed against,
 # but not meant for the public repo.
