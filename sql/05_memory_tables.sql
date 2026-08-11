@@ -27,14 +27,25 @@ CREATE TABLE IF NOT EXISTS sessions (
   student_id  TEXT NOT NULL REFERENCES students(student_id),
   started_at  TIMESTAMPTZ NOT NULL,
   ended_at    TIMESTAMPTZ,
-  trace_count INT NOT NULL DEFAULT 0
+  trace_count INT NOT NULL DEFAULT 0,
+  summary     TEXT          -- NULL until the compression job fills it (M2.3)
 );
 
 CREATE TABLE IF NOT EXISTS learner_profile (
-  student_id   TEXT PRIMARY KEY REFERENCES students(student_id),
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  mastery      JSONB NOT NULL DEFAULT '{}',
-  weaknesses   JSONB NOT NULL DEFAULT '[]',
-  reflections  JSONB NOT NULL DEFAULT '[]',
-  features_ref TIMESTAMPTZ   -- pointer to the learner_features row it was built from
+  student_id     TEXT PRIMARY KEY REFERENCES students(student_id),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  mastery        JSONB NOT NULL DEFAULT '{}',
+  weaknesses     JSONB NOT NULL DEFAULT '[]',
+  reflections    JSONB NOT NULL DEFAULT '[]',
+  session_digest JSONB NOT NULL DEFAULT '[]',  -- pointers to recent session summaries
+  features_ref   TIMESTAMPTZ   -- pointer to the learner_features row it was built from
 );
+
+-- The two columns above were missing from this file while Modules_3_9 B.4 declares them,
+-- B.5 reads session_digest, B.6 writes sessions.summary, and the complete design document
+-- lists both. Three sources against two makes it a transcription gap here rather than a
+-- design decision (DECISIONS.md D-008). CREATE TABLE IF NOT EXISTS does nothing to an
+-- existing table, so the columns are also added explicitly for databases built before this
+-- commit. Both statements are idempotent; running init_db twice changes nothing.
+ALTER TABLE sessions        ADD COLUMN IF NOT EXISTS summary        TEXT;
+ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS session_digest JSONB NOT NULL DEFAULT '[]';

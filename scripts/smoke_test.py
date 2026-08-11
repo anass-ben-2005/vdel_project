@@ -24,6 +24,17 @@ EXPECTED_TABLES = [
 ]
 
 
+# Deliberately NOT an exhaustive column list -- each table's DDL owns its own shape. These
+# are the columns that exist because of a recorded decision and whose absence is silent: a
+# missing table fails loudly on the next query, a missing column fails only when the one
+# code path that reads it finally runs. Both were absent from sql/05 while three other
+# sources declared them (DECISIONS.md D-008).
+EXPECTED_COLUMNS = {
+    "learner_profile": ["session_digest"],
+    "sessions": ["summary"],
+}
+
+
 def check_tables(cur) -> list[str]:
     """Return the list of failures (empty means pass)."""
     cur.execute(
@@ -32,6 +43,21 @@ def check_tables(cur) -> list[str]:
     present = {row[0] for row in cur.fetchall()}
     missing = [t for t in EXPECTED_TABLES if t not in present]
     return [f"missing table: {t}" for t in missing]
+
+
+def check_columns(cur) -> list[str]:
+    """Columns that are load-bearing for a documented decision (see EXPECTED_COLUMNS)."""
+    cur.execute(
+        "SELECT table_name, column_name FROM information_schema.columns"
+        " WHERE table_schema = 'public'"
+    )
+    present = {(t, c) for t, c in cur.fetchall()}
+    return [
+        f"missing column: {table}.{column}"
+        for table, columns in EXPECTED_COLUMNS.items()
+        for column in columns
+        if (table, column) not in present
+    ]
 
 
 def check_traces_append_only(cur) -> list[str]:
@@ -70,6 +96,7 @@ def main() -> int:
     with db.dry_run_cursor() as cur:  # never commits
         failures += check_tables(cur)
         if not failures:
+            failures += check_columns(cur)
             failures += check_traces_append_only(cur)
 
     if failures:
@@ -77,7 +104,9 @@ def main() -> int:
             print(f"FAIL  {f}")
         return 1
 
+    n_columns = sum(len(c) for c in EXPECTED_COLUMNS.values())
     print(f"OK    {len(EXPECTED_TABLES)} tables present")
+    print(f"OK    {n_columns} decision-bearing columns present")
     print("OK    traces rejects UPDATE and DELETE")
     return 0
 
