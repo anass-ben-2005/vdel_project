@@ -16,7 +16,7 @@ from contextlib import contextmanager
 import pytest
 
 from memory import memory as mm
-from memory.memory import Memory
+from memory.memory import REFLECTIONS_MAX, SESSION_DIGEST_MAX, Memory
 from system import db
 
 STUDENT = "_test_mem"
@@ -676,6 +676,315 @@ def test_link_intervention_raises_on_an_unknown_weakness_id(mem, conn):
     should fail loudly, immediately -- not days later in the reflection job's validation."""
     with pytest.raises(ValueError, match="unknown weakness_id"):
         mem.link_intervention(STUDENT, "w-does-not-exist", 1, conn=conn)
+
+
+# ---------- rebuild_from_traces: the full event-sourcing proof ----------
+
+def reflection(mem, conn, note, weaknesses_update=None):
+    """Log a reflection_run trace -- what memory/reflection.py will write when it exists."""
+    payload = {"reflection": note, "weaknesses_update": weaknesses_update or []}
+    return mem.log_trace(STUDENT, "system", "reflection_run", payload, conn=conn)
+
+
+def fast_path_history(mem, conn):
+    """Build profile state using ONLY components whose live writer exists today.
+
+    Deliberately excludes reflections, session_digest and weakness status transitions:
+    their live writers (reflection.py, sessionize.py) are not built, so including them
+    would test round-trip identity against a premise that is currently false -- see
+    test_rebuild_derives_state_the_live_path_cannot_yet_apply.
+    """
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    mem.update_mastery(STUDENT, "spark.joins", conn=conn)
+    wid = mem.apply_recurrence_rule(STUDENT, ASSIGNMENT, "ambiguous column", "spark.joins",
+                                    conn=conn)
+    hint = mem.log_trace(STUDENT, "coach", "intervention", {"hint": "check join key"},
+                         conn=conn)
+    mem.link_intervention(STUDENT, wid, hint, conn=conn)
+    ci_run(mem, conn, "sql.joins", "success", difficulty=0.8)
+    mem.update_mastery(STUDENT, "sql.joins", conn=conn)
+    return wid, hint
+
+
+def test_wipe_and_replay_reproduces_the_profile_identically(mem, conn):
+    """THE M2 DoD. Wipe learner_profile, replay the log, get the identical profile back.
+
+    Holds for every column whose live writer exists. That is what makes any grade built on
+    this profile defensible: the numbers are a consequence of recorded events, not a
+    mutable blob anyone has to trust.
+    """
+    fast_path_history(mem, conn)
+    before = mem.get_profile(STUDENT, conn=conn)
+
+    with conn.cursor() as cur:                       # the wipe
+        cur.execute("DELETE FROM learner_profile WHERE student_id = %s", (STUDENT,))
+    assert mem.get_profile(STUDENT, conn=conn) == {
+        "mastery": {}, "weaknesses": [], "reflections": [], "session_digest": []
+    }
+
+    mem.rebuild_from_traces(STUDENT, conn=conn)
+    assert mem.get_profile(STUDENT, conn=conn) == before
+
+
+def test_rebuild_preserves_weakness_identity_and_links(mem, conn):
+    """Ids, opened_at, evidence and intervention links all survive -- if any of them
+    changed, every reference recorded against a weakness would point at nothing."""
+    wid, hint = fast_path_history(mem, conn)
+    before = mem.get_profile(STUDENT, conn=conn)["weaknesses"]
+
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM learner_profile WHERE student_id = %s", (STUDENT,))
+    mem.rebuild_from_traces(STUDENT, conn=conn)
+
+    after = mem.get_profile(STUDENT, conn=conn)["weaknesses"]
+    assert after == before
+    assert after[0]["id"] == wid
+    assert after[0]["interventions"] == [hint]
+    assert len(after[0]["evidence"]) == 2
+
+
+def test_opened_at_comes_from_the_trace_not_the_python_clock(mem, conn):
+    """D-013. traces.ts is the database clock; datetime.now() lands milliseconds away, and
+    a rebuild can only recover opened_at FROM the trace -- so the live path has to use the
+    trace's ts or the two disagree in exactly that field."""
+    wid = mem.open_weakness(STUDENT, "spark.joins", "n", [1], conn=conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT ts FROM traces WHERE trace_id = %s", (int(wid.removeprefix("w-")),))
+        trace_ts = cur.fetchone()[0]
+    opened_at = mem.get_profile(STUDENT, conn=conn)["weaknesses"][0]["opened_at"]
+    assert opened_at == trace_ts.isoformat()
+
+
+def test_rebuild_is_authoritative_and_drops_unjustified_state(mem, conn):
+    """A full replace, not a merge: state the log does not justify must disappear. Merging
+    would preserve exactly the rows a rebuild exists to expose."""
+    fast_path_history(mem, conn)
+    with conn.cursor() as cur:                       # smuggle in unjustifiable state
+        cur.execute(
+            "UPDATE learner_profile SET mastery = mastery || %s::jsonb,"
+            " weaknesses = weaknesses || %s::jsonb WHERE student_id = %s",
+            (json.dumps({"airflow.idempotency": {"p_mastery": 0.99, "n": 99}}),
+             json.dumps([{"id": "w-fake", "concept": "py.testing", "status": "open",
+                          "note": "invented", "evidence": [], "opened_at": "whenever",
+                          "interventions": []}]),
+             STUDENT),
+        )
+    smuggled = mem.get_profile(STUDENT, conn=conn)
+    assert "airflow.idempotency" in smuggled["mastery"]
+
+    mem.rebuild_from_traces(STUDENT, conn=conn)
+
+    rebuilt = mem.get_profile(STUDENT, conn=conn)
+    assert "airflow.idempotency" not in rebuilt["mastery"]
+    assert [w["id"] for w in rebuilt["weaknesses"]] == [w["id"] for w in smuggled["weaknesses"]
+                                                        if w["id"] != "w-fake"]
+
+
+def test_rebuild_writes_no_traces(mem, conn):
+    """If running the proof appended to the log, the proof would alter what it proves."""
+    fast_path_history(mem, conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM traces WHERE student_id = %s", (STUDENT,))
+        before = cur.fetchone()[0]
+
+    mem.rebuild_from_traces(STUDENT, conn=conn)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM traces WHERE student_id = %s", (STUDENT,))
+        assert cur.fetchone()[0] == before
+
+
+def test_rebuild_is_idempotent(mem, conn):
+    fast_path_history(mem, conn)
+    first = mem.rebuild_from_traces(STUDENT, conn=conn)
+    second = mem.rebuild_from_traces(STUDENT, conn=conn)
+    assert first == second
+
+
+def test_rebuild_uses_the_same_mastery_helper(mem, conn):
+    """No second implementation of the mastery mathematics (D-007): the broad rebuild and
+    the mastery-only rebuild must agree exactly."""
+    fast_path_history(mem, conn)
+    mastery_only = mem.rebuild_mastery_from_traces(STUDENT, conn=conn)
+    whole = mem.rebuild_from_traces(STUDENT, conn=conn)
+    assert whole["mastery"] == mastery_only
+
+
+def test_rebuild_writes_inside_the_callers_transaction(mem, conn):
+    """All five columns go in one statement, and that statement joins the caller's
+    transaction -- so a rebuild can never be observed half-applied, and an abandoned
+    transaction leaves the previous profile untouched."""
+    fast_path_history(mem, conn)
+    mem.rebuild_from_traces(STUDENT, conn=conn)
+    assert mem.get_profile(STUDENT, conn=conn)["mastery"] != {}
+
+    with db.connect() as other:                  # a concurrent reader sees none of it
+        assert mem.get_profile(STUDENT, conn=other) == {
+            "mastery": {}, "weaknesses": [], "reflections": [], "session_digest": []
+        }
+
+
+# ---------- rebuild: weakness status transitions ----------
+
+@pytest.mark.parametrize("action, expected", [("close", "closed"), ("escalate", "escalated")])
+def test_rebuild_applies_reflection_status_transitions(mem, conn, action, expected):
+    wid, _ = fast_path_history(mem, conn)
+    reflection(mem, conn, "note", [{"id": wid, "action": action}])
+
+    rebuilt = mem.rebuild_from_traces(STUDENT, conn=conn)
+
+    assert rebuilt["weaknesses"][0]["status"] == expected
+
+
+def test_rebuild_does_not_resurrect_a_closed_weakness(mem, conn):
+    """The first of `_replay_weaknesses`'s two reasons for replaying the lifecycle log
+    instead of re-running the recurrence rule. open_weakness only ever writes status=open,
+    so a pure re-derivation would reopen everything that had been closed."""
+    wid, _ = fast_path_history(mem, conn)
+    reflection(mem, conn, "resolved", [{"id": wid, "action": "close"}])
+
+    # More failures of the same error_class AFTER the close, which is exactly what would
+    # make a naive re-derivation open it again.
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+    ci_run(mem, conn, "spark.joins", "failure", error_class="ambiguous column")
+
+    rebuilt = mem.rebuild_from_traces(STUDENT, conn=conn)
+    statuses = [w["status"] for w in rebuilt["weaknesses"]]
+    assert statuses == ["closed"]
+
+
+def test_rebuild_applies_a_reflections_note_update(mem, conn):
+    wid, _ = fast_path_history(mem, conn)
+    reflection(mem, conn, "note", [{"id": wid, "action": "keep", "note": "still shaky"}])
+    rebuilt = mem.rebuild_from_traces(STUDENT, conn=conn)
+    assert rebuilt["weaknesses"][0]["note"] == "still shaky"
+    assert rebuilt["weaknesses"][0]["status"] == "open"      # "keep" is not a transition
+
+
+def test_a_reflection_note_is_replayed_verbatim_not_truncated(mem, conn):
+    """WEAKNESS_NOTE_MAX_CHARS is B.5's cap on the note `open_weakness` writes. A
+    reflection-driven note is a different write path: B.7 caps it at 30 WORDS inside
+    reflection.py's validation, before the trace exists, and applies no character cap when
+    storing it. Re-truncating on replay would make the rebuild disagree with the live path
+    for any note over 120 characters."""
+    wid, _ = fast_path_history(mem, conn)
+    # 20 words / 199 chars: comfortably inside B.7's 30-word cap, so reflection.py would
+    # accept it, yet past 120 chars -- which is exactly the case that used to be truncated.
+    long_note = " ".join(["cartesian-product-grain"] * 20)
+    assert len(long_note.split()) <= 30
+    assert len(long_note) > mm.WEAKNESS_NOTE_MAX_CHARS
+
+    reflection(mem, conn, "note", [{"id": wid, "action": "keep", "note": long_note}])
+    rebuilt = mem.rebuild_from_traces(STUDENT, conn=conn)
+    assert rebuilt["weaknesses"][0]["note"] == long_note
+
+
+def test_rebuild_ignores_a_reflection_naming_an_unknown_weakness(mem, conn):
+    """A rebuild is the wrong place to raise: it would make a profile whose log has one
+    inconsistency permanently unrecoverable."""
+    fast_path_history(mem, conn)
+    reflection(mem, conn, "note", [{"id": "w-nonexistent", "action": "close"}])
+    rebuilt = mem.rebuild_from_traces(STUDENT, conn=conn)
+    assert [w["status"] for w in rebuilt["weaknesses"]] == ["open"]
+
+
+# ---------- rebuild: recovered columns ----------
+
+def test_reflections_are_recovered_from_their_traces(mem, conn):
+    """Recovered, not recomputed -- an LLM wrote them, and an LLM is not a deterministic
+    function of its inputs. The trace is the record."""
+    first = reflection(mem, conn, "grasps concepts fast, skips verification")
+    reflection(mem, conn, "responds well to worked examples")
+
+    rebuilt = mem.rebuild_from_traces(STUDENT, conn=conn)
+
+    assert [r["note"] for r in rebuilt["reflections"]] == [
+        "grasps concepts fast, skips verification",
+        "responds well to worked examples",
+    ]
+    with conn.cursor() as cur:
+        cur.execute("SELECT ts FROM traces WHERE trace_id = %s", (first,))
+        assert rebuilt["reflections"][0]["ts"] == cur.fetchone()[0].isoformat()
+
+
+def test_reflections_are_capped(mem, conn):
+    for i in range(REFLECTIONS_MAX + 3):
+        reflection(mem, conn, f"note {i}")
+    rebuilt = mem.rebuild_from_traces(STUDENT, conn=conn)
+    assert len(rebuilt["reflections"]) == REFLECTIONS_MAX
+    assert rebuilt["reflections"][-1]["note"] == f"note {REFLECTIONS_MAX + 2}"   # newest kept
+
+
+def test_a_skipped_reflection_run_is_not_a_reflection(mem, conn):
+    """B.7 returns {"skipped": True} when there were no new traces to reflect on."""
+    mem.log_trace(STUDENT, "system", "reflection_run",
+                  {"skipped": True, "reason": "no new traces"}, conn=conn)
+    assert mem.rebuild_from_traces(STUDENT, conn=conn)["reflections"] == []
+
+
+def test_session_digest_is_recovered_as_trace_pointers(mem, conn):
+    ids = [mem.log_trace(STUDENT, "system", "session_summary",
+                         {"summary": f"session {i}"}, conn=conn)
+           for i in range(SESSION_DIGEST_MAX + 2)]
+    rebuilt = mem.rebuild_from_traces(STUDENT, conn=conn)
+    assert rebuilt["session_digest"] == ids[-SESSION_DIGEST_MAX:]
+
+
+def test_features_ref_is_rederived_from_learner_features(mem, conn):
+    empty = json.dumps({})
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO learner_features (student_id, computed_at, mastery,"
+            " engineering_discipline, effort_regulation, pace, error_response,"
+            " error_frequency) VALUES (%s, '2026-03-01 10:00+00', %s, %s, %s, %s, %s, %s)",
+            (STUDENT, empty, empty, empty, empty, empty, empty),
+        )
+        cur.execute(
+            "INSERT INTO learner_features (student_id, computed_at, mastery,"
+            " engineering_discipline, effort_regulation, pace, error_response,"
+            " error_frequency) VALUES (%s, '2026-03-08 10:00+00', %s, %s, %s, %s, %s, %s)",
+            (STUDENT, empty, empty, empty, empty, empty, empty),
+        )
+
+    rebuilt = mem.rebuild_from_traces(STUDENT, conn=conn)
+    assert rebuilt["features_ref"].isoformat() == "2026-03-08T10:00:00+00:00"   # the latest
+
+
+def test_features_ref_is_none_without_features(mem, conn):
+    assert mem.rebuild_from_traces(STUDENT, conn=conn)["features_ref"] is None
+
+
+def test_rebuild_derives_state_the_live_path_cannot_yet_apply(mem, conn):
+    """A documented, deliberate asymmetry, pinned so it is a known fact rather than a
+    surprise later.
+
+    `reflection.py` and `sessionize.py` do not exist, so nothing live consumes a
+    `reflection_run` or `session_summary` trace into the profile. The rebuild already does.
+    So for these columns the rebuild is AHEAD of the live path -- wipe-and-replay changes
+    the profile instead of reproducing it, and that is the rebuild being more correct than
+    the live state, not a rebuild bug.
+
+    When those components are built they must apply exactly what this rebuild derives; this
+    test is the specification for them, and it should start failing (identically, both
+    sides) once they do.
+    """
+    fast_path_history(mem, conn)
+    reflection(mem, conn, "a reflection nothing live applies")
+    mem.log_trace(STUDENT, "system", "session_summary", {"summary": "40 min"}, conn=conn)
+
+    before = mem.get_profile(STUDENT, conn=conn)
+    assert before["reflections"] == []          # the live path never applied it
+    assert before["session_digest"] == []
+
+    mem.rebuild_from_traces(STUDENT, conn=conn)
+    after = mem.get_profile(STUDENT, conn=conn)
+
+    assert len(after["reflections"]) == 1       # the rebuild does
+    assert len(after["session_digest"]) == 1
+    assert after != before
+    assert after["mastery"] == before["mastery"]        # the columns with live writers
+    assert after["weaknesses"] == before["weaknesses"]  # are unaffected
 
 
 def test_link_intervention_records_its_own_trace(mem, conn):

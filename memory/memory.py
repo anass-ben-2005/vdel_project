@@ -41,17 +41,30 @@ Piece 3 adds a fifth and sixth deviation:
    identically. `traces.trace_id` is a Postgres `BIGSERIAL`; collision-free by
    construction, the same argument D-007 made for mastery, applied here to identity (D-010).
 
+Piece 4 adds `rebuild_from_traces` -- the whole profile, not just mastery -- and a seventh
+deviation:
+
+7. **A weakness's `opened_at` and a reflection's `ts` come from their trace's own `ts`**,
+   not from `datetime.now()`. `traces.ts` defaults to the database clock; a separate Python
+   read lands milliseconds away (measured: 22ms), and since a rebuild can only recover
+   those fields FROM the trace, the two paths would disagree in exactly those fields and
+   the DoD would fail on them. D-013. B.5/B.7 write the literal string `"now"` for both.
+
 Written for BUILD_PLAN 2.1. Known gaps, all deliberate and none silent:
   - `kt_params` rows are seeded but not read; see PARAM_SET for why that is currently a
     no-op and when it stops being one.
   - Nothing yet writes real `ci_run` traces. When something does, its payload must carry
-    `conclusion`, `item_difficulty` AND `error_class` -- three requirements on piece 5 or
-    later, not two; recurrence silently sees nothing without the third.
+    `conclusion`, `item_difficulty` AND `error_class` -- three requirements on whoever
+    wires the fast path, not two; recurrence silently sees nothing without the third.
   - The 30-day staleness transition (`open` -> `stale`) is not implemented: it depends on
     elapsed time regardless of new events, so it belongs to a scheduled job (like
-    `sessionize.py`'s), not the fast path. Piece 4 or later.
-  - The broad `rebuild_from_traces` (all four profile columns, not just mastery) is piece 4.
+    `sessionize.py`'s), not to the fast path or to a rebuild. A rebuild therefore cannot
+    reproduce a `stale` status either -- when that job is built, it must write its
+    transition as a trace `_replay_weaknesses` can fold, exactly as reflection.py's
+    close/escalate already is.
   - `verdict` traces do not feed mastery yet -- see NON_MASTERY_KINDS for the reason.
+  - `SESSION_DIGEST_MAX` is a chosen number, not a transcribed one -- no document specifies
+    the N in "last N session summaries".
   - `apply_recurrence_rule`'s dedup is check-then-act, not atomic against a second,
     genuinely concurrent caller for the same student -- accepted at today's scale (one
     fast-path writer processing one event at a time), the same category of accepted
@@ -65,7 +78,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 # Imported rather than redefined: one definition of the sentinel, so it cannot drift.
@@ -167,6 +180,23 @@ PARAM_SET = "bkt_v1"
 # call sites can't drift to different numbers.
 WEAKNESS_NOTE_MAX_CHARS = 120
 
+# B.7's `reflections[-5:]` ("cap at 5, MERGE-don't-append discipline").
+REFLECTIONS_MAX = 5
+
+# `session_digest` holds "pointers to the last N session summaries"
+# (vdel_complete_design_document.md 2.4). **N is nowhere specified.** 5 is chosen to match
+# REFLECTIONS_MAX rather than derived from anything -- flagged as a choice, not a
+# transcription, because an unstated number that looks transcribed is exactly what this
+# project's conventions forbid. The same section calls session_digest "just a cache ...
+# safe to rebuild, never authoritative", which is what sanctions rebuilding it at all.
+SESSION_DIGEST_MAX = 5
+
+# The `payload.action` values `profile_update` traces carry. update_mastery's
+# profile_update deliberately has NO action key, which is how _replay_weaknesses filters it
+# out; these two are the weakness lifecycle's own events.
+WEAKNESS_OPENED = "weakness_opened"
+INTERVENTION_LINKED = "intervention_linked"
+
 # learner_profile's JSONB columns, and the shape get_profile guarantees to its callers.
 # Kept as a tuple because the SELECT order and the returned keys must not drift apart.
 _PROFILE_COLUMNS = ("mastery", "weaknesses", "reflections", "session_digest")
@@ -207,20 +237,32 @@ def _require(value: str, allowed: frozenset[str], field: str) -> None:
         )
 
 
-def _insert_trace(conn, **fields) -> int:
+def _insert_trace(conn, **fields) -> tuple[int, datetime]:
+    """Append one trace. Returns `(trace_id, ts)`.
+
+    `ts` is returned, not just `trace_id`, because two things derive their own timestamps
+    from a trace rather than from Python's clock: a weakness's `opened_at` and a
+    reflection's `ts`. `traces.ts` defaults to the database's `now()`, so a caller reading
+    `datetime.now()` separately lands milliseconds away -- measured at 22ms -- and
+    `rebuild_from_traces`, which can only recover those fields FROM the trace, would then
+    reproduce a profile that differs in exactly those fields. Taking both from the same
+    RETURNING makes the live path and the rebuild agree by construction (D-013), the same
+    argument D-007 made for mastery.
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO traces (parent_trace_id, session_id, student_id, actor,
                                 kind, assignment_id, concept_ids, payload)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING trace_id
+            RETURNING trace_id, ts
             """,
             (fields["parent_trace_id"], fields["session_id"], fields["student_id"],
              fields["actor"], fields["kind"], fields["assignment_id"],
              list(fields["concept_ids"] or []), json.dumps(fields["payload"])),
         )
-        return cur.fetchone()[0]
+        trace_id, ts = cur.fetchone()
+        return trace_id, ts
 
 
 def _stored_shape(result: dict) -> dict[str, Any]:
@@ -289,6 +331,21 @@ def _replay_concept(conn, student_id: str, concept: str) -> dict[str, Any] | Non
         result = est.update(concept, correct, difficulty)
 
     return _stored_shape(result) if result is not None else None
+
+
+def _replay_all_mastery(conn, student_id: str) -> dict[str, dict[str, Any]]:
+    """The whole mastery vector, recomputed from the log. Writes nothing.
+
+    THE mastery-only helper: `rebuild_mastery_from_traces` and `rebuild_from_traces` both
+    call this rather than either one re-deriving the vector, so there is exactly one
+    implementation of "replay every concept" just as `_replay_concept` is the one
+    implementation of "replay one concept".
+    """
+    return {
+        concept: shape
+        for concept in _concepts_with_evidence(conn, student_id)
+        if (shape := _replay_concept(conn, student_id, concept)) is not None
+    }
 
 
 def _merge_mastery(conn, student_id: str, concept: str, shape: dict[str, Any]) -> None:
@@ -425,6 +482,198 @@ def _link_intervention_sql(conn, student_id: str, weakness_id: str,
         return cur.rowcount == 1
 
 
+def _replay_weaknesses(conn, student_id: str) -> list[dict[str, Any]]:
+    """Rebuild the weaknesses array by replaying its own lifecycle traces.
+
+    **Replayed from the lifecycle log, NOT re-derived by re-running the recurrence rule**
+    (D-012). Re-running the rule would be wrong for two concrete reasons, not stylistic
+    ones:
+
+      1. **It would resurrect closed weaknesses.** `open_weakness` only ever writes
+         `status="open"`; closing and escalating happen later, from an LLM reflection. A
+         pure re-derivation has no way to know a weakness was closed, so every closed one
+         would come back open -- a correctness bug, not a philosophical nicety.
+      2. **It would change every id.** `w-{trace_id}` is tied to the trace that opened it.
+         Re-deriving means writing new traces, so new ids -- and `interventions` entries,
+         `reflection_run` payloads, and any coach hint already recorded against a weakness
+         would all point at ids that no longer exist. The audit trail would break.
+
+    So the three trace kinds that MUTATE a weakness are folded in one pass, in (ts,
+    trace_id) order, because they interleave: a reflection can close one weakness between
+    two others being opened.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT trace_id, ts, kind, payload FROM traces
+            WHERE student_id = %s
+              AND ((kind = 'profile_update' AND payload->>'action' = ANY(%s))
+                   OR kind = 'reflection_run')
+            ORDER BY ts, trace_id
+            """,
+            (student_id, [WEAKNESS_OPENED, INTERVENTION_LINKED]),
+        )
+        rows = cur.fetchall()
+
+    weaknesses: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+
+    for trace_id, ts, kind, payload in rows:
+        payload = payload or {}
+
+        if kind == "reflection_run":
+            # B.7's status transitions. Unknown ids are skipped rather than raising:
+            # reflection.py validates against existing_weakness_ids before writing, so a
+            # miss here means the log is describing a weakness this replay has not reached,
+            # which is a real inconsistency to surface -- but a rebuild is the wrong place
+            # to raise, because it would make an unreadable profile unrecoverable.
+            for update in payload.get("weaknesses_update", []):
+                weakness = by_id.get(update.get("id"))
+                if weakness is None:
+                    continue
+                action = update.get("action")
+                if action == "close":
+                    weakness["status"] = "closed"
+                elif action == "escalate":
+                    weakness["status"] = "escalated"
+                if update.get("note"):
+                    # NOT truncated to WEAKNESS_NOTE_MAX_CHARS. That cap is B.5's, and it
+                    # governs the note `open_weakness` writes. A reflection-driven note is a
+                    # different write path with a different documented constraint -- B.7
+                    # caps it at 30 WORDS, in reflection.py's own validation, before the
+                    # trace is ever written -- and B.7's application logic applies no
+                    # character cap at all. Re-truncating here would make the rebuild
+                    # disagree with the live path for any note over 120 chars, which is the
+                    # exact failure D-013 fixed one field over.
+                    weakness["note"] = update["note"]
+            continue
+
+        if payload.get("action") == WEAKNESS_OPENED:
+            weakness = {
+                "id": f"w-{trace_id}",
+                "concept": payload["concept"],
+                "status": "open",
+                "note": payload["note"],
+                "evidence": list(payload.get("evidence") or []),
+                "opened_at": ts.isoformat(),
+                "interventions": [],
+            }
+            weaknesses.append(weakness)
+            by_id[weakness["id"]] = weakness
+
+        elif payload.get("action") == INTERVENTION_LINKED:
+            weakness = by_id.get(payload.get("weakness_id"))
+            intervention = payload.get("intervention_trace_id")
+            # The same containment guard the live SQL applies, so replaying a
+            # double-linked intervention stays idempotent here too.
+            if weakness is not None and intervention not in weakness["interventions"]:
+                weakness["interventions"].append(intervention)
+
+    return weaknesses
+
+
+def _recover_reflections(conn, student_id: str) -> list[dict[str, Any]]:
+    """Read reflections back out of their `reflection_run` traces.
+
+    **Recovered, not recomputed** -- an LLM wrote them and an LLM is not a deterministic
+    function of its inputs. The trace IS the record; there is nothing to recompute. This is
+    the honest limit of "the profile is a pure projection of the log", and stating it is
+    stronger than pretending the whole profile is deterministic.
+
+    `ts` comes from the trace's own column. B.7's live code writes the literal string
+    `"now"` there, which is a bug in the same family as `opened_at`'s -- when
+    `memory/reflection.py` is built it must take `ts` from the trace, or a rebuild will
+    disagree with it (D-013).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT ts, payload FROM traces
+            WHERE student_id = %s AND kind = 'reflection_run'
+            ORDER BY ts, trace_id
+            """,
+            (student_id,),
+        )
+        rows = cur.fetchall()
+
+    recovered = [
+        {"ts": ts.isoformat(), "note": (payload or {})["reflection"]}
+        for ts, payload in rows
+        # A run that produced no reflection (B.7 returns {"skipped": True} when there are
+        # no new traces) is not a reflection to recover.
+        if (payload or {}).get("reflection")
+    ]
+    return recovered[-REFLECTIONS_MAX:]
+
+
+def _recover_session_digest(conn, student_id: str) -> list[int]:
+    """Pointers to the last N `session_summary` traces.
+
+    The design document calls this "pointers to the last N session summaries (which
+    physically live as traces)" and, decisively for rebuilding it, "just a cache ... safe
+    to rebuild, never authoritative". Trace ids ARE the pointers -- the same document calls
+    a trace_id "a clickable foreign key, not vague prose" -- so the minimal faithful shape
+    is a list of them, rather than a richer structure no document asks for.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT trace_id FROM traces
+            WHERE student_id = %s AND kind = 'session_summary'
+            ORDER BY ts, trace_id
+            """,
+            (student_id,),
+        )
+        return [row[0] for row in cur.fetchall()][-SESSION_DIGEST_MAX:]
+
+
+def _rederive_features_ref(conn, student_id: str) -> datetime | None:
+    """The latest `learner_features` row's `computed_at`, which is what the column means.
+
+    Neither recomputed from traces nor recovered from one: `learner_features` is a separate
+    table that the M1 feature job owns, and this column is a pointer into it (CLAUDE.md 6:
+    "pointer to latest learner_features row"). Re-deriving it is a one-row query.
+
+    Nothing writes this column yet -- so on today's data it is NULL before a rebuild and
+    NULL after, unless a learner_features row exists. Rebuilding it anyway keeps
+    `rebuild_from_traces` total over all five columns, which is what the M2 DoD claims.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT max(computed_at) FROM learner_features WHERE student_id = %s",
+            (student_id,),
+        )
+        return cur.fetchone()[0]
+
+
+def _write_whole_profile(conn, student_id: str, profile: dict[str, Any]) -> None:
+    """Replace every profile column outright. The "wipe" half of wipe-and-replay.
+
+    A full replace, not the per-key `||` merge the fast path uses: a rebuild is
+    authoritative about the entire row, so a concept or weakness that the log does NOT
+    justify must DISAPPEAR. Merging would leave exactly the unjustifiable rows a rebuild
+    exists to expose.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO learner_profile
+                (student_id, mastery, weaknesses, reflections, session_digest, features_ref)
+            VALUES (%s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s)
+            ON CONFLICT (student_id) DO UPDATE
+            SET mastery        = EXCLUDED.mastery,
+                weaknesses     = EXCLUDED.weaknesses,
+                reflections    = EXCLUDED.reflections,
+                session_digest = EXCLUDED.session_digest,
+                features_ref   = EXCLUDED.features_ref,
+                updated_at     = now()
+            """,
+            (student_id, json.dumps(profile["mastery"]),
+             json.dumps(profile["weaknesses"]), json.dumps(profile["reflections"]),
+             json.dumps(profile["session_digest"]), profile["features_ref"]),
+        )
+
+
 def _select_profile(conn, student_id: str) -> dict[str, Any]:
     with conn.cursor() as cur:
         cur.execute(
@@ -464,11 +713,12 @@ class Memory:
         _require(actor, ACTORS, "actor")
         _require(kind, KINDS, "kind")
         with _session(conn) as c:
-            return _insert_trace(
+            trace_id, _ts = _insert_trace(
                 c, student_id=student_id, actor=actor, kind=kind, payload=payload,
                 assignment_id=assignment_id, concept_ids=concept_ids,
                 parent_trace_id=parent_trace_id, session_id=session_id,
             )
+            return trace_id
 
     # ---------- READ: current belief ----------
     def get_profile(self, student_id: str, *, conn=None) -> dict[str, Any]:
@@ -558,12 +808,51 @@ class Memory:
         deterministic function.
         """
         with _session(conn) as c:
-            rebuilt: dict[str, dict[str, Any]] = {}
-            for concept in _concepts_with_evidence(c, student_id):
-                shape = _replay_concept(c, student_id, concept)
-                if shape is not None:
-                    rebuilt[concept] = shape
-                    _merge_mastery(c, student_id, concept, shape)
+            rebuilt = _replay_all_mastery(c, student_id)
+            for concept, shape in rebuilt.items():
+                _merge_mastery(c, student_id, concept, shape)
+            return rebuilt
+
+    # ---------- AUDIT: the full event-sourcing proof ----------
+    def rebuild_from_traces(self, student_id: str, *, conn=None) -> dict[str, Any]:
+        """Rebuild the ENTIRE profile from the log. The M2 DoD: wipe `learner_profile`,
+        replay, get the identical profile back.
+
+        Every column is authoritative-from-the-log, but they get there four different ways,
+        and the distinction is the honest part of the claim (D-012):
+
+        | column           | how                | why that way                            |
+        |------------------|--------------------|-----------------------------------------|
+        | `mastery`        | **recomputed**     | BKT over `ci_run` traces -- a pure       |
+        |                  |                    | function, so first principles work       |
+        | `weaknesses`     | **replayed**       | from their own lifecycle traces, not by  |
+        |                  |                    | re-running the recurrence rule -- see    |
+        |                  |                    | `_replay_weaknesses` for the two reasons |
+        | `reflections`    | **recovered**      | an LLM wrote them; nothing to recompute  |
+        | `session_digest` | **recovered**      | pointers to `session_summary` traces     |
+        | `features_ref`   | **re-derived**     | a pointer into `learner_features`        |
+
+        Calls `_replay_all_mastery`, the same helper `rebuild_mastery_from_traces` uses --
+        one implementation of the mastery mathematics, per D-007.
+
+        Writes NO traces, for the reason `rebuild_mastery_from_traces` gives: a rebuild
+        recomputes what the log already implies. If running the proof appended to the log,
+        the proof would alter the thing it is proving.
+
+        Idempotent, and everything happens in ONE transaction, so a failure part-way leaves
+        the profile as it was rather than half-rebuilt.
+
+        Returns the rebuilt profile: `get_profile`'s four keys plus `features_ref`.
+        """
+        with _session(conn) as c:
+            rebuilt = {
+                "mastery": _replay_all_mastery(c, student_id),
+                "weaknesses": _replay_weaknesses(c, student_id),
+                "reflections": _recover_reflections(c, student_id),
+                "session_digest": _recover_session_digest(c, student_id),
+                "features_ref": _rederive_features_ref(c, student_id),
+            }
+            _write_whole_profile(c, student_id, rebuilt)
             return rebuilt
 
     # ---------- FAST PATH: open a weakness (the raw primitive) ----------
@@ -588,9 +877,9 @@ class Memory:
         weakness's own id depends on it.
         """
         with _session(conn) as c:
-            trace_id = _insert_trace(
+            trace_id, ts = _insert_trace(
                 c, student_id=student_id, actor="system", kind="profile_update",
-                payload={"action": "weakness_opened", "concept": concept,
+                payload={"action": WEAKNESS_OPENED, "concept": concept,
                          "note": note[:WEAKNESS_NOTE_MAX_CHARS],
                          "evidence": list(evidence_trace_ids)},
                 assignment_id=None, concept_ids=[concept],
@@ -601,7 +890,8 @@ class Memory:
                 "id": wid, "concept": concept, "status": "open",
                 "note": note[:WEAKNESS_NOTE_MAX_CHARS],
                 "evidence": list(evidence_trace_ids),
-                "opened_at": datetime.now(UTC).isoformat(),
+                # From the trace's own ts, not datetime.now() -- see _insert_trace (D-013).
+                "opened_at": ts.isoformat(),
                 "interventions": [],
             })
         return wid
@@ -672,7 +962,7 @@ class Memory:
                 )
             _insert_trace(
                 c, student_id=student_id, actor="system", kind="profile_update",
-                payload={"action": "intervention_linked", "weakness_id": weakness_id,
+                payload={"action": INTERVENTION_LINKED, "weakness_id": weakness_id,
                          "intervention_trace_id": intervention_trace_id},
                 assignment_id=None, concept_ids=None,
                 parent_trace_id=intervention_trace_id, session_id=None,
