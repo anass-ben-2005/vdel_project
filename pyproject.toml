@@ -25,6 +25,15 @@ python_functions = "test_*"
 [tool.ruff]
 line-length = 100
 
+# benchmark/submissions/ holds deliberately-flawed fixtures (BUILD_PLAN 3.2): an undefined
+# name, a wildcard import, a dead import -- planted on purpose so the M4 tool stage has real
+# findings to hand a judge. Excluded here from directory *discovery* only -- ruff does not
+# apply `exclude`/`extend-exclude` to a path given explicitly on the command line unless
+# `force-exclude = true` is set (it isn't), so `ruff check .` (the M0-M3 DoD / CI gate) skips
+# this directory, but the tool stage's per-submission `ruff check benchmark/submissions/<f>`
+# still lints each file for real. D-026.
+extend-exclude = ["benchmark/submissions"]
+
 # Selected explicitly, not left to ruff's defaults. Defaults vary by ruff version and a
 # developer's global config bleeds into a bare `ruff check .`, so CI on a clean machine
 # would enforce a different set than the one this code was written against -- including
