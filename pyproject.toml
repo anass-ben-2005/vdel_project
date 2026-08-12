@@ -31,11 +31,34 @@ line-length = 100
 # flagging the `noqa` codes below as unused. Pinning the selection makes the lint
 # reproducible, which is the same reason the schema and the prompts are versioned.
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "DTZ", "BLE", "RUF"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "DTZ", "BLE", "RUF", "TID"]
+
+# Invariant 3 -- "every LLM call goes through system/llm.py" -- enforced at lint time rather
+# than by convention. `system/llm.py` is the one module allowed to import a provider SDK, so
+# an agent reaching for `anthropic` directly fails `ruff check .`, which is already part of
+# every milestone's DoD. Without this the invariant is a sentence in CLAUDE.md that nothing
+# checks, and the failure mode is silent: a direct SDK call works perfectly, skips the
+# temperature policy, the schema validation and the cost log, and shows up nowhere.
+# The gateway itself is exempted in per-file-ignores below.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"anthropic".msg = "Import system.llm instead -- invariant 3: every LLM call goes through the gateway."
+"openai".msg = "Import system.llm instead -- invariant 3: every LLM call goes through the gateway."
 
 [tool.ruff.lint.per-file-ignores]
 # Airflow DAGs are declarative: the operators are wired by `>>`, not by being referenced.
 "dags/*" = ["F841"]
+
+# TID251: the gateway is the ONE application module permitted to import a provider SDK --
+# that is what makes it the choke point invariant 3 describes.
+"system/llm.py" = ["TID251"]
+
+# tests/test_llm.py mocks the SDK at `anthropic.Anthropic` itself, one layer below the
+# gateway, so `_call_anthropic`'s own D-025 temperature logic is exercised rather than
+# bypassed by mocking at the internal dispatch table. That requires importing the real
+# `anthropic` module to monkeypatch its class -- no LLM call is ever made (see the file's own
+# module docstring), so this is not a second hole in invariant 3, only test tooling that
+# needs the name it is replacing.
+"tests/test_llm.py" = ["TID251"]
 
 # Verbatim transcriptions from VDEL_Modules_1_2_Build.md. These files are held
 # character-for-character against the source document so that a diff between the two is

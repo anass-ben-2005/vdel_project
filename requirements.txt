@@ -8,6 +8,10 @@ requests>=2.32
 scipy>=1.14.1
 matplotlib>=3.9
 
+# M3's live provider (system/llm.py). Imported locally inside _call_anthropic, not at module
+# top, so nothing else in the repo needs it installed -- see the gateway's own docstring.
+anthropic>=0.40
+
 # Deterministic tools used by V2 (engineering discipline) and, later, the Code Agent.
 ruff>=0.6
 sqlfluff>=3.1
