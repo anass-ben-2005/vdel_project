@@ -8,9 +8,16 @@ requests>=2.32
 scipy>=1.14.1
 matplotlib>=3.9
 
-# M3's live provider (system/llm.py). Imported locally inside _call_anthropic, not at module
-# top, so nothing else in the repo needs it installed -- see the gateway's own docstring.
+# M3's live providers (system/llm.py). Imported locally inside _call_anthropic /
+# _call_nvidia / _call_google, not at module top, so nothing else in the repo needs any of
+# them installed -- see the gateway's own docstring. Floor of 1.0 for openai: that's when the
+# `OpenAI()` client class and `chat.completions.create` shape this file calls against became
+# stable. Floor of 2.18 for google-genai: the version this branch's exact call shape
+# (client.models.generate_content with a typed GenerateContentConfig) was verified against
+# by installing and introspecting the real package, 2026-08-19 (D-032) -- not a guess.
 anthropic>=0.40
+openai>=1.0  # D-031: NVIDIA's endpoint is OpenAI-compatible, reuses this SDK
+google-genai>=2.18  # D-032: Google AI Studio / Gemini, supersedes D-023's removal
 
 # Deterministic tools used by V2 (engineering discipline) and, later, the Code Agent.
 ruff>=0.6

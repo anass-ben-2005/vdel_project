@@ -63,12 +63,36 @@ Evidence validation is NOT here: `validate_evidence` string-matches quotes again
 submission and belongs to `agents/validation.py` (BUILD_PLAN 4.4). This gateway knows about
 transport, schemas, cost and caching. It knows nothing about rubrics.
 
-**One provider live, two stubbed.** Anthropic is real -- it is `.env.example`'s documented
-default and the only provider this repo has credentials for. OpenAI and the local-Qwen path
-are structural stubs: their branch exists in `_PROVIDER_HANDLERS` so the dispatch is real
-(selecting "openai" routes to OpenAI-shaped code, not a silent no-op or an "unknown
-provider" error), but calling either raises `NotImplementedError` until BUILD_PLAN 3.2's
-benchmark actually names a second candidate. `google` is not a branch at all -- see D-023.
+**Three providers live, one stubbed.** Anthropic is `.env.example`'s documented default and
+the only provider any judged/graded call in this repo has actually exercised. NVIDIA (D-031)
+and Google (D-032) are config-switchable live alternatives (`LLM_PROVIDER=nvidia` /
+`LLM_PROVIDER=google`), added without touching the default or deleting anything. OpenAI
+proper stays a structural stub: the branch exists in `_PROVIDER_HANDLERS` so the dispatch is
+real (selecting "openai" routes to OpenAI-shaped code, not a silent no-op or an "unknown
+provider" error), but calling it raises `NotImplementedError` until BUILD_PLAN 3.2's
+benchmark actually names it a paid candidate. `qwen_local` remains stubbed the same way.
+
+**D-031 -- the NVIDIA branch's model id is user-supplied, not independently verified.**
+`deepseek-ai/deepseek-v4-pro` was given directly by Anas as the exact string to use. Unlike
+D-024's correction of the Anthropic default, which was checked against verified
+documentation before being written in, this session has no way to confirm the id against
+NVIDIA's live catalog -- it is recorded as-supplied, not as verified, and
+`MODEL_TIERS["cheap"][Provider.NVIDIA]` stays `TODO(verify)` because no cheap-tier
+equivalent was specified.
+
+**D-032 -- `google` reinstated; supersedes D-023.** D-023's rejection ("no document asks for
+a Google integration") was not wrong when it was written, but Anas asked for it directly this
+session, so it is reinstated as a live branch rather than left absent -- see D-032 in
+`docs/DECISIONS.md` for the full record, including why D-023's own text stays verbatim rather
+than being edited (append-only). `_call_google` uses `client.models.generate_content`, not
+the newer-recommended `client.interactions.create` -- both exist on the installed SDK, but
+`generate_content`'s `config` parameter is a typed `GenerateContentConfig` with a real
+`temperature: float` field, confirmed by introspecting the actual installed package rather
+than trusted from documentation prose; `interactions.create`'s real signature is
+`(*, request=None, ..., **body: Any)`, an opaque passthrough neither of two fetched
+documentation pages fully specified. Model ids `gemini-3.7-flash` (default) and
+`gemini-3.5-flash-lite` (cheap) were cross-checked live against ai.google.dev on 2026-08-19,
+independently of the SDK-shape verification.
 
 Known gaps and open questions, none silent:
   - **D-020 (OPEN)** -- four sources disagree on what `_cache_key` keys on. `_cache_key` is
@@ -101,23 +125,25 @@ load_dotenv()
 
 # ---- Providers ---------------------------------------------------------------------------
 #
-# D-023: an enum, not a bare string, and **`google` is deliberately absent**. The document's
-# MODEL_TIERS (1719-1729) declares four providers while `llm_call`'s if/elif chain
-# (1753-1778) serves three -- setting LLM_PROVIDER=google selects a model id successfully and
-# then dies on `raise ValueError(f"unknown LLM_PROVIDER {PROVIDER}")` at call time, after the
-# prompt is assembled. Typing the provider makes that a startup failure instead of a runtime
-# one, which is the same argument the `judge`/`generate` split makes for temperature: a
-# constraint the type system can hold should not be left to a runtime branch.
-#
-# Consequence to carry, not to hide: Google is therefore NOT a benchmark candidate.
-# `benchmark/RECOMMENDATION.md` must name it as a candidate that was not evaluated -- an
-# unevaluated option named is defensible, an option silently dropped is not.
+# D-023 (historical -- SUPERSEDED by D-032, see docs/DECISIONS.md): an enum, not a bare
+# string, was chosen because the document's MODEL_TIERS (1719-1729) declares four providers
+# while `llm_call`'s if/elif chain (1753-1778) serves three -- setting LLM_PROVIDER=google
+# selected a model id successfully and then died on `raise ValueError(f"unknown
+# LLM_PROVIDER {PROVIDER}")` at call time, after the prompt was assembled. Typing the
+# provider makes an unservable one a startup failure instead of a runtime one, which is the
+# same argument the `judge`/`generate` split makes for temperature: a constraint the type
+# system can hold should not be left to a runtime branch. That reasoning is why `Provider`
+# is an enum at all, and it still holds -- what changed under D-032 is only that `google` is
+# no longer one of the unservable ones. Kept here rather than deleted so the "why an enum"
+# reasoning survives; D-023's own removal-of-google reasoning is superseded, not this part.
 
 
 class Provider(StrEnum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     QWEN_LOCAL = "qwen_local"
+    NVIDIA = "nvidia"  # D-031: OpenAI-compatible hosted endpoint, added live, not stubbed
+    GOOGLE = "google"  # D-032: reinstated live, supersedes D-023's removal
 
 
 def _read_provider() -> Provider:
@@ -154,11 +180,19 @@ MODEL_TIERS: dict[str, dict[Provider, str]] = {
         Provider.ANTHROPIC: "claude-sonnet-5",
         Provider.OPENAI: "TODO(verify)",
         Provider.QWEN_LOCAL: "TODO(verify)",
+        # D-031: supplied directly by Anas, not independently verified against NVIDIA's
+        # live catalog by this session -- see the module docstring.
+        Provider.NVIDIA: "deepseek-ai/deepseek-v4-pro",
+        # D-032: verified live against ai.google.dev/gemini-api/docs/models on 2026-08-19,
+        # cross-checked with two independent fetches -- marked stable/GA, not preview.
+        Provider.GOOGLE: "gemini-3.7-flash",
     },
     "cheap": {
         Provider.ANTHROPIC: "claude-haiku-4-5",
         Provider.OPENAI: "TODO(verify)",
         Provider.QWEN_LOCAL: "TODO(verify)",
+        Provider.NVIDIA: "TODO(verify)",  # no cheap-tier DeepSeek variant was specified
+        Provider.GOOGLE: "gemini-3.5-flash-lite",  # D-032, same live verification as above
     },
 }
 
@@ -462,6 +496,80 @@ def _call_anthropic(prompt: str, temperature: float, model: str) -> tuple[str, i
     return text, response.usage.input_tokens, response.usage.output_tokens
 
 
+def _call_nvidia(prompt: str, temperature: float, model: str) -> tuple[str, int, int]:
+    """NVIDIA's hosted inference endpoint (D-031) -- OpenAI-compatible, so this reuses the
+    `openai` SDK rather than hand-rolling a raw HTTP client. `import openai` is local,
+    matching `_call_anthropic`'s own pattern -- no other module in this repo needs the SDK
+    installed, only this function.
+
+    Keyed by `NVIDIA_API_KEY`, deliberately not `OPENAI_API_KEY`: this is NVIDIA's endpoint,
+    not an OpenAI account, and the two must never be silently interchangeable.
+
+    Unlike `_call_anthropic` (D-025), temperature is always sent explicitly. No documented
+    restriction on NVIDIA's endpoint rejects an explicit value the way Claude 4.7+ models
+    do, so there is no `_REJECTS_NONDEFAULT_TEMPERATURE`-style branch here. If that turns out
+    to be wrong, the fix is the same one D-025 made for Anthropic, applied here.
+    """
+    import openai
+
+    api_key = os.environ.get("NVIDIA_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "NVIDIA_API_KEY is not set. LLM_PROVIDER=nvidia requires it -- see .env.example."
+        )
+
+    client = openai.OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=api_key)
+    response = client.chat.completions.create(
+        model=model,
+        temperature=temperature,
+        max_tokens=_MAX_TOKENS,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = response.choices[0].message.content
+    return text, response.usage.prompt_tokens, response.usage.completion_tokens
+
+
+def _call_google(prompt: str, temperature: float, model: str) -> tuple[str, int, int]:
+    """Google AI Studio / Gemini (D-032, supersedes D-023). `import google.genai` is local,
+    matching `_call_anthropic`'s and `_call_nvidia`'s own pattern -- no other module in this
+    repo needs the SDK installed.
+
+    Uses `client.models.generate_content`, not `client.interactions.create` -- both exist on
+    the installed SDK (`google-genai` 2.18.1, checked 2026-08-19), but `generate_content`'s
+    `config` parameter is a typed `GenerateContentConfig` with a real `temperature: float`
+    field, confirmed by introspecting the actual installed package rather than trusted from
+    documentation prose; `interactions.create`'s real signature is
+    `(*, request=None, ..., **body: Any)`, an opaque passthrough with no typed parameter
+    surface, and two fetched documentation pages both failed to fully specify its body
+    schema even though one names it the currently-recommended API. Verifiable beats
+    currently-recommended, for a field (temperature) invariant 4 depends on.
+
+    Keyed by GOOGLE_API_KEY, passed explicitly to `genai.Client(api_key=...)` rather than the
+    SDK's own default env var lookup (`GEMINI_API_KEY`) -- same reasoning as NVIDIA_API_KEY
+    vs OPENAI_API_KEY: an explicit named key, never an ambient default.
+
+    No temperature-rejection carve-out, matching NVIDIA -- no documented restriction was
+    found for Gemini models during this session's verification pass.
+    """
+    from google import genai
+    from google.genai import types
+
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "GOOGLE_API_KEY is not set. LLM_PROVIDER=google requires it -- see .env.example."
+        )
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(temperature=temperature),
+    )
+    usage = response.usage_metadata
+    return response.text, usage.prompt_token_count, usage.candidates_token_count
+
+
 def _stub_provider(provider: Provider) -> NoReturn:
     """Shared body for a provider whose dispatch branch exists but is not wired up.
 
@@ -489,4 +597,6 @@ _PROVIDER_HANDLERS: dict[Provider, Callable[[str, float, str], tuple[str, int, i
     Provider.ANTHROPIC: _call_anthropic,
     Provider.OPENAI: _call_openai,
     Provider.QWEN_LOCAL: _call_qwen_local,
+    Provider.NVIDIA: _call_nvidia,
+    Provider.GOOGLE: _call_google,
 }

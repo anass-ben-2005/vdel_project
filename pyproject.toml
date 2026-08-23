@@ -52,6 +52,11 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "DTZ", "BLE", "RUF", "TID"
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "anthropic".msg = "Import system.llm instead -- invariant 3: every LLM call goes through the gateway."
 "openai".msg = "Import system.llm instead -- invariant 3: every LLM call goes through the gateway."
+# Banning "google.genai" (not just "google") is deliberate and verified, not assumed: an
+# empirical check confirmed ruff resolves `from google import genai`, `from google.genai
+# import types`, and `import google.genai` all to this one banned-api key -- all three forms
+# used across _call_google and tests/test_llm.py are caught by this single entry.
+"google.genai".msg = "Import system.llm instead -- invariant 3: every LLM call goes through the gateway."
 
 [tool.ruff.lint.per-file-ignores]
 # Airflow DAGs are declarative: the operators are wired by `>>`, not by being referenced.
