@@ -40,7 +40,19 @@ with DAG("vdel_pipeline", default_args=default_args,
         run(last)
 
     def _update_profiles(**_):
-        pass   # Module 3: fold new features into learner_profile (fast path)
+        # CHANGED (D-034): was `pass`. features_ref never had a live writer, so it silently
+        # fell behind rebuild_from_traces the first time real learner_features data existed
+        # for a real student -- see memory.memory.Memory.sync_features_ref's docstring.
+        from memory.memory import Memory
+        from system import db
+
+        mem = Memory()
+        with db.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT student_id FROM learner_features")
+                student_ids = [row[0] for row in cur.fetchall()]
+            for student_id in student_ids:
+                mem.sync_features_ref(student_id, conn=conn)
 
     t1 = PythonOperator(task_id="collect", python_callable=_collect)
     t2 = PythonOperator(task_id="compute_features", python_callable=_compute)

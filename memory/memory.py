@@ -634,9 +634,12 @@ def _rederive_features_ref(conn, student_id: str) -> datetime | None:
     table that the M1 feature job owns, and this column is a pointer into it (CLAUDE.md 6:
     "pointer to latest learner_features row"). Re-deriving it is a one-row query.
 
-    Nothing writes this column yet -- so on today's data it is NULL before a rebuild and
-    NULL after, unless a learner_features row exists. Rebuilding it anyway keeps
-    `rebuild_from_traces` total over all five columns, which is what the M2 DoD claims.
+    This function only reads; `sync_features_ref` (below) is the write half that calls it
+    for the live path (D-034 -- until that existed, nothing wrote this column, and it
+    silently drifted from what a rebuild derives the moment real `learner_features` data
+    existed for a real student). Rebuilding it here too keeps `rebuild_from_traces` total
+    over all five columns, which is what the M2 DoD claims -- and, since both paths call
+    this same function, the two cannot disagree by construction.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -791,6 +794,51 @@ class Memory:
                 concept_ids=[concept], parent_trace_id=parent_trace_id, session_id=None,
             )
         return shape
+
+    # ---------- FAST PATH: sync the features_ref pointer ----------
+    def sync_features_ref(self, student_id: str, *, conn=None) -> datetime | None:
+        """Point `learner_profile.features_ref` at the student's latest `learner_features`
+        row. The write half of `_rederive_features_ref` (D-034).
+
+        `learner_features` is a separate table `features/compute_features.py` owns;
+        `features_ref` is only a pointer into it (CLAUDE.md 6). Nothing wired that pointer
+        on the live path -- `dags/vdel_pipeline.py`'s `update_profiles` task, whose own
+        comment says "fold new features into learner_profile", was a literal `pass`. That is
+        what D-034 found: the first time real `learner_features` data existed for a real
+        student, `rebuild_from_traces` re-derived a real timestamp while the stored profile
+        still held the `None` no live path had ever overwritten -- the same class of
+        rebuild-ahead-of-an-unbuilt-writer asymmetry `test_rebuild_derives_state_the_live_
+        path_cannot_yet_apply` already documents for `reflections`/`session_digest`, except
+        this one has a cheap fix (one pointer column, no unbuilt subsystem) rather than a
+        deferred one, so it gets closed rather than tolerated.
+
+        Call this once per `compute_features` run per student -- `update_profiles` is now
+        wired to it -- so the live profile stops falling behind the rebuild instead of
+        matching it.
+
+        Reuses `_rederive_features_ref` rather than a second query (D-007's argument,
+        applied to a third piece of state): the live value and the rebuilt value are
+        computed the same way, so they cannot disagree by construction.
+
+        Touches ONLY `features_ref` -- a targeted UPDATE, not `rebuild_from_traces`'s
+        full-column replace -- so a daily DAG run does not pay to recompute mastery and
+        weaknesses it already has correctly cached. Idempotent: re-running with no new
+        `learner_features` row rewrites the same value.
+        """
+        with _session(conn) as c:
+            ref = _rederive_features_ref(c, student_id)
+            with c.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO learner_profile (student_id, features_ref)
+                    VALUES (%s, %s)
+                    ON CONFLICT (student_id) DO UPDATE
+                    SET features_ref = EXCLUDED.features_ref,
+                        updated_at   = now()
+                    """,
+                    (student_id, ref),
+                )
+            return ref
 
     # ---------- AUDIT: rebuild mastery from traces ----------
     def rebuild_mastery_from_traces(self, student_id: str, *,

@@ -955,6 +955,76 @@ def test_features_ref_is_none_without_features(mem, conn):
     assert mem.rebuild_from_traces(STUDENT, conn=conn)["features_ref"] is None
 
 
+def _insert_learner_features(conn, student_id, computed_at):
+    empty = json.dumps({})
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO learner_features (student_id, computed_at, mastery,"
+            " engineering_discipline, effort_regulation, pace, error_response,"
+            " error_frequency) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (student_id, computed_at, empty, empty, empty, empty, empty, empty),
+        )
+
+
+def test_sync_features_ref_writes_the_latest_learner_features_pointer(mem, conn):
+    """D-034's fix: the write half of what rebuild_from_traces already re-derives."""
+    _insert_learner_features(conn, STUDENT, "2026-03-01 10:00+00")
+    _insert_learner_features(conn, STUDENT, "2026-03-08 10:00+00")
+
+    ref = mem.sync_features_ref(STUDENT, conn=conn)
+
+    assert ref.isoformat() == "2026-03-08T10:00:00+00:00"
+    with conn.cursor() as cur:
+        cur.execute("SELECT features_ref FROM learner_profile WHERE student_id = %s",
+                    (STUDENT,))
+        assert cur.fetchone()[0].isoformat() == "2026-03-08T10:00:00+00:00"
+
+
+def test_sync_features_ref_is_none_without_learner_features(mem, conn):
+    assert mem.sync_features_ref(STUDENT, conn=conn) is None
+    with conn.cursor() as cur:
+        cur.execute("SELECT features_ref FROM learner_profile WHERE student_id = %s",
+                    (STUDENT,))
+        assert cur.fetchone()[0] is None
+
+
+def test_sync_features_ref_does_not_touch_other_columns(mem, conn):
+    """A targeted UPDATE, not rebuild_from_traces's full-column replace."""
+    fast_path_history(mem, conn)
+    before = mem.get_profile(STUDENT, conn=conn)
+    _insert_learner_features(conn, STUDENT, "2026-03-08 10:00+00")
+
+    mem.sync_features_ref(STUDENT, conn=conn)
+
+    after = mem.get_profile(STUDENT, conn=conn)
+    assert after["mastery"] == before["mastery"]
+    assert after["weaknesses"] == before["weaknesses"]
+
+
+def test_sync_features_ref_is_idempotent(mem, conn):
+    _insert_learner_features(conn, STUDENT, "2026-03-08 10:00+00")
+    first = mem.sync_features_ref(STUDENT, conn=conn)
+    second = mem.sync_features_ref(STUDENT, conn=conn)
+    assert first == second
+
+
+def test_sync_features_ref_agrees_with_rebuild(mem, conn):
+    """The whole point (D-034): the live write and the rebuild must not be able to disagree,
+    because both now call the same helper."""
+    fast_path_history(mem, conn)
+    _insert_learner_features(conn, STUDENT, "2026-03-08 10:00+00")
+
+    mem.sync_features_ref(STUDENT, conn=conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT features_ref FROM learner_profile WHERE student_id = %s",
+                    (STUDENT,))
+        live_ref = cur.fetchone()[0]
+
+    rebuilt = mem.rebuild_from_traces(STUDENT, conn=conn)
+
+    assert live_ref == rebuilt["features_ref"]
+
+
 def test_rebuild_derives_state_the_live_path_cannot_yet_apply(mem, conn):
     """A documented, deliberate asymmetry, pinned so it is a known fact rather than a
     surprise later.

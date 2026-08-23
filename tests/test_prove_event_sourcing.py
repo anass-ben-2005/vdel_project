@@ -106,6 +106,31 @@ def mem():
     return Memory()
 
 
+def _profiles_exist() -> bool:
+    """Is `learner_profile` non-empty in the shared dev database right now?
+
+    Moved above its first use (originally only guarded the CLI-level vacuous test) because
+    D-034 exposed the same problem one level down: once a real student (`anas`) has a real,
+    permanently committed profile, `learner_profile` is never globally empty in this shared
+    dev database again, no matter what a test's own STUDENT fixture does or rolls back. Any
+    test whose premise is "nothing exists yet" needs this guard now, not just the CLI test.
+
+    Evaluated at COLLECTION time by each `skipif` below, so it must never raise. `pytestmark`
+    does not protect a decorator argument -- that is evaluated while the module is being
+    imported, before any marker is consulted. An unguarded version of this function once
+    aborted the ENTIRE suite with `RuntimeError: PG_DSN is not set` during collection instead
+    of skipping, for anyone without a configured .env.
+    """
+    if not os.environ.get("PG_DSN"):
+        return False
+    try:
+        with db.cursor() as cur:
+            cur.execute("SELECT count(*) FROM learner_profile")
+            return cur.fetchone()[0] > 0
+    except Exception:  # noqa: BLE001 -- unreachable DB means "cannot know", and the
+        return False   # module-level skipif will skip this test anyway
+
+
 def faithful_history(mem, conn):
     """Profile state written entirely through the fast path, so the log fully justifies it."""
     def ci_run(concept, conclusion, error_class=None, difficulty=0.5):
@@ -224,21 +249,30 @@ def test_a_silently_dropped_intervention_link_is_caught(mem, conn):
 
 def test_a_student_with_no_prior_profile_is_reported_not_failed(mem, conn):
     """A student whose fast path has not run yet gains a profile from the rebuild. That is
-    the rebuild being correct, not a mismatch, so it must not fail the proof."""
+    the rebuild being correct, not a mismatch, so it must not fail the proof.
+
+    Scoped to STUDENT specifically, not to `learner_profile` being globally empty: D-034
+    means a real student (`anas`) now has a real, permanently committed profile in the
+    shared dev database, so a global `read_profiles(conn) == {}` / `result.vacuous` check
+    would fail for a reason unrelated to what this test is actually about.
+    """
     mem.log_trace(
         STUDENT, "system", "ci_run",
         {"conclusion": "success", "item_difficulty": 0.5, "error_class": None},
         concept_ids=["spark.joins"], assignment_id=ASSIGNMENT, conn=conn,
     )
-    assert read_profiles(conn) == {}          # nothing called update_mastery
+    assert STUDENT not in read_profiles(conn)   # nothing called update_mastery for STUDENT
 
     result = prove(conn)
 
     assert STUDENT in result.created
-    assert result.differences == []
-    assert result.vacuous                      # nothing existed to be reproduced
+    assert STUDENT not in result.compared
+    assert not any(d.student_id == STUDENT for d in result.differences)
 
 
+@pytest.mark.skipif(_profiles_exist(), reason="needs an empty learner_profile to be vacuous "
+                                               "-- see D-034: anas's real profile means the "
+                                               "shared dev DB is no longer globally empty")
 def test_no_profiles_is_vacuous_not_identical(mem, conn):
     """'IDENTICAL' with nothing to compare would be true and worthless."""
     result = prove(conn)
@@ -247,23 +281,8 @@ def test_no_profiles_is_vacuous_not_identical(mem, conn):
 
 
 # ---------- the CLI ----------
-
-def _profiles_exist() -> bool:
-    """Evaluated at COLLECTION time by the skipif below, so it must never raise.
-
-    `pytestmark` does not protect a decorator argument -- that is evaluated while the module
-    is being imported, before any marker is consulted. An unguarded version of this function
-    aborted the ENTIRE suite with `RuntimeError: PG_DSN is not set` during collection instead
-    of skipping, for anyone without a configured .env.
-    """
-    if not os.environ.get("PG_DSN"):
-        return False
-    try:
-        with db.cursor() as cur:
-            cur.execute("SELECT count(*) FROM learner_profile")
-            return cur.fetchone()[0] > 0
-    except Exception:  # noqa: BLE001 -- unreachable DB means "cannot know", and the
-        return False   # module-level skipif will skip this test anyway
+# `_profiles_exist` is defined above, next to `mem` -- both database-emptiness-dependent
+# tests need it now (D-034), not just this one.
 
 
 @pytest.mark.skipif(_profiles_exist(), reason="needs an empty learner_profile to be vacuous")
