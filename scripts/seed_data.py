@@ -270,12 +270,32 @@ def main() -> int:
             [(s["student_id"], s["github_username"], s["cohort"]) for s in roster["students"]],
         )
 
+        # D-047: `concepts` is set on every INSERT (a brand-new assignment_id -- curriculum
+        # or legacy roster-only -- gets it either way), but on CONFLICT it is protected the
+        # same way seed_curriculum's own assignments INSERT already protects released_at
+        # (line ~123 above: "deliberately absent from this UPDATE SET ... must never be
+        # moved by a re-run once set") -- EXCEPT concepts' protection is CONDITIONAL, not
+        # absolute, because this one INSERT statement serves two different populations of
+        # assignment_id sharing one table:
+        #   - a CURRICULUM assignment (has rows in `gaps`) already has its concepts set,
+        #     correctly, by seed_curriculum() as the derived union of its gaps' concept_ids
+        #     (D-035 C7) -- this roster load runs SECOND in main() and must never clobber
+        #     that with whatever a human typed in roster.yaml.
+        #   - a LEGACY roster-only assignment (weather-etl-pipeline, csv-sales-analyzer --
+        #     no gaps rows exist for it at all) has NO other source of truth for concepts;
+        #     roster.yaml IS the source of truth for these, so it must keep updating.
+        # The CASE, not a WHERE on the whole DO UPDATE, is what keeps repo_prefix/due_at
+        # updating unconditionally while only concepts is conditional -- a WHERE clause on
+        # the DO UPDATE would gate every column in the SET list, not just this one.
         execute_values(
             cur,
             "INSERT INTO assignments (assignment_id, repo_prefix, released_at, due_at, concepts)"
             " VALUES %s ON CONFLICT (assignment_id) DO UPDATE SET"
             "   repo_prefix = EXCLUDED.repo_prefix, released_at = EXCLUDED.released_at,"
-            "   due_at = EXCLUDED.due_at, concepts = EXCLUDED.concepts",
+            "   due_at = EXCLUDED.due_at,"
+            "   concepts = CASE WHEN EXISTS ("
+            "     SELECT 1 FROM gaps WHERE gaps.assignment_id = assignments.assignment_id"
+            "   ) THEN assignments.concepts ELSE EXCLUDED.concepts END",
             [
                 (a["assignment_id"], f"{a['owner']}/{a['repo']}", a["released_at"],
                  a.get("due_at"), a.get("concepts") or [])
