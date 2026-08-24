@@ -189,10 +189,15 @@ def test_multi_assignment_commit_and_unattached_counter(attribution_scenario, ca
         "_test_sha_readme": None,       # zero matches -> honest NULL
     }
 
-    # attempts: extract's open attempt picked up the multi-file commit; load's
-    # already-submitted attempt did not (D-043's Cost, counted not silent); quality
-    # never had a row to update at all.
-    assert attempts_state["weather_etl_extract"] == "_test_sha_multi"
+    # D-045a: the collector writes NOTHING to attempts. An assignment freezes only when
+    # its hidden tests reach 100% pass, and the collector sees pushes, not test outcomes --
+    # so commit_sha stays NULL even for the assignment that DOES have an open attempt and
+    # DID receive a matching commit. This assertion previously read
+    # `== "_test_sha_multi"`, encoding the pre-D-045 behaviour where the first push froze
+    # the attempt and the `WHERE submitted_at IS NULL` guard then silently ignored every
+    # later commit. It is inverted here on purpose: it is now the regression guard against
+    # freeze-on-push coming back.
+    assert attempts_state["weather_etl_extract"] is None
     assert attempts_state["weather_etl_load"] is None
 
     # the actual thing this test exists to prove: not a silent 0-row UPDATE.

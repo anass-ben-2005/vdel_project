@@ -154,14 +154,63 @@ COMMENT ON COLUMN attempts.commit_sha IS
   'NULL until collect_github matches a real push (D-041). Same nullability reasoning '
   'as submitted_at.';
 
-CREATE TABLE IF NOT EXISTS test_results (   -- the evidence behind tests_passed
+-- The evidence behind tests_passed. Keyed by COMMIT, not by attempt (D-045c).
+--
+-- VDEL_REDESIGN.md 11 writes `PRIMARY KEY (attempt_id, test_name)`. That is wrong under
+-- the freeze rule (D-045a): an assignment freezes only at 100% hidden-test pass, so an
+-- attempt accumulates many failing commits and at most one passing one, while a single
+-- `attempts` row carries a single `commit_sha`. Under the original key every pre-freeze
+-- commit's results overwrite the previous, and only the final passing run survives.
+--
+-- That is not a tidiness problem. V5 (error response -- what a student does about errors)
+-- and V6 (error frequency -- how often errors happen) are computed ENTIRELY from the
+-- failures that key discards, and V1's BKT chain needs the fail/pass SEQUENCE, not its
+-- last element. The original schema silently deletes the evidence for three of the
+-- variables this project is built to measure, while leaving behind a row that still looks
+-- complete -- the failure mode is invisible, which is what makes it worth a schema change
+-- rather than a convention.
+--
+-- `commit_sha` is nullable and carries no foreign key to raw_commits deliberately: hidden
+-- tests may be run against a rendered repo BEFORE any push exists (that is exactly how B1
+-- was proven), and a local run is still a real observation. A NOT NULL FK here would make
+-- the collector the only possible writer.
+CREATE TABLE IF NOT EXISTS test_results (
   attempt_id  BIGINT NOT NULL REFERENCES attempts(attempt_id),
+  commit_sha  TEXT,                           -- which commit produced this outcome
   test_name   TEXT NOT NULL,
   gap_id      TEXT REFERENCES gaps(gap_id),   -- localises failure to a concept
   passed      BOOLEAN NOT NULL,
   message     TEXT,
-  PRIMARY KEY (attempt_id, test_name)
+  ran_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Retrofit for any database that created test_results under the pre-D-045 shape. These
+-- MUST precede the indexes below: on an existing database `CREATE TABLE IF NOT EXISTS` is
+-- a no-op, so without these the index creation references a commit_sha column that does
+-- not exist yet and the whole file aborts. (Found by running it, not by reading it.) Each
+-- statement is a no-op on a fresh database and on an already-migrated one.
+ALTER TABLE test_results ADD COLUMN IF NOT EXISTS commit_sha TEXT;
+ALTER TABLE test_results ADD COLUMN IF NOT EXISTS ran_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE test_results DROP CONSTRAINT IF EXISTS test_results_pkey;
+
+-- A partial unique index rather than a PRIMARY KEY, because `commit_sha` is nullable and
+-- SQL treats NULLs as distinct in a unique constraint -- a plain UNIQUE would happily
+-- accept the same local run twice. Two indexes: one for pushed results (keyed by commit),
+-- one for local runs (keyed by attempt alone, so re-running locally updates in place).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_test_results_pushed
+  ON test_results (attempt_id, commit_sha, test_name) WHERE commit_sha IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_test_results_local
+  ON test_results (attempt_id, test_name) WHERE commit_sha IS NULL;
+
+-- The hot query for V1/V5/V6: every result for a student's assignment, in order, across
+-- ALL commits -- never just the frozen one (D-045c).
+CREATE INDEX IF NOT EXISTS idx_test_results_attempt_ran
+  ON test_results (attempt_id, ran_at);
+
+COMMENT ON TABLE test_results IS
+  'One row per (attempt, commit, test). Every commit''s hidden-test outcome is kept, not '
+  'only the frozen one -- V5/V6 are computed from the failures (D-045c). A NULL '
+  'commit_sha is a local run against a rendered repo, before any push.';
 
 -- ═══ RESOURCES (replaces RAG) ════════════════════════════════════════
 

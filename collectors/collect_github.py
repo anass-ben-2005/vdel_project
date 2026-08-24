@@ -188,7 +188,11 @@ def collect_repo(conn, owner, repo, student_id, assignment_ids):
         params["since"] = since.isoformat()
 
     commit_rows = []
-    attempt_updates = []          # D-043: (assignment_id, sha, committed_at)
+    # One entry per (commit, assignment) match, duplicates intentional: a commit touching
+    # two assignments contributes two. Only assignment_id is kept -- since D-045a the
+    # collector writes nothing to `attempts`, so the sha is not needed here; the per-commit
+    # record lives in `test_results`, written by whatever actually ran the tests.
+    matched_assignments: list[str] = []
     for c in _paged(f"{GH}/repos/{owner}/{repo}/commits", params):
         sha = c["sha"]
         # Flaw 1a: skip the expensive detail call for commits we already have complete
@@ -210,8 +214,7 @@ def collect_repo(conn, owner, repo, student_id, assignment_ids):
                             s.get("additions"), s.get("deletions"),
                             len(files),
                             c["commit"]["message"][:500]))
-        for aid in matched:
-            attempt_updates.append((aid, sha, committed_at))
+        matched_assignments.extend(matched)
 
     # Flaw 3: one batched upsert instead of N inserts. DO UPDATE now also refreshes
     # assignment_id (D-043) -- with one collect_repo call per repo (not per assignment,
@@ -226,21 +229,33 @@ def collect_repo(conn, owner, repo, student_id, assignment_ids):
         """, commit_rows)
         _STATS.commits_upserted += len(commit_rows)
 
-    # D-043: attach each matched commit to the assignment's current open attempt.
-    # `ORDER BY attempt_no DESC LIMIT 1` picks the LATEST unsubmitted attempt if more
-    # than one somehow exists; 0 rows affected (nothing rendered yet for this
-    # assignment, or the existing attempt is already submitted) is counted, not silent
-    # -- see Stats.commits_without_open_attempt's docstring and D-043's Cost.
-    for assignment_id, sha, committed_at in attempt_updates:
+    # D-043: associate each matched commit with the assignment's current open attempt.
+    #
+    # D-045a CORRECTION: this deliberately does NOT write `submitted_at`, and no longer
+    # writes `commit_sha` either. An attempt freezes only when its hidden tests reach 100%
+    # pass -- never merely because the student pushed -- so the collector, which sees
+    # pushes and knows nothing about test outcomes, is structurally the wrong component to
+    # decide that. The earlier version set both columns on the first matched commit under a
+    # `WHERE submitted_at IS NULL` guard, which froze the attempt on push number one and
+    # then, because of that same guard, silently ignored every commit after it. That is
+    # backwards twice over: it froze too early and then stopped collecting.
+    #
+    # `attempts.commit_sha`/`submitted_at` are now written by exactly one thing: whatever
+    # observes a 100%-pass hidden-test run (the test runner, Stage B2). What the collector
+    # contributes instead is the per-commit record in `test_results`, keyed by commit_sha
+    # (D-045c) -- so a student's failing history accumulates instead of being overwritten,
+    # which is what V5/V6 are computed from.
+    #
+    # The lookup still resolves which attempt a commit belongs to, and still counts the
+    # case where no open attempt exists (nothing rendered yet, or already frozen), because
+    # that count is what tells us telemetry is arriving with nowhere to attach.
+    for assignment_id in matched_assignments:
         cur.execute("""
-            UPDATE attempts SET commit_sha = %s, submitted_at = %s
-            WHERE attempt_id = (
-                SELECT attempt_id FROM attempts
-                WHERE student_id = %s AND assignment_id = %s AND submitted_at IS NULL
-                ORDER BY attempt_no DESC LIMIT 1
-            )
-        """, (sha, committed_at, student_id, assignment_id))
-        if cur.rowcount == 0:
+            SELECT attempt_id FROM attempts
+            WHERE student_id = %s AND assignment_id = %s AND submitted_at IS NULL
+            ORDER BY attempt_no DESC LIMIT 1
+        """, (student_id, assignment_id))
+        if cur.fetchone() is None:
             _STATS.commits_without_open_attempt += 1
 
     # Workflow runs (batched too). D-043: a CI run tests the whole repo, not one file,
