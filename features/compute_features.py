@@ -24,6 +24,7 @@ from statistics import median
 
 from psycopg2.extras import Json
 
+from memory.memory import Memory
 from system import db
 from variables.error_frequency import error_frequency
 from variables.error_response import error_response
@@ -79,20 +80,53 @@ def _item_difficulty(cur, concept_id):
 def _mastery(cur, student_id):
     """V1 — replay classified pass/fails through BKT.
 
-    'unclassified' is excluded in the WHERE clause: an unmatched error updates NO
-    mastery (error_classifier.py, and invariant 10).
+    Two evidence sources, merged CHRONOLOGICALLY into one replay -- BKT is order-
+    dependent, so replaying source A fully then source B fully would not reproduce the
+    real interleaved sequence of observations, and D-007's whole argument is that replay
+    order must match reality, not code layout:
+      - raw_workflow_runs: real CI telemetry (collect_github.py) -- the original
+        source, still real evidence for repos outside the gap-based curriculum model
+        (e.g. Anas's own Kaggle-pipeline repos).
+      - test_result traces (D-045/D-046, EXECUTION.md Stage C1): every hidden-test
+        outcome test_runner.py logs, read through `memory.Memory.test_result_history`
+        ONLY -- never a second raw SQL query against `traces` from outside memory.py
+        (invariant 2).
+
+    'unclassified' is excluded for raw_workflow_runs (error_classifier.py, invariant
+    10). test_result traces carry no such sentinel -- a test with no gap_id was already
+    excluded at the point test_runner.py decided whether to log a trace at all
+    (`_log_mastery_traces`'s own filter), so every test_result trace that exists already
+    carries a real, resolved concept.
+
+    A trace tagged with SEVERAL concept_ids contributes to EACH of them -- the same
+    containment semantics `memory.py::_replay_concept`'s `concept_ids @> ARRAY[concept]`
+    already gives every other MASTERY_TRACE_KINDS member; one gap can exercise two
+    concepts, and the same pass/fail is real evidence about both.
     """
-    est = MasteryEstimator()
     cur.execute("""
-        SELECT concept_id, conclusion FROM raw_workflow_runs
+        SELECT started_at, concept_id, conclusion FROM raw_workflow_runs
         WHERE student_id=%s AND concept_id IS NOT NULL AND concept_id <> 'unclassified'
-        ORDER BY started_at
     """, (student_id,))
-    rows = cur.fetchall()
-    difficulties = {c: _item_difficulty(cur, c) for c, _ in rows}
-    for concept_id, conclusion in rows:
-        est.update(concept_id, correct=(conclusion == "success"),
-                   item_difficulty=difficulties[concept_id])
+    ci_rows = cur.fetchall()
+
+    events = [
+        (ts, concept_id, conclusion == "success", _item_difficulty(cur, concept_id))
+        for ts, concept_id, conclusion in ci_rows
+    ]
+
+    for result in Memory().test_result_history(student_id):
+        if result["passed"] is None:
+            continue
+        difficulty = (result["item_difficulty"] if result["item_difficulty"] is not None
+                      else NEUTRAL_DIFFICULTY)
+        for concept_id in result["concept_ids"]:
+            events.append((result["ts"], concept_id, result["passed"], difficulty))
+
+    events.sort(key=lambda e: e[0])
+
+    est = MasteryEstimator()
+    for _, concept_id, correct, difficulty in events:
+        est.update(concept_id, correct=correct, item_difficulty=difficulty)
     return est
 
 
@@ -180,21 +214,54 @@ def _pace(cur, student_id):
 
 
 def _error_stats(cur, student_id, est):
-    """V5 and V6 — both read the sequential run history, so they share one pass."""
+    """V5 and V6 — both read the sequential run history, so they share one pass.
+
+    Merges the same two sources `_mastery` does (real CI telemetry +
+    `memory.Memory.test_result_history`, invariant 2), but keeps TWO views rather than
+    one flattened list, deliberately:
+
+      `runs`           one entry per real OBSERVATION -- a single CI run or a single
+                       hidden-test result, however many concepts its gap tags. Feeds
+                       total_runs/failures/time-to-fix, which must count what actually
+                       happened, not inflate because one observation happened to be
+                       evidence for two concepts.
+      `concept_events` the SAME evidence, fanned out per concept it is evidence for --
+                       feeds by_concept and opportunities only, mirroring memory.py's
+                       own `_replay_concept` semantics (one trace, several concepts,
+                       real evidence for each).
+
+    Flattening both into one list, as an earlier draft of this function did, would have
+    double-counted every multi-concept test_result observation in total_runs/errors --
+    a real distortion of V6's aggregate rate, caught before it shipped, not after.
+    """
     cur.execute("""
         SELECT completed_at, conclusion, concept_id, error_class
         FROM raw_workflow_runs
         WHERE student_id=%s AND completed_at IS NOT NULL
-        ORDER BY completed_at
     """, (student_id,))
-    runs = cur.fetchall()
+    ci_rows = list(cur.fetchall())
+
+    test_results = [r for r in Memory().test_result_history(student_id)
+                    if r["passed"] is not None]
+
+    runs = [(ts, conclusion) for ts, conclusion, _, _ in ci_rows]
+    runs += [(r["ts"], "success" if r["passed"] else "failure") for r in test_results]
+    runs.sort(key=lambda r: r[0])
+
+    concept_events = [(ts, conclusion, concept_id)
+                      for ts, conclusion, concept_id, _ in ci_rows if concept_id]
+    for r in test_results:
+        conclusion = "success" if r["passed"] else "failure"
+        concept_events += [(r["ts"], conclusion, c) for c in r["concept_ids"]]
+    concept_events.sort(key=lambda e: e[0])
 
     total_runs = len(runs)
     failures = [r for r in runs if r[1] == "failure"]
 
-    # Time-to-fix: hours from each failure to the next passing run.
+    # Time-to-fix: hours from each failure to the next passing run (concept-agnostic --
+    # "did something pass after this failure", the original semantics, unchanged).
     ttfs, resolved = [], 0
-    for ts, _, _, _ in failures:
+    for ts, _ in failures:
         nxt = next((r[0] for r in runs if r[1] == "success" and r[0] > ts), None)
         if nxt:
             resolved += 1
@@ -202,15 +269,15 @@ def _error_stats(cur, student_id, est):
     median_ttf_h = median(ttfs) if ttfs else 0.0
 
     by_concept = {}
-    for _, _, concept_id, _ in failures:
-        if concept_id:
+    for _, conclusion, concept_id in concept_events:
+        if conclusion == "failure":
             by_concept[concept_id] = by_concept.get(concept_id, 0) + 1
 
     # Wheel-spinning inputs are per the worst concept: the one with most opportunities.
     snapshot = est.snapshot()
     worst = max(by_concept, key=by_concept.get) if by_concept else None
     worst_state = snapshot.get(worst, {}) if worst else {}
-    opportunities = sum(1 for _, _, c, _ in runs if c == worst) if worst else 0
+    opportunities = sum(1 for _, _, c in concept_events if c == worst) if worst else 0
     slope = _mastery_slope(est, worst)
 
     v5 = error_response(

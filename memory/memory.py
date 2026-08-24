@@ -106,7 +106,7 @@ ACTORS = frozenset({
 })
 
 KINDS = frozenset({
-    "commit", "ci_run", "error_event", "verdict", "grade",
+    "commit", "ci_run", "error_event", "verdict", "grade", "test_result",
     "intervention", "session_summary", "profile_update", "reflection_run",
 })
 
@@ -118,7 +118,36 @@ KINDS = frozenset({
 # should feed mastery but doesn't produces a profile that is quietly wrong and still
 # reconstructible-looking. `test_every_kind_is_classified` fails if any member of KINDS is
 # in neither set, so a new kind cannot be added without a decision being made about it.
-MASTERY_TRACE_KINDS = frozenset({"ci_run"})
+#
+# `test_result` (D-045/D-046, added when compute_features.py's V1/V5/V6 were wired to
+# assessment/test_runner.py's per-commit hidden-test outcomes -- EXECUTION.md Stage C1):
+# one trace per (attempt, commit, test) outcome, logged by test_runner.py, REGARDLESS of
+# freeze state -- D-045a's freeze rule governs `attempts.commit_sha`/`submitted_at`, not
+# what counts as BKT evidence. A student's forty pre-freeze failures are forty real
+# observations; gating them on freeze would mean an assignment that is never solved
+# contributes NOTHING to mastery, which is backwards -- repeated failure is exactly the
+# signal that should be lowering the estimate.
+#
+# Payload contract for `test_result`, same shape discipline as `ci_run`'s:
+#   conclusion       "success" | "failure" -- test_runner.py's `passed` bool, mapped
+#                    through the SAME `OUTCOME` dict `ci_run` already uses (never a second
+#                    vocabulary for the same two values).
+#   item_difficulty  from `gaps.difficulty` for the test's `gap_id` -- falls back to the
+#                    estimator's own neutral default when absent, exactly as `ci_run`'s
+#                    contract already documents.
+#   error_class      DELIBERATELY ABSENT. `_failure_evidence_by_error_class` already
+#                    treats a missing `error_class` as "contributes to no recurrence count"
+#                    (its `if error_class:` guard) -- so `test_result` traces are, on
+#                    purpose, inert with respect to `apply_recurrence_rule`/weakness-
+#                    opening. That mechanism was not asked for here and gap_id is not the
+#                    same signal error_class is (Becker's "same mistake repeating" is about
+#                    a classified error TEXT, not a code region) -- wiring it would be a
+#                    second, unreviewed decision riding on this one. `concept_ids` (below)
+#                    is what test_result traces DO carry, and that is what V1/V5/V6 need.
+# `concept_ids` on the trace itself (not payload) is the gap's `concept_ids` from `gaps` --
+# a trace tagged with two concepts contributes to both, the same containment semantics
+# `_replay_concept`'s `concept_ids @> ARRAY[concept]` already gives `ci_run`.
+MASTERY_TRACE_KINDS = frozenset({"ci_run", "test_result"})
 
 # Every other kind, with the reason it is not evidence. Prose, because the reason is the
 # point -- an unexplained exclusion is indistinguishable from an oversight.
@@ -748,6 +777,58 @@ class Memory:
         orchestrator in M6; naming the seam now means no agent changes when it does.
         """
         return self.get_profile(student_id, conn=conn)
+
+    # ---------- READ: the raw test_result sequence, for V5/V6 ----------
+    def test_result_history(self, student_id: str, *,
+                            assignment_id: str | None = None,
+                            conn=None) -> list[dict[str, Any]]:
+        """Every `test_result` trace for this student, oldest first -- optionally scoped
+        to one assignment. Read-only; writes nothing.
+
+        `update_mastery`/`rebuild_mastery_from_traces` give the REPLAYED mastery state
+        (the final BKT numbers per concept), which is what an agent needs. V5 (Error
+        Response) and V6 (Error Frequency) need something a replayed state cannot give
+        them: the raw SEQUENCE itself -- median time-to-fix between a failure and the
+        next pass, per-concept failure counts, changed-LOC-normalised rates. This is the
+        one new public method this required, rather than a second place `traces` gets
+        queried directly from outside memory.py (invariant 2) -- `features/compute_
+        features.py` is not literally under `agents/`, but the door is the door regardless
+        of which caller is on the other side of it.
+
+        Returns one dict per trace, in (ts, trace_id) order -- the same ordering
+        `_replay_concept` uses, for the same reason (ts alone is not a total order):
+            {"ts": datetime, "assignment_id": str | None, "concept_ids": list[str],
+             "passed": bool | None, "item_difficulty": float | None}
+        `passed` is `None` for a payload whose `conclusion` is outside `OUTCOME`'s two
+        keys (should not happen for `test_result`, which always writes one of them, but
+        this function does not assume its own writer never regresses) rather than
+        silently coercing an unrecognised value to a boolean.
+        """
+        query = """
+            SELECT ts, assignment_id, concept_ids, payload
+            FROM traces
+            WHERE student_id = %s AND kind = 'test_result'
+        """
+        params: list[Any] = [student_id]
+        if assignment_id is not None:
+            query += " AND assignment_id = %s"
+            params.append(assignment_id)
+        query += " ORDER BY ts, trace_id"
+
+        with _session(conn) as c, c.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+        return [
+            {
+                "ts": ts,
+                "assignment_id": aid,
+                "concept_ids": list(concept_ids or []),
+                "passed": OUTCOME.get((payload or {}).get("conclusion")),
+                "item_difficulty": (payload or {}).get("item_difficulty"),
+            }
+            for ts, aid, concept_ids, payload in rows
+        ]
 
     # ---------- FAST PATH: deterministic mastery update ----------
     def update_mastery(self, student_id: str, concept: str, *,

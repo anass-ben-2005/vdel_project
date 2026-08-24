@@ -26,11 +26,19 @@ timeout. Acceptable for this project's v1 scope (a single known curriculum, run 
 person who owns the machine), not acceptable for untrusted multi-tenant grading. That
 line is deliberately not crossed here.
 
-Also a real, stated limitation: `test_results.gap_id` is left NULL. No naming convention
-or manifest maps a hidden test to the specific gap it exercises, and inventing one now
-would be exactly the kind of guessed structure CLAUDE.md's "never invent" rule forbids --
-a wrong gap_id would misattribute a mastery signal to the wrong concept, which is worse
-than an honest NULL. Per-test-to-gap attribution is future work, not a gap in this file.
+`test_results.gap_id` is populated via `@pytest.mark.gap("g_id")`, read from JUnit XML
+`<properties>` (D-046) -- STALE NOTE CORRECTED: an earlier version of this docstring said
+gap_id was left NULL with no attribution mechanism; that was true before D-046 and is not
+true now. `_gap_id_from_case` below is the real mechanism.
+
+MASTERY WIRING (D-045/D-046, EXECUTION.md Stage C1): every commit's test outcomes are
+also logged as `test_result` traces through `memory.Memory` -- never raw SQL to `traces`
+(invariant 2) -- so V1 (BKT), V5 (Error Response) and V6 (Error Frequency) can read the
+full pre-freeze failure history, not just whatever survives to the frozen commit. Traced
+ONLY for outcomes carrying a real `gap_id` (untagged tests have no concept to attribute
+evidence to -- see `_gap_id_from_case`) and ONLY for genuinely NEW `test_results` rows
+(`_write_test_results`'s `xmax = 0` check) -- re-grading an already-recorded commit must
+not silently inflate `n`, the observation count invariant 8 makes load-bearing.
 """
 
 from __future__ import annotations
@@ -39,14 +47,39 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from psycopg2.extras import execute_values
 
+from memory.memory import Memory
 from system import db
 
 CURRICULUM_ROOT = Path(__file__).resolve().parent.parent / "curriculum" / "master"
+
+
+@contextmanager
+def _session(conn):
+    """Join the caller's transaction, or own one for the duration of this call --
+    memory.py's own `_session` pattern, replicated rather than imported (it is a
+    module-private helper there, not part of `Memory`'s public surface).
+
+    Why `grade_attempt` needs this at all: `traces` is append-only at the database
+    level (a Postgres RULE makes DELETE a silent no-op, confirmed live -- `rowcount: 0`,
+    no error), so once this function logs a real `test_result` trace there is no SQL
+    that can ever clean it up. A test that calls the real `grade_attempt` therefore
+    cannot use DELETE-based teardown the way every other synthetic-data test in this
+    project does -- it must instead run inside a transaction that is ROLLED BACK, never
+    committed, which is exactly what passing a `conn` through (and never calling
+    `conn.commit()` on it) makes possible. Accepting `conn=None` and opening/committing
+    an owned one is the live-path default; nothing about production grading changes.
+    """
+    if conn is not None:
+        yield conn
+    else:
+        with db.connect() as owned:
+            yield owned
 
 # Wall-clock ceiling for one assignment's hidden-test run. Generous for four small ETL
 # functions; exists so a student's accidental infinite loop or hung network call cannot
@@ -208,7 +241,7 @@ def _parse_junit(junit_path: Path) -> list[TestOutcome]:
 
 
 def _write_test_results(cur, attempt_id: int, commit_sha: str | None,
-                         outcomes: list[TestOutcome]) -> None:
+                         outcomes: list[TestOutcome]) -> set[str]:
     """One row per test per commit (D-045c) -- never overwrites a DIFFERENT commit's
     row, which is the entire point of keying by commit instead of by attempt.
 
@@ -218,9 +251,15 @@ def _write_test_results(cur, attempt_id: int, commit_sha: str | None,
     both arbiter indexes at once, and every row in ONE call shares the same commit_sha
     (grade_attempt takes one commit_sha per call), so choosing the target once per call,
     not per row, is correct, not a shortcut.
+
+    Returns the `test_name`s that were genuinely NEW this call (a real INSERT, not an
+    UPDATE via the ON CONFLICT path) -- `xmax = 0` is the standard Postgres idiom for
+    this (a freshly inserted row's `xmax` system column is 0; a row reached via
+    ON CONFLICT DO UPDATE has a real one). This is how the caller avoids double-counting
+    a re-grade of an already-recorded commit as a second BKT observation.
     """
     if not outcomes:
-        return
+        return set()
     # D-046: gap_id is NOT validated against the real `gaps` table here -- the FK on
     # test_results.gap_id already enforces that a bogus value cannot land silently; a
     # violation surfaces as a real, loud FK error rather than this function guessing
@@ -230,23 +269,94 @@ def _write_test_results(cur, attempt_id: int, commit_sha: str | None,
         for o in outcomes
     ]
     if commit_sha is not None:
-        execute_values(cur, """
+        result = execute_values(cur, """
             INSERT INTO test_results
                 (attempt_id, commit_sha, test_name, gap_id, passed, message)
             VALUES %s
             ON CONFLICT (attempt_id, commit_sha, test_name) WHERE commit_sha IS NOT NULL
             DO UPDATE SET gap_id = EXCLUDED.gap_id, passed = EXCLUDED.passed,
                           message = EXCLUDED.message, ran_at = now()
-        """, rows)
+            RETURNING test_name, (xmax = 0) AS is_new
+        """, rows, fetch=True)
     else:
-        execute_values(cur, """
+        result = execute_values(cur, """
             INSERT INTO test_results
                 (attempt_id, commit_sha, test_name, gap_id, passed, message)
             VALUES %s
             ON CONFLICT (attempt_id, test_name) WHERE commit_sha IS NULL
             DO UPDATE SET gap_id = EXCLUDED.gap_id, passed = EXCLUDED.passed,
                           message = EXCLUDED.message, ran_at = now()
-        """, rows)
+            RETURNING test_name, (xmax = 0) AS is_new
+        """, rows, fetch=True)
+    return {test_name for test_name, is_new in result if is_new}
+
+
+def _gap_metadata(cur, gap_ids: set[str]) -> dict[str, tuple[list[str], float]]:
+    """`(concept_ids, difficulty)` per gap_id, one query for every gap this run's
+    outcomes touch -- not one query per outcome, which would turn a run of N tests into
+    N round-trips for no reason."""
+    if not gap_ids:
+        return {}
+    cur.execute(
+        "SELECT gap_id, concept_ids, difficulty FROM gaps WHERE gap_id = ANY(%s)",
+        (list(gap_ids),),
+    )
+    return {gid: (list(concept_ids), float(difficulty))
+            for gid, concept_ids, difficulty in cur.fetchall()}
+
+
+def _log_mastery_traces(mem: Memory, conn, student_id: str, assignment_id: str,
+                         commit_sha: str | None, outcomes: list[TestOutcome],
+                         new_test_names: set[str], gap_meta: dict) -> None:
+    """One `test_result` trace per genuinely-new, gap-tagged outcome (EXECUTION.md Stage
+    C1, memory.py's MASTERY_TRACE_KINDS docstring), THEN one `update_mastery` per
+    concept touched -- through `memory.Memory` only, no raw SQL to `traces` or
+    `learner_profile` here (invariant 2). Both steps, not just the first: logging a
+    trace alone leaves the evidence sitting in the log unread until some later batch
+    job replays it, and "a real mastery update, live" means `learner_profile.mastery`
+    changes NOW, in this same transaction -- the same two-step fast-path shape
+    `agents/code_agent.py::grade` already uses after logging its own verdict trace
+    (`log_trace` then `for concept in concepts: mem.update_mastery(...)`).
+
+    Two filters on WHICH traces get logged, both load-bearing, neither optional:
+      - `new_test_names` (from `_write_test_results`'s `xmax = 0` check): re-grading an
+        already-recorded commit must not log a second observation for the same evidence
+        -- that would silently inflate `n`, which invariant 8 makes load-bearing.
+      - `o.gap_id is not None`: an untagged test has no concept to attribute evidence
+        to. Silently attributing it to nothing would be worse than not logging it.
+
+    `conclusion` uses the exact two-value vocabulary `ci_run` already established
+    (`memory.OUTCOME`'s keys) -- one vocabulary for "did this pass", not a second one
+    that could drift from the first.
+
+    `update_mastery` is called once per DISTINCT concept touched this call, not once
+    per trace -- calling it twice for the same concept in one pass would be wasted work
+    (it is idempotent, per its own docstring, so not WRONG, just redundant).
+    """
+    # concept -> the trace_id of the MOST RECENT outcome that touched it this call, so
+    # each update_mastery below cites the specific evidence that most directly prompted
+    # it, not an arbitrary "whichever trace happened to be logged last overall" -- this
+    # only affects the causal-forest link (parent_trace_id), never the computed numbers
+    # (update_mastery replays the whole log regardless of which trace_id it is given).
+    concept_to_trace_id: dict[str, int] = {}
+    for o in outcomes:
+        if o.test_name not in new_test_names or o.gap_id is None:
+            continue
+        meta = gap_meta.get(o.gap_id)
+        if meta is None:
+            continue   # gap_id didn't resolve against `gaps` -- nothing to attribute
+        concept_ids, difficulty = meta
+        trace_id = mem.log_trace(
+            student_id, "system", "test_result",
+            {"conclusion": "success" if o.passed else "failure",
+             "item_difficulty": difficulty},
+            assignment_id=assignment_id, concept_ids=concept_ids, conn=conn,
+        )
+        for concept in concept_ids:
+            concept_to_trace_id[concept] = trace_id
+
+    for concept, trace_id in concept_to_trace_id.items():
+        mem.update_mastery(student_id, concept, parent_trace_id=trace_id, conn=conn)
 
 
 def _maybe_freeze(cur, attempt_id: int, commit_sha: str | None,
@@ -278,7 +388,7 @@ def _maybe_freeze(cur, attempt_id: int, commit_sha: str | None,
 
 def grade_attempt(
     project_id: str, assignment_id: str, repo_dir: str | Path, attempt_id: int,
-    *, commit_sha: str | None = None,
+    *, commit_sha: str | None = None, conn=None,
 ) -> RunResult:
     """Run one assignment's hidden tests against `repo_dir` and record the outcome.
 
@@ -289,10 +399,19 @@ def grade_attempt(
     `raw_commits`, i.e. after `collect_github` has landed it -- to grade an actual push
     and allow freezing.
 
-    Two separate DB cursor blocks, not one held across the subprocess call: the pytest
+    `conn`: join the caller's transaction instead of opening/committing an owned one --
+    see `_session`'s own docstring for why this exists (traces cannot be deleted once
+    written, so a test that must leave no trace behind has to roll one back instead).
+    The live path never passes this; it is here for exactly one caller, tests.
+
+    Two separate DB round-trips, not one held across the subprocess call: the pytest
     run can take up to `_TIMEOUT_S`, and holding a transaction open for that long for no
     reason is the wrong shape, the same reasoning render_student_repo.py's own two-block
-    split (_load_project, then the write loop) already follows.
+    split (_load_project, then the write loop) already follows. The SECOND round-trip
+    holds a real `conn` (not just a cursor) for its whole duration -- `test_results`,
+    the `test_result` traces (D-045/D-046), and the freeze UPDATE are one transaction,
+    so a crash between them cannot leave mastery evidence logged with no corresponding
+    `test_results` row, or a frozen attempt with no trace of what froze it.
     """
     with db.cursor() as cur:
         cur.execute(
@@ -315,8 +434,18 @@ def grade_attempt(
     tests_total = len(outcomes)
     tests_passed = sum(1 for o in outcomes if o.passed)
 
-    with db.cursor() as cur:
-        _write_test_results(cur, attempt_id, commit_sha, outcomes)
+    mem = Memory()
+    with _session(conn) as c, c.cursor() as cur:
+        cur.execute("SELECT student_id FROM attempts WHERE attempt_id = %s", (attempt_id,))
+        student_row = cur.fetchone()
+        if student_row is None:
+            raise TestRunnerError(f"unknown attempt_id {attempt_id!r}")
+        student_id = student_row[0]
+
+        new_test_names = _write_test_results(cur, attempt_id, commit_sha, outcomes)
+        gap_meta = _gap_metadata(cur, {o.gap_id for o in outcomes if o.gap_id is not None})
+        _log_mastery_traces(mem, c, student_id, assignment_id, commit_sha,
+                            outcomes, new_test_names, gap_meta)
         frozen = _maybe_freeze(cur, attempt_id, commit_sha, tests_passed, tests_total)
 
     return RunResult(
