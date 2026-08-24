@@ -23,7 +23,16 @@ CLAUDE.md
 VDEL_Modules_1_2_Build.md
 VDEL_Modules_3_9_Build.md
 VDEL_v1_Execution_Plan.md
+VDEL_REDESIGN.md
 vdel_complete_design_document.md
 SETUP.md
+EXECUTION.md
 .claude/
 docs/
+
+# Local scratch at the repo root: one-off DB queries and a manual Code Agent driver.
+# Neither is part of any deliverable, and neither is worth promoting to scripts/ -- they
+# exist to be edited and thrown away. Ignored rather than deleted so they stay available
+# locally without ever entering a diff or the lint gate.
+exec.py
+check_assignments.py
