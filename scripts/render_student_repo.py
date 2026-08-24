@@ -228,6 +228,23 @@ def render_student_repo(
                     "instruction": gap.instruction, "variant_id": variant_id,
                 })
 
+    # Scaffolding: real files in the master tree that carry no gaps and so are copied
+    # verbatim rather than rendered. Both are load-bearing, not decoration:
+    #   <project_id>/__init__.py  makes the rendered tree an importable PACKAGE, which is
+    #       what lets the hidden tests say `from weather_etl.extract import ...` against a
+    #       student repo with no sys.path manipulation in the test files.
+    #   requirements.txt          the generated ci.yml runs `pip install -r
+    #       requirements.txt`; without it CI fails at step one, before reaching any student
+    #       code -- every run red for a reason that has nothing to do with the student.
+    # Copied through the same loop so a missing one is a visible KeyError-free no-op
+    # rather than a silently broken render.
+    for rel in (f"{project_id}/__init__.py", "requirements.txt"):
+        src = project_dir / rel
+        if src.exists():
+            dest = out_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest)
+
     # tests/visible copied if present; tests/hidden is NEVER read, let alone copied --
     # not "copied then filtered out", simply never touched by this loop at all.
     visible_src = project_dir / "tests" / "visible"

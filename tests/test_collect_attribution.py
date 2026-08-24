@@ -48,14 +48,21 @@ FAKE_COMMITS = [
     },
 ]
 
+# Filenames are PACKAGE-QUALIFIED ('weather_etl/extract.py', not 'extract.py') because
+# that is the literal string GitHub puts in a commit's files[].filename for a repo whose
+# sources live in a package directory -- and therefore the literal string
+# assignments.file_path must equal for _match_assignments to match it. Using bare
+# basenames here passed for exactly as long as the master tree was flat, and broke the
+# moment it became a real package; that is the shape of bug this test exists to catch.
 FAKE_DETAILS = {
     "fake://_test_sha_multi": {
         "stats": {"additions": 12, "deletions": 3},
-        "files": [{"filename": "extract.py"}, {"filename": "load.py"}],
+        "files": [{"filename": "weather_etl/extract.py"},
+                  {"filename": "weather_etl/load.py"}],
     },
     "fake://_test_sha_quality": {
         "stats": {"additions": 4, "deletions": 0},
-        "files": [{"filename": "quality.py"}],
+        "files": [{"filename": "weather_etl/quality.py"}],
     },
     "fake://_test_sha_readme": {
         "stats": {"additions": 1, "deletions": 1},

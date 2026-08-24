@@ -1,0 +1,10 @@
+# Dependencies for the weather_etl student repo. Copied verbatim into every render --
+# the generated .github/workflows/ci.yml runs `pip install -r requirements.txt`, so
+# without this file in the rendered tree, CI fails at its first step before any student
+# code is ever reached.
+#
+# Deliberately minimal: `requests` is the one third-party import in the master sources
+# (weather_etl/extract.py), and `pytest` runs the visible tests. sqlite3 is stdlib and
+# needs no entry.
+requests
+pytest

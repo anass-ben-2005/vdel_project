@@ -80,11 +80,22 @@ def seed_curriculum(cur, project_id: str) -> dict[str, int]:
     on each table's real primary key, so a second run updates rows in place rather than
     duplicating them.
     """
+    # The master tree MIRRORS the student repo: <project_dir> is the repo root and
+    # <project_dir>/<project_id>/ is the importable package inside it. That mirroring is
+    # what lets one `file_path` value ('weather_etl/extract.py') be simultaneously correct
+    # as a path under the master tree, a path in the rendered student repo, and the string
+    # GitHub reports in a commit's `files[].filename` -- which is exactly what D-043's
+    # per-file attribution matches assignments.file_path against. A flat master would need
+    # three different spellings of the same file and a translation step between each.
     project_dir = CURRICULUM_ROOT / project_id
+    package_dir = project_dir / project_id
     stage_files = [
-        project_dir / f"{stage}.py" for stage in PIPELINE_STAGES
-        if (project_dir / f"{stage}.py").exists()
+        package_dir / f"{stage}.py" for stage in PIPELINE_STAGES
+        if (package_dir / f"{stage}.py").exists()
     ]
+    # _tree_version hashes each file's CONTENT keyed by its basename, so moving the stage
+    # files into the package directory does not move master_version -- the gaps already
+    # seeded against it keep their pinned line ranges (invariant 15).
     master_version = _tree_version(stage_files)
 
     cur.execute(
@@ -104,7 +115,7 @@ def seed_curriculum(cur, project_id: str) -> dict[str, int]:
     assignments_written = 0
     gaps_written = 0
     for seq, stage in enumerate(PIPELINE_STAGES, start=1):
-        path = project_dir / f"{stage}.py"
+        path = package_dir / f"{stage}.py"
         if not path.exists():
             continue
 
@@ -125,7 +136,9 @@ def seed_curriculum(cur, project_id: str) -> dict[str, int]:
             # Pace clock (CLAUDE.md 6) and must never be moved by a re-run once set.
             {
                 "aid": assignment_id, "prefix": f"curriculum/{project_id}",
-                "concepts": concept_ids, "pid": project_id, "fp": f"{stage}.py", "seq": seq,
+                "concepts": concept_ids, "pid": project_id,
+                # Package-qualified, not a bare basename -- see the mirroring note above.
+                "fp": f"{project_id}/{stage}.py", "seq": seq,
             },
         )
         assignments_written += 1
