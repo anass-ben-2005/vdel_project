@@ -32,7 +32,20 @@ line-length = 100
 # `force-exclude = true` is set (it isn't), so `ruff check .` (the M0-M3 DoD / CI gate) skips
 # this directory, but the tool stage's per-submission `ruff check benchmark/submissions/<f>`
 # still lints each file for real. D-026.
-extend-exclude = ["benchmark/submissions"]
+#
+# curriculum/ is excluded for the same reason and by the same mechanism: it is graded
+# CONTENT, not repo source. The master files are reference solutions carrying `# @gap:`
+# markers, and their student-facing renders are linted for real by the gap-scoped stage
+# (assessment/scope_check.py's filter_lint_findings, C4/invariant 14) -- which is the lint
+# run that actually means something about a student. Applying the repo's own style gate to
+# them would enforce the wrong rules on the wrong artifact.
+#
+# There is a second, harder reason not to simply fix the findings: each master file's git
+# blob hash IS its `master_version` (scripts/seed_data.py::_tree_version), and every `gaps`
+# and `variants` row pins that value (invariant 15). Restyling a master to satisfy a linter
+# silently invalidates the line ranges of every gap already seeded from it. The content is
+# deliberately frozen, not merely unlinted.
+extend-exclude = ["benchmark/submissions", "curriculum"]
 
 # Selected explicitly, not left to ruff's defaults. Defaults vary by ruff version and a
 # developer's global config bleeds into a bare `ruff check .`, so CI on a clean machine
