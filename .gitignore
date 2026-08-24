@@ -36,3 +36,14 @@ docs/
 # locally without ever entering a diff or the lint gate.
 exec.py
 check_assignments.py
+
+# scripts/render_student_repo.py's durable output location. A rendered repo is a
+# GENERATED artifact -- it is real, but it is derived entirely from `curriculum/master/`
+# plus the DB (gaps, variants, the student's mastery), the same "raw tables are the
+# source of truth, not what's derived from them" rule the rest of this project already
+# follows for `attempts`/`variants` themselves. Re-running the render reproduces it byte
+# for byte from those real sources; committing it would mean tracking a byte-for-byte
+# reproducible copy of files this repo already tracks (the master files) alongside
+# per-student content (a real student's code, once they start editing it) that has no
+# business in the instructor's own repo history at all.
+renders/
