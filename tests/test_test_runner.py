@@ -104,13 +104,21 @@ def test_local_run_never_freezes_even_at_100_percent(freeze_scenario, capsys):
     assert result.tests_passed == 5          # the real master solution passes everything
     assert result.frozen is False             # but there is no real commit to freeze on
 
+    # D-046: every outcome carries the gap_id its @pytest.mark.gap(...) declared -- read
+    # from RunResult directly, not only from the DB, so a failure here points at the
+    # marker/conftest mechanism itself rather than only at the write path.
+    gap_ids_seen = {o.gap_id for o in result.outcomes}
+    assert gap_ids_seen == {"g_tf_clean", "g_tf_convert", "g_tf_timestamp"}
+    assert all(o.gap_id is not None for o in result.outcomes)
+
     with db.cursor() as cur:
         cur.execute(
             "SELECT commit_sha FROM attempts WHERE attempt_id=%s", (attempt_id,)
         )
         assert cur.fetchone()[0] is None
         cur.execute(
-            "SELECT count(*) FROM test_results WHERE attempt_id=%s AND commit_sha IS NULL",
+            "SELECT count(*) FROM test_results"
+            " WHERE attempt_id=%s AND commit_sha IS NULL AND gap_id IS NOT NULL",
             (attempt_id,),
         )
         assert cur.fetchone()[0] == 5

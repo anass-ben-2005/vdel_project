@@ -60,6 +60,7 @@ class TestOutcome:
     test_name: str
     passed: bool
     message: str | None
+    gap_id: str | None    # D-046: from @pytest.mark.gap("g_..."), NOT from the test name
 
 
 @dataclass(frozen=True)
@@ -95,22 +96,40 @@ def _hidden_test_file(project_id: str, file_path: str) -> Path:
     return path
 
 
-def _inject_hidden_test(repo_dir: Path, test_src: Path) -> str:
-    """Copies the ONE hidden test file this assignment needs into the target repo.
-    Never the whole tests/hidden/ directory -- render_student_repo.py's own invariant
-    (never let tests/hidden reach a student) applies here with the same force: this
-    function's caller is grading a real repo, not authoring a student's copy of it, but
-    injecting every OTHER assignment's hidden tests too would leak them for no reason
+def _inject_hidden_test(repo_dir: Path, project_id: str, test_src: Path) -> str:
+    """Copies the ONE hidden test file this assignment needs into the target repo, PLUS
+    the shared `conftest.py` that turns its `@pytest.mark.gap(...)` markers into JUnit
+    XML properties (D-046) -- without it, every gap_id would silently come back as None,
+    since a bare marker with no hook does not reach --junitxml output at all (verified
+    empirically before this convention was adopted; see conftest.py's own docstring).
+
+    Never the whole tests/hidden/ directory otherwise -- render_student_repo.py's own
+    invariant (never let tests/hidden reach a student) applies here with the same force:
+    this function's caller is grading a real repo, not authoring a student's copy of it,
+    but injecting every OTHER assignment's hidden tests too would leak them for no reason
     this single-assignment grading run needs.
 
-    Returns the path relative to `repo_dir`, in POSIX form, for the subprocess command
-    line -- `Path` on Windows renders backslashes, which pytest accepts on the CLI but
-    which would make the stored test identity platform-dependent for no reason.
+    conftest.py is copied unconditionally on every call (cheap, idempotent overwrite) --
+    simpler and safer than tracking whether it is "already there," and correct even if a
+    project's conftest.py changes between two grading runs of the same repo.
+
+    Returns the test file's path relative to `repo_dir`, in POSIX form, for the
+    subprocess command line -- `Path` on Windows renders backslashes, which pytest
+    accepts on the CLI but which would make the stored test identity
+    platform-dependent for no reason.
     """
     dest_dir = repo_dir / "tests" / "hidden"
     dest_dir.mkdir(parents=True, exist_ok=True)
+
     dest = dest_dir / test_src.name
     dest.write_text(test_src.read_text(encoding="utf-8"), encoding="utf-8")
+
+    conftest_src = CURRICULUM_ROOT / project_id / "tests" / "hidden" / "conftest.py"
+    if conftest_src.exists():
+        (dest_dir / "conftest.py").write_text(
+            conftest_src.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+
     return f"tests/hidden/{test_src.name}"
 
 
@@ -137,6 +156,22 @@ def _run_pytest(repo_dir: Path, test_rel_path: str, junit_path: Path) -> None:
         text=True,
         timeout=_TIMEOUT_S,
     )
+
+
+def _gap_id_from_case(case: ET.Element) -> str | None:
+    """D-046: the `<properties><property name="gap_id" value="..."/></properties>`
+    child `conftest.py`'s `pytest_collection_modifyitems` writes from the test's
+    `@pytest.mark.gap(...)`. A test with no marker has no `<properties>` element at all
+    (verified, not assumed -- see conftest.py's docstring), so `None` here means
+    honestly "this test declares no gap," never a parse failure disguised as one.
+    """
+    props = case.find("properties")
+    if props is None:
+        return None
+    for prop in props.findall("property"):
+        if prop.get("name") == "gap_id":
+            return prop.get("value")
+    return None
 
 
 def _parse_junit(junit_path: Path) -> list[TestOutcome]:
@@ -167,6 +202,7 @@ def _parse_junit(junit_path: Path) -> list[TestOutcome]:
             test_name=f"{case.get('classname')}::{case.get('name')}",
             passed=failure is None and error is None,
             message=message,
+            gap_id=_gap_id_from_case(case),
         ))
     return outcomes
 
@@ -185,22 +221,31 @@ def _write_test_results(cur, attempt_id: int, commit_sha: str | None,
     """
     if not outcomes:
         return
-    rows = [(attempt_id, commit_sha, o.test_name, o.passed, o.message) for o in outcomes]
+    # D-046: gap_id is NOT validated against the real `gaps` table here -- the FK on
+    # test_results.gap_id already enforces that a bogus value cannot land silently; a
+    # violation surfaces as a real, loud FK error rather than this function guessing
+    # what to do about it.
+    rows = [
+        (attempt_id, commit_sha, o.test_name, o.gap_id, o.passed, o.message)
+        for o in outcomes
+    ]
     if commit_sha is not None:
         execute_values(cur, """
-            INSERT INTO test_results (attempt_id, commit_sha, test_name, passed, message)
+            INSERT INTO test_results
+                (attempt_id, commit_sha, test_name, gap_id, passed, message)
             VALUES %s
             ON CONFLICT (attempt_id, commit_sha, test_name) WHERE commit_sha IS NOT NULL
-            DO UPDATE SET passed = EXCLUDED.passed, message = EXCLUDED.message,
-                          ran_at = now()
+            DO UPDATE SET gap_id = EXCLUDED.gap_id, passed = EXCLUDED.passed,
+                          message = EXCLUDED.message, ran_at = now()
         """, rows)
     else:
         execute_values(cur, """
-            INSERT INTO test_results (attempt_id, commit_sha, test_name, passed, message)
+            INSERT INTO test_results
+                (attempt_id, commit_sha, test_name, gap_id, passed, message)
             VALUES %s
             ON CONFLICT (attempt_id, test_name) WHERE commit_sha IS NULL
-            DO UPDATE SET passed = EXCLUDED.passed, message = EXCLUDED.message,
-                          ran_at = now()
+            DO UPDATE SET gap_id = EXCLUDED.gap_id, passed = EXCLUDED.passed,
+                          message = EXCLUDED.message, ran_at = now()
         """, rows)
 
 
@@ -260,7 +305,7 @@ def grade_attempt(
 
     repo_dir = Path(repo_dir)
     test_src = _hidden_test_file(project_id, file_path)
-    test_rel_path = _inject_hidden_test(repo_dir, test_src)
+    test_rel_path = _inject_hidden_test(repo_dir, project_id, test_src)
 
     with tempfile.TemporaryDirectory() as tmp:
         junit_path = Path(tmp) / "results.xml"

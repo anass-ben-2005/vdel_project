@@ -3,6 +3,7 @@ import requests
 from weather_etl.extract import fetch_weather, parse_response
 
 
+@pytest.mark.gap("g_ext_retry")
 def test_fetch_weather_retries_then_succeeds(monkeypatch):
     calls = {"n": 0}
 
@@ -22,6 +23,7 @@ def test_fetch_weather_retries_then_succeeds(monkeypatch):
     assert calls["n"] == 2
 
 
+@pytest.mark.gap("g_ext_retry")
 def test_fetch_weather_raises_after_max_attempts(monkeypatch):
     def always_fail(*a, **kw):
         raise requests.ConnectionError()
@@ -31,6 +33,7 @@ def test_fetch_weather_raises_after_max_attempts(monkeypatch):
         fetch_weather("http://x", {})
 
 
+@pytest.mark.gap("g_ext_parse")
 def test_parse_response_missing_key_returns_none():
     result = parse_response({"current": {"temp": 20}})
     assert result["temp"] == 20
@@ -38,6 +41,7 @@ def test_parse_response_missing_key_returns_none():
     assert result["wind_speed"] is None
 
 
+@pytest.mark.gap("g_ext_parse")
 def test_parse_response_missing_current_key_entirely():
     result = parse_response({})
     assert result == {"temp": None, "humidity": None, "wind_speed": None}

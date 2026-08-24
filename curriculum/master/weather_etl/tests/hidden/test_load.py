@@ -11,11 +11,13 @@ def conn():
     c.close()
 
 
+@pytest.mark.gap("g_ld_insert")
 def test_insert_readings_returns_count(conn):
     records = [{"temp": 20, "humidity": 50, "wind_speed": 5, "timestamp": "2024-01-01"}]
     assert insert_readings(conn, records) == 1
 
 
+@pytest.mark.gap("g_ld_select")
 def test_readings_since_filters_correctly(conn):
     conn.executemany(
         "INSERT INTO readings VALUES (:temp,:humidity,:wind_speed,:timestamp)",
