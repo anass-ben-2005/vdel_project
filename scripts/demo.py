@@ -272,6 +272,19 @@ BEATS = [
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Force line-buffered stdout regardless of how this is launched. Python fully
+    # block-buffers stdout the moment it isn't a TTY (piped to a file, captured by a
+    # background task runner, redirected during rehearsal recording) -- every print
+    # in this script then sits invisible until the buffer fills or the process exits.
+    # That is exactly what turned a real-but-ordinary 222.3s Beat 6 delay into what
+    # looked like a 15-minute hang with zero output, this session, live -- confirmed
+    # the fix by re-running with `python -u` and watching every beat's output land in
+    # real time instead of all at once at the end. Reconfiguring here means every
+    # future run gets that behavior by default, with no `-u` flag or launcher
+    # convention to remember -- the actual defence will not be run with `-u` typed by
+    # hand, so the script has to guarantee it itself.
+    sys.stdout.reconfigure(line_buffering=True)
+
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--skip-network", action="store_true",
                          help="skip Beat 4's live GitHub collection")
