@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "EXECUTION.md Stage C3. Anas's own labels -- his to decide, not a model's (CLAUDE.md).",
+    "Every score is currently null: a template, not a guess. Fill in each criterion",
+    "0/2/4 per CLAUDE.md's anchored rubric (Correctness / Approach & logic / Readability /",
+    "Idiomatic Spark-SQL) by reading benchmark/submissions/*.py and TASK.md yourself,",
+    "then run_benchmark.py compares the judge's real live verdicts against these."
+  ],
+  "task": "monthly revenue per customer (benchmark/submissions/TASK.md)",
+  "concept": "spark.aggregation",
+  "submissions": {
+    "clean.py": {
+      "correctness": null,
+      "approach": null,
+      "readability": null,
+      "idiomatic": null
+    },
+    "subtly_wrong.py": {
+      "correctness": null,
+      "approach": null,
+      "readability": null,
+      "idiomatic": null
+    },
+    "inefficient.py": {
+      "correctness": null,
+      "approach": null,
+      "readability": null,
+      "idiomatic": null
+    },
+    "copy_paste.py": {
+      "correctness": null,
+      "approach": null,
+      "readability": null,
+      "idiomatic": null
+    },
+    "broken.py": {
+      "correctness": null,
+      "approach": null,
+      "readability": null,
+      "idiomatic": null
+    }
+  }
+}

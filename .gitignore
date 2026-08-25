@@ -47,3 +47,9 @@ check_assignments.py
 # per-student content (a real student's code, once they start editing it) that has no
 # business in the instructor's own repo history at all.
 renders/
+
+# benchmark/run_benchmark.py's own durable output -- a real run's per-call results
+# (including any call_errors), written so a finding like D-050's quota exhaustion
+# survives the process exiting even when --commit is never passed. Reproducible from a
+# live LLM call each time, same reasoning as renders/ above -- not source, not tracked.
+benchmark/results/
