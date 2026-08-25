@@ -1,0 +1,13 @@
+# Dependencies for the sales_analyzer student repo. Copied verbatim into every render --
+# the generated .github/workflows/ci.yml runs `pip install -r requirements.txt`, so
+# without this file in the rendered tree, CI fails at its first step before any student
+# code is ever reached. Matches weather_etl/requirements.txt's own reasoning.
+#
+# pandas IS pinned, unlike weather_etl's bare `requests`/`pytest` -- this project's own
+# gaps (g_cl_fillna especially) depend on a specific SettingWithCopyWarning/copy-vs-view
+# behaviour that isn't guaranteed stable across pandas major versions, so grading needs
+# the same version every time. Pinned to 2.2.3, the version actually installed and used
+# to author and verify every hidden test in this project (`python -c "import pandas;
+# print(pandas.__version__)"`, checked live before writing this file, not assumed).
+pandas==2.2.3
+pytest

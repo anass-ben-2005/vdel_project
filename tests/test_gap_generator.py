@@ -312,3 +312,35 @@ def test_unseen_concept_defaults_to_zero_obs_and_zero_mastery():
         mastery_by_concept={}, n_obs_by_concept={},
     )
     assert gap_ids == ("g_a",)
+
+
+# ---------- real curriculum content: Project 2 (sales_analyzer) ----------
+# VDEL_TEN_PROJECT_CURRICULUM.md §3. Reuses this file's existing harness (real Gap
+# objects, select_variant called the same way as every synthetic test above) against
+# gaps parsed from the real master file, via parse_master -- not a hand-built parallel
+# fixture that could silently drift from what parse_master actually produces.
+
+def test_select_variant_on_sales_analyzer_clean_py_is_deterministic_and_reproducible():
+    from pathlib import Path
+
+    from assessment.gap_parser import parse_master
+
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "curriculum" / "master" / "sales_analyzer" / "sales_analyzer" / "clean.py"
+    )
+    gaps = parse_master(path)   # g_cl_dedupe, g_cl_fillna -- both py.pandas
+
+    kwargs = {
+        "assignment_id": "sales_analyzer_clean", "master_version": "test_mv",
+        "student_id": "anas", "attempt_no": 1,
+        "mastery_by_concept": {}, "n_obs_by_concept": {},
+    }
+    first = select_variant(gaps, **kwargs)
+    second = select_variant(gaps, **kwargs)
+    assert first == second   # same inputs -> same variant, every time
+
+    variant_id, hidden_gap_ids = first
+    assert set(hidden_gap_ids) <= {"g_cl_dedupe", "g_cl_fillna"}
+    assert hidden_gap_ids   # at least one gap chosen -- never an empty variant
+    assert isinstance(variant_id, str) and variant_id

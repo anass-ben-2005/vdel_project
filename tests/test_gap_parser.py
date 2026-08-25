@@ -8,6 +8,8 @@ concept-existence check -- using it here would test nothing.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from assessment.gap_parser import Gap, GapParseError, parse_master, render_student_file
@@ -371,6 +373,65 @@ def test_render_strips_continuation_lines_not_just_the_first_instruct_line():
         "    # First part of the sentence, second part, and the third part.\n"
         "    raise NotImplementedError()\n"
     )
+
+
+# ---------- real curriculum content: Project 2 (sales_analyzer) ----------
+# VDEL_TEN_PROJECT_CURRICULUM.md §3. Reuses this file's existing harness (parse_master
+# against a real path) rather than a parallel test file -- same pattern §0's own
+# "author Project 1 fully, then scale" instruction implies for verification too.
+
+_SALES_ANALYZER_ROOT = (
+    Path(__file__).resolve().parent.parent
+    / "curriculum" / "master" / "sales_analyzer" / "sales_analyzer"
+)
+
+
+def test_sales_analyzer_ingest_parses_its_two_real_gaps():
+    gaps = parse_master(_SALES_ANALYZER_ROOT / "ingest.py")
+    assert [g.gap_id for g in gaps] == ["g_ing_dtype", "g_ing_malformed"]
+    assert gaps[0].concept_ids == ("py.pandas",)
+    assert gaps[1].concept_ids == ("py.errors_debugging",)
+
+
+def test_sales_analyzer_clean_parses_its_two_real_gaps():
+    gaps = parse_master(_SALES_ANALYZER_ROOT / "clean.py")
+    assert [g.gap_id for g in gaps] == ["g_cl_dedupe", "g_cl_fillna"]
+    assert all(g.concept_ids == ("py.pandas",) for g in gaps)
+
+
+def test_sales_analyzer_aggregate_parses_its_two_real_gaps():
+    gaps = parse_master(_SALES_ANALYZER_ROOT / "aggregate.py")
+    assert [g.gap_id for g in gaps] == ["g_ag_revenue", "g_ag_top"]
+    assert gaps[0].concept_ids == ("sql.aggregation",)
+    assert gaps[1].concept_ids == ("py.data_structures",)
+
+
+def test_sales_analyzer_load_parses_its_one_real_gap():
+    [gap] = parse_master(_SALES_ANALYZER_ROOT / "load.py")
+    assert gap.gap_id == "g_ld_write"
+    assert gap.concept_ids == ("sql.select_filter",)
+
+
+def test_sales_analyzer_concept_tally_matches_vdel_ten_project_curriculum_section_3():
+    """§3's own stated tally: py.pandas x3, py.errors_debugging x1,
+    py.data_structures x1, sql.aggregation x1, sql.select_filter x1."""
+    all_gaps = [
+        g
+        for f in ("ingest.py", "clean.py", "aggregate.py", "load.py")
+        for g in parse_master(_SALES_ANALYZER_ROOT / f)
+    ]
+    assert len(all_gaps) == 7
+    tally: dict[str, int] = {}
+    for g in all_gaps:
+        for c in g.concept_ids:
+            tally[c] = tally.get(c, 0) + 1
+    assert tally == {
+        "py.pandas": 3,
+        "py.errors_debugging": 1,
+        "py.data_structures": 1,
+        "sql.aggregation": 1,
+        "sql.select_filter": 1,
+    }
 
 
 def test_a_comment_with_no_instruct_marker_at_all_still_raises(tmp_path):

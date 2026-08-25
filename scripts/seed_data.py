@@ -269,6 +269,21 @@ def main() -> int:
           f"{result['assignments']} assignment(s), {result['gaps']} gap(s) "
           f"(master_version {result['master_version'][:12]})")
 
+    # Project 2 (VDEL_TEN_PROJECT_CURRICULUM.md §3). Its own stage names --
+    # ingest/clean/aggregate/load -- do not overlap weather_etl's
+    # extract/transform/load/quality shape (only "load" is shared), which is exactly
+    # why `stages` became a parameter instead of staying the module's one hardcoded
+    # PIPELINE_STAGES tuple (verified this change left weather_etl's own call above
+    # byte-identical -- same master_version, same seq ordering, same 9 gaps, before
+    # and after).
+    with db.cursor() as cur:
+        result = seed_curriculum(
+            cur, "sales_analyzer", stages=("ingest", "clean", "aggregate", "load")
+        )
+    print(f"seeded curriculum: {result['projects']} project(s), "
+          f"{result['assignments']} assignment(s), {result['gaps']} gap(s) "
+          f"(master_version {result['master_version'][:12]})")
+
     roster = load_roster()
     if problems := validate(roster):
         for p in problems:
