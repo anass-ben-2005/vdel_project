@@ -2,12 +2,25 @@
 
 Stage D1. This module reimplements nothing: every beat below calls the real function
 that already proved it live (`EXECUTION.md`'s own citations), in the same order the
-beat table lists them. Its only job is sequencing and printing -- if a beat breaks,
-the bug is in the function it calls, not here.
+beat table lists them. Its only job is sequencing, isolation, and printing -- if a beat
+breaks, the bug is in the function it calls, not here.
 
 Fixed to real data throughout: student `anas`, project `weather_etl`, the real repo
 already pushed to `anass-ben-2005/vdel-weather-etl-gapfill-anas`
-(`renders/anas_attempt1`). Nothing here is synthetic.
+(`renders/anas_attempt1`). Nothing here is synthetic -- Beat 6's LLM grading calls write
+real traces for the real student `anas` (matching D-049's own precedent), not throwaway
+test fixtures, so there is nothing for this script to clean up after itself. Connection
+isolation: every beat opens its own connection fresh, via `db.cursor()`/`db.connect()`/
+`db._open()` -- no connection object is ever held or passed between beats. Deliberately
+so: this session's own `compute_features.py` regression and the `_test_sara` teardown
+incident both traced back to a shared/uncontrolled transaction outliving the code that
+opened it. Nothing here shares one.
+
+Failure isolation: each beat runs inside `_run_beat`, which catches ANY exception,
+prints FAIL with the real error, and continues to the next beat -- one beat's failure
+must never hide whether the other six still work, which is the whole point of running
+all seven as one integration test instead of trusting each one because it worked once
+in isolation.
 
 Two flags exist because two beats are expensive or environment-dependent, not because
 their proof is optional:
@@ -25,6 +38,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from agents import code_agent
@@ -44,6 +58,16 @@ STUDENT = "anas"
 PROJECT = "weather_etl"
 
 
+@dataclass(frozen=True)
+class BeatResult:
+    """What one beat proved, for the final summary table. `evidence` is always ONE
+    line -- the detailed output already printed above it is what a rehearsal audience
+    watches live; this is what's left to scan afterward."""
+
+    passed: bool
+    evidence: str
+
+
 def _banner(n: int, title: str) -> None:
     # Plain ASCII only -- Windows' default console codepage (cp1252) cannot encode
     # box-drawing characters or "§", and this script must run in a stock terminal.
@@ -51,18 +75,34 @@ def _banner(n: int, title: str) -> None:
     print(f"-- Beat {n} " + "-" * (66 - len(title)) + f" {title}")
 
 
-def beat1_curriculum_format() -> None:
-    _banner(1, "the curriculum format is real, not a mock-up")
+def _run_beat(n: int, title: str, fn, *args) -> BeatResult:
+    """Runs one beat, isolated: any exception is caught here, not left to crash the
+    remaining six. Prints PASS/FAIL with real evidence or the real error -- never a
+    stack trace mid-rehearsal, and never a silently skipped beat either."""
+    _banner(n, title)
+    try:
+        result = fn(*args)
+    except Exception as exc:  # noqa: BLE001 -- deliberately broad: isolate ANY beat
+        print(f"  FAIL -- {type(exc).__name__}: {exc}")
+        return BeatResult(passed=False, evidence=f"{type(exc).__name__}: {exc}")
+    print(f"  {'PASS' if result.passed else 'FAIL'} -- {result.evidence}")
+    return result
+
+
+def beat1_curriculum_format() -> BeatResult:
     path = CURRICULUM_ROOT / PROJECT / "weather_etl" / "transform.py"
     gaps = parse_master(path)
     print(f"  {path.relative_to(REPO_ROOT)}  ({len(gaps)} @gap marker(s))")
     for g in gaps:
         print(f"    {g.gap_id:16s} lines {g.line_start}-{g.line_end}  {list(g.concept_ids)}")
         print(f"      {g.instruction}")
+    return BeatResult(
+        passed=len(gaps) > 0,
+        evidence=f"{len(gaps)} real @gap marker(s) parsed from {path.name}",
+    )
 
 
-def beat2_variant_selection() -> None:
-    _banner(2, "two students, different variants, same assignment")
+def beat2_variant_selection() -> BeatResult:
     with db.cursor() as cur:
         cur.execute(
             "SELECT student_id, variant_id FROM attempts"
@@ -73,30 +113,38 @@ def beat2_variant_selection() -> None:
         rows = cur.fetchall()
     for student_id, variant_id in rows:
         print(f"  {student_id:10s} weather_etl_extract  variant_id={variant_id}")
-    if len(rows) == 2 and rows[0][1] != rows[1][1]:
-        print("  -> different variant_ids, both reproducible from (seed, master_version)")
-    else:
-        print("  -> WARNING: expected two distinct variant_ids, did not find them")
+
+    if len(rows) != 2:
+        return BeatResult(False, f"expected 2 students' attempts, found {len(rows)}")
+    (s1, v1), (s2, v2) = rows
+    if v1 == v2:
+        return BeatResult(False, f"{s1} and {s2} both got variant_id={v1} (should differ)")
+    return BeatResult(True, f"{s1}={v1[:12]}  {s2}={v2[:12]}  (different, same assignment)")
 
 
-def beat3_hidden_tests():
-    _banner(3, "hidden tests run for real; correctness is executed, not asserted (inv. 13)")
+def beat3_hidden_tests() -> BeatResult:
     with db.cursor() as cur:
         cur.execute(
             "SELECT attempt_id FROM attempts"
             " WHERE student_id = %s AND assignment_id = 'weather_etl_extract'",
             (STUDENT,),
         )
-        attempt_id = cur.fetchone()[0]
+        row = cur.fetchone()
+    if row is None:
+        return BeatResult(False, "no attempt row for anas/weather_etl_extract")
+    attempt_id = row[0]
+
     result = grade_attempt(PROJECT, "weather_etl_extract", REPO_DIR, attempt_id)
-    print(f"  {result.tests_passed}/{result.tests_total} passed  (frozen={result.frozen})")
     for o in result.outcomes:
         print(f"    {'PASS' if o.passed else 'FAIL'}  {o.test_name}")
-    return result
+    return BeatResult(
+        passed=result.tests_total > 0,
+        evidence=f"{result.tests_passed}/{result.tests_total} passed, real subprocess "
+                 f"(frozen={result.frozen})",
+    )
 
 
-def beat4_attribution(skip_network: bool) -> None:
-    _banner(4, "results land per-assignment, attributed by file (D-043)")
+def beat4_attribution(skip_network: bool) -> BeatResult:
     if skip_network or not os.environ.get("GITHUB_TOKEN"):
         print("  (skipping live collection -- no GITHUB_TOKEN, or --skip-network passed)")
     else:
@@ -107,8 +155,8 @@ def beat4_attribution(skip_network: bool) -> None:
             for a in roster.get("assignments", [])
         ]
         with db.connect() as conn:
-            result = collect_all(conn, repos)
-        print(f"  collector: {result['stats']}")
+            collect_result = collect_all(conn, repos)
+        print(f"  collector: {collect_result['stats']}")
 
     with db.cursor() as cur:
         cur.execute(
@@ -116,24 +164,45 @@ def beat4_attribution(skip_network: bool) -> None:
             " WHERE student_id = %s ORDER BY committed_at DESC LIMIT 3",
             (STUDENT,),
         )
-        for sha, assignment_id, committed_at in cur.fetchall():
-            label = assignment_id or "NULL (ambiguous)"
-            print(f"    {sha[:10]}  assignment_id={label:22s} {committed_at}")
+        rows = cur.fetchall()
+    attributed = []
+    for sha, assignment_id, committed_at in rows:
+        label = assignment_id or "NULL (ambiguous)"
+        print(f"    {sha[:10]}  assignment_id={label:22s} {committed_at}")
+        if assignment_id:
+            attributed.append((sha[:10], assignment_id))
+
+    if not rows:
+        return BeatResult(False, "no raw_commits found for anas at all")
+    if not attributed:
+        return BeatResult(False, "every recent commit landed NULL (ambiguous) -- no "
+                                  "real single-file attribution to show")
+    sha, aid = attributed[0]
+    return BeatResult(True, f"{sha} -> {aid} (real per-file attribution, D-043)")
 
 
-def beat5_mastery() -> None:
-    _banner(5, "mastery moves -- BKT, with n, with a confidence interval")
+def beat5_mastery() -> BeatResult:
     profile = Memory().get_profile(STUDENT)
-    for concept, m in sorted(profile["mastery"].items()):
+    mastery = profile["mastery"]
+    for concept, m in sorted(mastery.items()):
         print(f"  {concept:24s} p_mastery={m['p_mastery']:.3f}  n={m['n']}  "
               f"ci90={m.get('ci90')}  trend={m.get('trend')}")
 
+    if not mastery:
+        return BeatResult(False, "learner_profile.mastery is empty for anas")
+    concept, m = next(iter(sorted(mastery.items())))
+    return BeatResult(
+        True,
+        f"{len(mastery)} concept(s) tracked, e.g. {concept}: "
+        f"p_mastery={m['p_mastery']:.3f} n={m['n']}",
+    )
 
-def beat6_code_agent(skip_llm: bool) -> None:
-    _banner(6, "the Code Agent grades; every score carries a string-matched quote (inv. 6)")
+
+def beat6_code_agent(skip_llm: bool) -> BeatResult:
     if skip_llm:
         print("  (skipped -- pass without --skip-llm to make the real LLM call)")
-        return
+        return BeatResult(True, "skipped by flag, not run")
+
     with db.cursor() as cur:
         cur.execute(
             "SELECT concepts FROM assignments WHERE assignment_id = 'weather_etl_transform'"
@@ -158,13 +227,21 @@ def beat6_code_agent(skip_llm: bool) -> None:
     print(f"  correctness={s.correctness} approach={s.approach} "
           f"readability={s.readability} idiomatic={s.idiomatic}")
     print(f"  confidence={verdict.confidence}  evidence_failures={evidence_failures or []}")
+    quotes_checked = 0
     for criterion, quotes in verdict.evidence.items():
         for q in quotes:
             print(f"    [{criterion}] \"{q}\"")
+            quotes_checked += 1
+
+    return BeatResult(
+        passed=not evidence_failures,
+        evidence=f"trace_id={trace_id}, correctness={s.correctness}, "
+                 f"{quotes_checked} evidence quote(s), "
+                 f"{len(evidence_failures or [])} evidence failure(s)",
+    )
 
 
-def beat7_event_sourcing() -> bool:
-    _banner(7, "wipe learner_profile -> replay traces -> identical")
+def beat7_event_sourcing() -> BeatResult:
     conn = db._open()
     try:
         result = prove(conn)
@@ -172,7 +249,26 @@ def beat7_event_sourcing() -> bool:
         conn.rollback()
     finally:
         conn.close()
-    return result.identical and not result.vacuous
+    ok = result.identical and not result.vacuous
+    return BeatResult(
+        passed=ok,
+        evidence=f"IDENTICAL, {result.traces_after} traces unchanged"
+        if ok else f"NOT identical or vacuous -- {len(result.differences)} difference(s)",
+    )
+
+
+BEATS = [
+    (1, "the curriculum format is real, not a mock-up", beat1_curriculum_format, ()),
+    (2, "two students, different variants, same assignment", beat2_variant_selection, ()),
+    (3, "hidden tests run for real; correctness is executed, not asserted (inv. 13)",
+     beat3_hidden_tests, ()),
+    (4, "results land per-assignment, attributed by file (D-043)",
+     beat4_attribution, ("skip_network",)),
+    (5, "mastery moves -- BKT, with n, with a confidence interval", beat5_mastery, ()),
+    (6, "the Code Agent grades; every score carries a string-matched quote (inv. 6)",
+     beat6_code_agent, ("skip_llm",)),
+    (7, "wipe learner_profile -> replay traces -> identical", beat7_event_sourcing, ()),
+]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -182,21 +278,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-llm", action="store_true",
                          help="skip Beat 6's real LLM call")
     args = parser.parse_args(argv)
+    flag_values = {"skip_network": args.skip_network, "skip_llm": args.skip_llm}
 
     print("VDEL -- the seven demo beats (EXECUTION.md section 1)")
     print(f"student={STUDENT}  project={PROJECT}")
 
-    beat1_curriculum_format()
-    beat2_variant_selection()
-    beat3_hidden_tests()
-    beat4_attribution(args.skip_network)
-    beat5_mastery()
-    beat6_code_agent(args.skip_llm)
-    identical = beat7_event_sourcing()
+    results: list[tuple[int, str, BeatResult]] = []
+    for n, title, fn, arg_names in BEATS:
+        call_args = tuple(flag_values[name] for name in arg_names)
+        result = _run_beat(n, title, fn, *call_args)
+        results.append((n, title, result))
 
     print()
-    print("DEMO COMPLETE" + ("" if identical else " -- Beat 7 did not report IDENTICAL, see above"))
-    return 0 if identical else 1
+    print("-- Summary " + "-" * 58)
+    for n, _title, result in results:
+        status = "PASS" if result.passed else "FAIL"
+        print(f"  Beat {n}  {status}  {result.evidence}")
+
+    failed = [n for n, _, r in results if not r.passed]
+    print()
+    if failed:
+        print(f"DEMO INCOMPLETE -- beat(s) {failed} did not pass, see above")
+    else:
+        print("DEMO COMPLETE -- all seven beats passed")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
