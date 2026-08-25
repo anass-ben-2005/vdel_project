@@ -54,10 +54,26 @@ def _tree_version(files: list[Path]) -> str:
     return hashlib.sha1("\n".join(entries).encode()).hexdigest()
 
 
-def seed_curriculum(cur, project_id: str) -> dict[str, int]:
+def seed_curriculum(
+    cur, project_id: str, stages: tuple[str, ...] = PIPELINE_STAGES
+) -> dict[str, int]:
     """Seed `projects`/`assignments`/`gaps` for one curriculum project from
     `curriculum/master/<project_id>/`. Independent of config/roster.yaml -- this is
     curriculum structure, not student data, so it must not be gated on a roster existing.
+
+    `stages`: this project's own pipeline stage names, IN ORDER -- `seq` is derived from
+    position in this tuple, not discovered by globbing. Defaults to `PIPELINE_STAGES`
+    (weather_etl's extract/transform/load/quality shape), so `seed_curriculum(cur,
+    "weather_etl")` is byte-identical to before this parameter existed -- verified live
+    (2026-08-25): same `master_version`, same 4-row seq ordering, same 9 gaps, before and
+    after. `PIPELINE_STAGES` was a single global tuple every project shared, which
+    silently breaks any project whose stage names aren't a subset of that one shape (found
+    before writing Project 2: `sales_analyzer`'s `ingest`/`clean`/`aggregate`/`load` files
+    -- only `load` overlaps, and even that would have landed at the wrong `seq` position).
+    A grep across the whole codebase (render_student_repo.py, scope_check.py,
+    collect_github.py, every test file) confirmed nothing else hardcodes this shape --
+    everything downstream reads `assignments.seq`/`file_path`/`gaps.*` generically from
+    the database, so widening this one function's signature is the whole fix.
 
     Gaps are never hand-written: `assessment.gap_parser.parse_master` is the one and only
     source (D-007's argument -- one implementation, not a second one that could drift).
@@ -90,7 +106,7 @@ def seed_curriculum(cur, project_id: str) -> dict[str, int]:
     project_dir = CURRICULUM_ROOT / project_id
     package_dir = project_dir / project_id
     stage_files = [
-        package_dir / f"{stage}.py" for stage in PIPELINE_STAGES
+        package_dir / f"{stage}.py" for stage in stages
         if (package_dir / f"{stage}.py").exists()
     ]
     # _tree_version hashes each file's CONTENT keyed by its basename, so moving the stage
@@ -114,7 +130,7 @@ def seed_curriculum(cur, project_id: str) -> dict[str, int]:
 
     assignments_written = 0
     gaps_written = 0
-    for seq, stage in enumerate(PIPELINE_STAGES, start=1):
+    for seq, stage in enumerate(stages, start=1):
         path = package_dir / f"{stage}.py"
         if not path.exists():
             continue
