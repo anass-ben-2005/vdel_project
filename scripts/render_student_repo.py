@@ -156,6 +156,21 @@ jobs:
       - run: pytest tests/visible
 """
 
+# `tests/hidden/` is never written here (see `_assert_no_hidden_tests_leaked` below) --
+# but `assessment/test_runner.py` copies the one hidden test a grading run needs
+# straight into this same out_dir to execute it, and never cleans up after itself
+# (test_runner.py's own docstring). Left untracked, that copy is one `git add .` away
+# from being pushed to the student's real GitHub repo, which is exactly the leak
+# render_student_repo.py otherwise refuses to allow. A generated `.gitignore` is the
+# second line of defence for the file that survives *after* rendering, on top of the
+# runtime check that guards rendering itself.
+_GITIGNORE = """\
+tests/hidden/
+__pycache__/
+*.pyc
+.pytest_cache/
+"""
+
 
 def render_student_repo(
     project_id: str, student_id: str, attempt_no: int, out_dir: str | Path
@@ -261,6 +276,8 @@ def render_student_repo(
     workflow_dir = out_dir / ".github" / "workflows"
     workflow_dir.mkdir(parents=True, exist_ok=True)
     (workflow_dir / "ci.yml").write_text(_CI_WORKFLOW, encoding="utf-8")
+
+    (out_dir / ".gitignore").write_text(_GITIGNORE, encoding="utf-8")
 
     _assert_no_hidden_tests_leaked(out_dir)
 
