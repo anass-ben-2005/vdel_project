@@ -16,6 +16,7 @@ connections exist to avoid for the database side.
 """
 from __future__ import annotations
 
+import time
 import types
 
 import anthropic
@@ -745,3 +746,99 @@ def test_no_test_in_this_file_can_reach_the_network(monkeypatch):
     .messages.create, which every other test in this file replaces."""
     client = anthropic.Anthropic(api_key="sk-ant-not-a-real-key-no-network-call-made")
     assert client is not None  # constructing a client makes no request; only .create() would
+
+
+# ---------- D-051: the call-timeout, and _classify_transport_error's existing rules ----------
+#
+# No test file covered `_classify_transport_error`/`_call_with_fallback` at all before this
+# (grepped `tests/` for both names: zero hits) -- these tests both pin the NEW timeout
+# classification and lock the EXISTING 429/503/billing rules, so this change is verified not
+# to have altered behaviour it was never meant to touch.
+
+class _FakeTransportError(Exception):
+    """Stands in for a real provider SDK exception -- `_classify_transport_error` only
+    ever reads `status_code`/`code`/`str(exc)`, never a provider's own exception type
+    (module docstring), so a plain Exception with those attributes is a faithful double."""
+
+    def __init__(self, message: str, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def test_a_provider_timeout_is_classified_transient_not_a_new_category():
+    exc = llm._ProviderCallTimeout("gemini-3.7-flash did not respond within 30s")
+    assert llm._classify_transport_error(exc) == "transient"
+
+
+def test_existing_quota_billing_classification_is_unaffected():
+    exc = _FakeTransportError("prepayment credits are depleted", status_code=429)
+    assert llm._classify_transport_error(exc) == "quota_billing"
+
+
+def test_existing_transient_503_classification_is_unaffected():
+    exc = _FakeTransportError("model overloaded, high traffic", status_code=503)
+    assert llm._classify_transport_error(exc) == "transient"
+
+
+def test_existing_unknown_classification_is_unaffected():
+    exc = _FakeTransportError("something entirely unrecognised happened")
+    assert llm._classify_transport_error(exc) == "unknown"
+
+
+def test_call_with_timeout_returns_normally_for_a_fast_handler(monkeypatch):
+    monkeypatch.setattr(llm, "_PROVIDER_CALL_TIMEOUT_S", 0.2)
+
+    def fast_handler(prompt, temperature, model):
+        return "ok", 1, 1
+
+    assert llm._call_with_timeout(fast_handler, "p", 0.0, "m") == ("ok", 1, 1)
+
+
+def test_call_with_timeout_raises_provider_call_timeout_for_a_slow_handler(monkeypatch):
+    monkeypatch.setattr(llm, "_PROVIDER_CALL_TIMEOUT_S", 0.05)
+
+    def slow_handler(prompt, temperature, model):
+        time.sleep(1.0)
+        return "too late", 1, 1
+
+    with pytest.raises(llm._ProviderCallTimeout, match="did not respond within"):
+        llm._call_with_timeout(slow_handler, "p", 0.0, "m")
+
+
+def test_a_real_caller_side_error_still_propagates_through_the_timeout_wrapper_unwrapped():
+    """D-025's own ValueError (a model rejecting an explicit temperature) must still be
+    the exact exception type _call_with_fallback's `except (NotImplementedError,
+    ValueError, TypeError): raise` clause catches -- confirms _call_with_timeout's
+    `future.result()` doesn't wrap or replace it."""
+    def rejecting_handler(prompt, temperature, model):
+        raise ValueError("this model rejects a non-default temperature")
+
+    with pytest.raises(ValueError, match="rejects a non-default temperature"):
+        llm._call_with_timeout(rejecting_handler, "p", 0.7, "m")
+
+
+def test_fallback_chain_moves_to_the_next_model_after_a_timeout(monkeypatch):
+    """The actual scenario D-051 exists for: one model hangs past the ceiling, the
+    SAME layer-1 within-provider fallback D-049 already built serves the call from the
+    next model instead -- no new fallback path, the existing one."""
+    monkeypatch.setattr(llm, "_PROVIDER_CALL_TIMEOUT_S", 0.05)
+
+    def hangs(prompt, temperature, model):
+        time.sleep(1.0)
+        raise AssertionError("must never actually return -- the timeout should fire first")
+
+    def fast(prompt, temperature, model):
+        return "served by the fallback model", 5, 5
+
+    calls = {"n": 0}
+
+    def dispatch(prompt, temperature, model):
+        calls["n"] += 1
+        return (hangs if calls["n"] == 1 else fast)(prompt, temperature, model)
+
+    monkeypatch.setattr(llm, "_PROVIDER_HANDLERS", {Provider.ANTHROPIC: dispatch})
+
+    text, record = generate("prompt", temperature=0.0, use_cache=False)
+    assert text == "served by the fallback model"
+    assert record.model == MODEL_TIERS["cheap"][Provider.ANTHROPIC]
+    assert calls["n"] == 2

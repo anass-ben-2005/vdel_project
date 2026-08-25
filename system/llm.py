@@ -95,6 +95,17 @@ documentation pages fully specified. Model ids `gemini-3.7-flash` (default) and
 independently of the SDK-shape verification.
 
 Known gaps and open questions, none silent:
+  - **D-051** -- `_call_with_timeout` enforces its own `_PROVIDER_CALL_TIMEOUT_S` ceiling
+    (30s) around every provider handler call, uniformly, via `concurrent.futures`. Not an
+    SDK parameter: `google-genai`'s client delegates timeout behavior to the server by
+    default, and its own `http_options` timeout is documented as unreliable
+    (googleapis/python-genai#911, #681) -- confirmed via web search, not assumed, after a
+    real 222.3s call was observed live this session. A timeout here is classified
+    `"transient"` by `_classify_transport_error` and walks the SAME D-04X fallback chain
+    any other transient failure does -- no second trigger. Named limitation: this bounds
+    how long `_call_with_fallback` WAITS, not literally how long the abandoned OS thread
+    keeps running (Python cannot force-kill a thread) -- matching `test_runner.py`'s own
+    "process-level isolation only" honesty about what it does and does not control.
   - **D-020 (OPEN)** -- four sources disagree on what `_cache_key` keys on. `_cache_key` is
     implemented against the code's literal formula (the document's own stated "safer
     default"), because a cache with no body cannot be tested and this file's callers need
@@ -111,6 +122,7 @@ Known gaps and open questions, none silent:
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import os
 import time
@@ -439,6 +451,73 @@ _FALLBACK_KEY_ENV_VARS: dict[Provider, str] = {
 }
 
 
+class _ProviderCallTimeout(Exception):
+    """Raised by `_call_with_timeout` when a handler exceeds `_PROVIDER_CALL_TIMEOUT_S`.
+
+    A plain `Exception`, never a provider SDK's own error type -- deliberately, so
+    `_classify_transport_error` can recognise it directly (`isinstance`) rather than
+    needing this module's timeout mechanism to imitate some provider's exception shape.
+    """
+
+
+# D-051. Real, confirmed root cause, not a maybe: `google-genai`'s client delegates
+# timeout behavior to the server by default, and its own `http_options` timeout
+# parameter is documented as unreliable (googleapis/python-genai#911, #681) -- this
+# cannot be fixed by tuning an SDK parameter, so this module owns the ceiling itself,
+# uniformly, for every provider (not just Google -- the same gap could exist in any
+# SDK this file has not yet seen fail this way).
+#
+# 30s: every real successful call observed this session took 2-10s, so this leaves
+# large headroom before a genuinely slow-but-working call gets cut off, while keeping
+# the fallback chain's worst case (up to _MAX_MODEL_HOPS_PER_PROVIDER+1 models x up to
+# _MAX_PROVIDER_HOPS+1 providers) bounded in minutes rather than the 222s-times-several
+# the original incident could have produced. Named so a different number is a one-line,
+# reviewable change.
+_PROVIDER_CALL_TIMEOUT_S = 30
+
+# One shared, process-lifetime pool -- matches CACHE/COST_LOG's own module-level
+# singleton pattern in this file. Every real call in this codebase today is
+# sequential (one judge()/generate() call waits for the previous one), so this never
+# needs more than a couple of workers in flight; sized slightly above 1 rather than
+# exactly 1 so a future concurrent caller does not silently serialise on this pool
+# specifically.
+_TIMEOUT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="llm-call"
+)
+
+
+def _call_with_timeout(handler, prompt: str, temperature: float,
+                       model: str) -> tuple[str, int, int]:
+    """Enforce `_PROVIDER_CALL_TIMEOUT_S` around one provider handler call, independent
+    of whatever timeout behaviour (or lack of it) that provider's own SDK implements.
+
+    `Future.result(timeout=...)` bounds how long THIS function waits, not literally how
+    long the underlying OS thread keeps running -- Python cannot force-kill a running
+    thread. If the SDK call is still blocked in C/network code after the timeout, that
+    thread is abandoned (never joined, never cancelled), not killed; this function
+    returns control to `_call_with_fallback` regardless, which is what makes the
+    fallback chain actually move on instead of the whole process sitting silent for
+    however long the provider's own default eventually takes. A real, named limitation,
+    not a hidden one -- `assessment/test_runner.py`'s own docstring names the same class
+    of tradeoff ("process-level isolation only... no container, no sandbox") for exactly
+    this reason: state the boundary of what a mechanism controls, don't imply more.
+
+    `NotImplementedError`/`ValueError`/`TypeError` raised INSIDE the handler still
+    propagate through `future.result()` with their original type intact -- `_call_with_
+    fallback`'s existing `except (NotImplementedError, ValueError, TypeError): raise`
+    clause is unaffected by this wrapper; only genuinely slow-or-hung calls are turned
+    into `_ProviderCallTimeout`.
+    """
+    future = _TIMEOUT_EXECUTOR.submit(handler, prompt, temperature, model)
+    try:
+        return future.result(timeout=_PROVIDER_CALL_TIMEOUT_S)
+    except concurrent.futures.TimeoutError:
+        raise _ProviderCallTimeout(
+            f"{model} did not respond within {_PROVIDER_CALL_TIMEOUT_S}s "
+            "(this module's own ceiling, D-051 -- not the provider SDK's)"
+        ) from None
+
+
 def _providers_with_real_keys() -> list[Provider]:
     """Which of the three real providers have a key set RIGHT NOW -- read live from
     `os.environ` every call, never cached or assumed, because the whole point of this
@@ -512,7 +591,15 @@ def _classify_transport_error(exc: Exception) -> str:
     this module cannot explain failing is not one it should silently resend), but still
     eligible for cross-provider fallback -- a different provider's SDK, account and network
     path is unrelated to whatever this unexplained failure was.
+
+    D-051: a `_ProviderCallTimeout` (this module's own call-timeout, not a provider
+    error) is classified `"transient"` explicitly, by `isinstance`, before any string
+    matching runs -- reuses the EXACT SAME layer-1-then-layer-2 walk any other
+    transient failure gets, deliberately not a new trigger or a third classification.
     """
+    if isinstance(exc, _ProviderCallTimeout):
+        return "transient"
+
     status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
     text = str(exc).lower()
 
@@ -577,7 +664,9 @@ def _call_with_fallback(
             t0 = time.time()
             try:
                 handler = _PROVIDER_HANDLERS[provider]
-                text, tokens_in, tokens_out = handler(prompt, temperature, model)
+                text, tokens_in, tokens_out = _call_with_timeout(
+                    handler, prompt, temperature, model
+                )
             except (NotImplementedError, ValueError, TypeError):
                 # NEVER classified/retried, on purpose -- these are not transport failures.
                 # NotImplementedError is a structural STUB (_stub_provider): every model
