@@ -181,7 +181,8 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
         **verdict.model_dump(),
         "agent": "code_agent_v1",
         "prompt_version": prompts.PROMPT_VERSION,
-        "model": record.model,
+        "provider": record.provider,   # D-04X: which provider actually served this call --
+        "model": record.model,         # may differ from LLM_PROVIDER if the fallback fired
         "flagged": rejected,
         "tool_reports": [r.to_dict() for r in reports],
         "reference_supplied": reference is not None,

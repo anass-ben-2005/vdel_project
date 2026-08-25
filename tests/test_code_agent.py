@@ -65,8 +65,8 @@ class FakeMemory:
 
 
 def _record():
-    return CallRecord(ts=0.0, model="fake-model", temperature=0.0, tokens_in=10,
-                      tokens_out=20, elapsed_s=0.1, cache_hit=False, attempt=1,
+    return CallRecord(ts=0.0, provider="fake-provider", model="fake-model", temperature=0.0,
+                      tokens_in=10, tokens_out=20, elapsed_s=0.1, cache_hit=False, attempt=1,
                       schema_valid=True, flagged=False)
 
 

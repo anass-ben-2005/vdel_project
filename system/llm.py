@@ -236,9 +236,19 @@ class CallRecord(BaseModel):
     against -- and is set `True` there by convention ("nothing invalidated it"), not because
     anything was checked. Only `judge()`'s records carry a schema-validation verdict that
     means what it says.
+
+    `provider` (D-04X, the fallback chain): which provider actually served this call, not
+    which one was configured. Before the fallback chain existed, `PROVIDER` was a fixed
+    module-level constant for the whole process, so "which provider" was implicit and
+    never needed recording per call. Once one call can legitimately be served by a
+    DIFFERENT provider than the one `LLM_PROVIDER` names -- a free Gemini key's model
+    overloaded, so a fallback model or provider answered instead -- "which provider and
+    model actually produced this text" becomes a real auditability fact belonging in
+    every trace a verdict is built from, not just an implementation detail.
     """
 
     ts: float
+    provider: str
     model: str
     temperature: float
     tokens_in: int
@@ -302,7 +312,7 @@ def judge(prompt: str, schema: type[T], *,
     """
     resolved_model = _resolve_model(model, model_tier)
 
-    raw, first = _complete(prompt, 0.0, resolved_model, use_cache)
+    raw, first = _complete(prompt, 0.0, resolved_model, use_cache, model_tier=model_tier)
     try:
         validated = schema.model_validate_json(raw)
     except ValidationError:
@@ -318,7 +328,8 @@ def judge(prompt: str, schema: type[T], *,
     failed_first = first.model_copy(update={"schema_valid": False})
     _log_cost(failed_first)
 
-    raw2, second = _complete(prompt + _CORRECTIVE_SUFFIX, 0.0, resolved_model, use_cache)
+    raw2, second = _complete(prompt + _CORRECTIVE_SUFFIX, 0.0, resolved_model, use_cache,
+                             model_tier=model_tier)
     second = second.model_copy(update={"attempt": 2})
     try:
         validated = schema.model_validate_json(raw2)
@@ -357,7 +368,8 @@ def generate(prompt: str, *, temperature: float,
     why not, never a substitution with no error.
     """
     resolved_model = _resolve_model(model, model_tier)
-    text, record = _complete(prompt, temperature, resolved_model, use_cache)
+    text, record = _complete(prompt, temperature, resolved_model, use_cache,
+                             model_tier=model_tier)
     _log_cost(record)
     return text, record
 
@@ -379,8 +391,8 @@ def _resolve_model(model: str | None, model_tier: str) -> str:
 # ---- Internals ------------------------------------------------------------------------------
 
 
-def _complete(prompt: str, temperature: float, model: str,
-              use_cache: bool) -> tuple[str, CallRecord]:
+def _complete(prompt: str, temperature: float, model: str, use_cache: bool, *,
+              model_tier: str = "default") -> tuple[str, CallRecord]:
     """The single place a provider SDK is called. Invariant 3's actual choke point.
 
     `judge` and `generate` are the two doors agents see; this is the one room behind both, so
@@ -389,33 +401,230 @@ def _complete(prompt: str, temperature: float, model: str,
     `CallRecord` it builds carries `attempt=1` and `schema_valid=True` (D-022's default of
     "nothing invalidated it yet"); `judge` overrides both fields with `model_copy` once it
     knows better.
+
+    D-04X -- the fallback chain, two layers, walked by `_call_with_fallback` below. This
+    function's own job stays cache-then-call for a SINGLE (provider, model): the chain
+    logic is a separate, testable function, not folded into this one's control flow.
     """
-    key = _cache_key(prompt, model, temperature)
-    if use_cache and key in CACHE:
-        record = CallRecord(
-            ts=time.time(), model=model, temperature=temperature,
-            tokens_in=0, tokens_out=0, elapsed_s=0.0, cache_hit=True,
-            attempt=1, schema_valid=True, flagged=False,
-        )
-        return CACHE[key], record
-
-    t0 = time.time()
-    handler = _PROVIDER_HANDLERS[PROVIDER]
-    text, tokens_in, tokens_out = handler(prompt, temperature, model)
-    elapsed = time.time() - t0
-
-    if use_cache:
-        CACHE[key] = text
-
+    provider, resolved_model, text, tokens_in, tokens_out, elapsed, cache_hit = (
+        _call_with_fallback(prompt, temperature, PROVIDER, model, model_tier, use_cache)
+    )
     record = CallRecord(
-        ts=t0, model=model, temperature=temperature,
-        tokens_in=tokens_in, tokens_out=tokens_out, elapsed_s=elapsed,
-        cache_hit=False, attempt=1, schema_valid=True, flagged=False,
+        ts=time.time() - elapsed, provider=provider.value, model=resolved_model,
+        temperature=temperature, tokens_in=tokens_in, tokens_out=tokens_out,
+        elapsed_s=elapsed, cache_hit=cache_hit, attempt=1, schema_valid=True, flagged=False,
     )
     return text, record
 
 
-def _cache_key(prompt: str, model: str, temperature: float) -> str:
+# ---- Fallback chain (D-04X) ---------------------------------------------------------------
+#
+# Built for the free Google AI Studio key's actual failure mode: a free key does not hit
+# billing exhaustion (there is no prepayment to deplete), it hits per-model overload --
+# "model not available, high traffic" -- which this project has now seen twice, months
+# apart, on two different keys. That is a PER-MODEL problem, not a per-account one, so the
+# fix that matches it is trying ANOTHER MODEL under the SAME key first (layer 1), not
+# jumping providers first. Cross-provider fallback (layer 2) stays as the safety net for
+# when a whole provider is down, not the primary response to one overloaded model.
+_MAX_MODEL_HOPS_PER_PROVIDER = 2   # up to 2 EXTRA models tried after the first, per provider
+_MAX_PROVIDER_HOPS = 2             # up to 2 EXTRA providers tried after the primary
+
+# Providers this fallback chain considers -- deliberately NOT Provider.OPENAI or
+# Provider.QWEN_LOCAL, which are structural stubs (`_stub_provider`) with no key to check
+# in the first place; falling back TO a stub would just trade one exception for another.
+_FALLBACK_KEY_ENV_VARS: dict[Provider, str] = {
+    Provider.ANTHROPIC: "ANTHROPIC_API_KEY",
+    Provider.NVIDIA: "NVIDIA_API_KEY",
+    Provider.GOOGLE: "GOOGLE_API_KEY",
+}
+
+
+def _providers_with_real_keys() -> list[Provider]:
+    """Which of the three real providers have a key set RIGHT NOW -- read live from
+    `os.environ` every call, never cached or assumed, because the whole point of this
+    function existing is that a key can be swapped (a depleted account replaced with a
+    fresh one) without restarting the process that reads `MODEL_TIERS`/`PROVIDER` once at
+    import time. `PROVIDER` itself IS still fixed at import (D-023's own reasoning: an
+    unservable provider should fail at startup) -- this only affects which providers are
+    ELIGIBLE as fallback candidates, not which one primary judging calls use by default.
+    """
+    return [p for p, env_var in _FALLBACK_KEY_ENV_VARS.items() if os.environ.get(env_var)]
+
+
+def _tier_for_model(provider: Provider, model: str) -> str | None:
+    """Which MODEL_TIERS tier `model` came from, for `provider` -- so a fallback to a
+    DIFFERENT provider can ask for the same tier's model there, rather than an arbitrary
+    one. Returns None if `model` was passed explicitly (judge(model=...)) and does not
+    match any tier's id -- in that case cross-provider fallback has no principled
+    equivalent model to reach for and falls back to that provider's own 'default' tier.
+    """
+    for tier, models in MODEL_TIERS.items():
+        if models.get(provider) == model:
+            return tier
+    return None
+
+
+def _model_chain(provider: Provider, primary_model: str | None, tier: str) -> list[str]:
+    """Every real model id worth trying for `provider`, primary first (if this provider
+    IS the one `primary_model` was resolved for), then every other tier's id for the SAME
+    provider, in a fixed order, deduplicated. `"TODO(verify)"` placeholders (D-024/D-031 --
+    ids never confirmed against a live catalog) are filtered out unconditionally: this
+    project does not call a model id it has not verified exists, fallback or not.
+
+    Capped at `1 + _MAX_MODEL_HOPS_PER_PROVIDER` -- today that means Google's real chain is
+    exactly `["gemini-3.7-flash", "gemini-3.5-flash-lite"]`, the only two ids D-032 actually
+    verified live; a third variant is not invented here to hit a round number.
+    """
+    chain: list[str] = []
+    if primary_model:
+        chain.append(primary_model)
+    for tier_name in ("default", "cheap"):
+        candidate = MODEL_TIERS.get(tier_name, {}).get(provider)
+        if candidate and candidate != "TODO(verify)" and candidate not in chain:
+            chain.append(candidate)
+    return chain[:1 + _MAX_MODEL_HOPS_PER_PROVIDER]
+
+
+def _classify_transport_error(exc: Exception) -> str:
+    """`"quota_billing"` | `"transient"` | `"unknown"` -- the distinction that makes this
+    a real fallback chain rather than "retry on any exception" (which the task that
+    created this function explicitly named as the bug to avoid: retrying a billing
+    failure against the SAME account forever accomplishes nothing but burning time).
+
+    No provider SDK is imported here -- classification works off `getattr` and the
+    exception's own string form, which is what lets one function serve every provider
+    without this module importing three SDKs just to catch their specific error types.
+
+    `quota_billing`: an account-level exhaustion. Retrying a DIFFERENT MODEL under the
+    same key cannot help (the constraint is on the account, not the model) -- skip layer 1
+    entirely and go straight to layer 2. Detected by a 429-shaped status PLUS a message
+    naming credits/billing/quota explicitly (Google's real 429 RESOURCE_EXHAUSTED for a
+    depleted prepayment key says "prepayment credits are depleted" -- confirmed live, this
+    session's first Beat 6 attempt, not guessed at).
+
+    `transient`: a per-model overload or a bare rate limit -- worth retrying, first against
+    another model on the same key (layer 1, the free-tier failure mode this was built for:
+    "model not available, high traffic"), then against another provider (layer 2) if every
+    model on this provider is also down. Detected by a 503-shaped status, or by overload/
+    availability/rate-limit language WITHOUT the billing keywords above.
+
+    `unknown`: neither pattern matched. Not retried within the same provider (a request
+    this module cannot explain failing is not one it should silently resend), but still
+    eligible for cross-provider fallback -- a different provider's SDK, account and network
+    path is unrelated to whatever this unexplained failure was.
+    """
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    text = str(exc).lower()
+
+    billing_words = ("credit", "billing", "prepayment", "insufficient")
+    if status == 429 and any(w in text for w in billing_words):
+        return "quota_billing"
+    if "quota" in text and any(w in text for w in billing_words):
+        return "quota_billing"
+
+    transient_words = ("overloaded", "unavailable", "high traffic", "rate limit",
+                       "try again", "temporarily")
+    if status == 503 or status == 429 or any(w in text for w in transient_words):
+        return "transient"
+
+    return "unknown"
+
+
+def _call_with_fallback(
+    prompt: str, temperature: float, primary_provider: Provider, primary_model: str,
+    model_tier: str, use_cache: bool,
+) -> tuple[Provider, str, str, int, int, float, bool]:
+    """Walk the two-layer chain and return `(provider, model, text, tokens_in, tokens_out,
+    elapsed_s, cache_hit)` for whichever (provider, model) actually served the call.
+
+    Layer 1 (primary): every model in `primary_provider`'s own chain, in order --
+    matches today's actual failure mode, a free key's per-model overload. Skipped
+    entirely for a `quota_billing` classification (retrying a different model under an
+    exhausted ACCOUNT cannot help) but walked fully for `transient`.
+
+    Layer 2 (secondary safety net): other providers with a real key set (checked live,
+    `_providers_with_real_keys`), each walking ITS OWN model chain the same way. Reached
+    when layer 1 is exhausted (every model tried, or skipped for `quota_billing`) --
+    never before. If no other provider has a key, this degrades to "nothing left to try"
+    and the loop simply ends -- logged, not a crash (the caller's own exception, listing
+    every real attempt, is the honest failure mode).
+
+    Both caps (`_MAX_MODEL_HOPS_PER_PROVIDER`, `_MAX_PROVIDER_HOPS`) are enforced by
+    `_model_chain`/the provider list slice below -- there is no unbounded loop here.
+    """
+    tier = _tier_for_model(primary_provider, primary_model) or model_tier
+
+    other_providers = [p for p in _providers_with_real_keys() if p != primary_provider]
+    providers_to_try = [primary_provider, *other_providers[:_MAX_PROVIDER_HOPS]]
+
+    attempts: list[str] = []
+    for provider in providers_to_try:
+        model_source = primary_model if provider == primary_provider else None
+        models = _model_chain(provider, model_source, tier)
+        if not models:
+            attempts.append(f"{provider.value}: no verified model id for tier {tier!r}")
+            continue
+
+        for model in models:
+            cache_key = _cache_key(prompt, provider, model, temperature)
+            if use_cache and cache_key in CACHE:
+                # No print here, deliberately -- a cache hit is the ordinary, silent case
+                # everywhere else in this file (the original _complete never announced one
+                # either); only what's NEW and worth a human's attention prints: a
+                # fallback actually being used, a failed attempt, or no fallback existing.
+                return provider, model, CACHE[cache_key], 0, 0, 0.0, True
+
+            t0 = time.time()
+            try:
+                handler = _PROVIDER_HANDLERS[provider]
+                text, tokens_in, tokens_out = handler(prompt, temperature, model)
+            except (NotImplementedError, ValueError, TypeError):
+                # NEVER classified/retried, on purpose -- these are not transport failures.
+                # NotImplementedError is a structural STUB (_stub_provider): every model
+                # under that provider is equally unimplemented, so trying another one
+                # (or silently jumping to a different provider the caller did not ask
+                # for) would hide a real "this isn't built yet" signal behind a fallback
+                # that appears to work. ValueError/TypeError are CALLER-side mistakes --
+                # D-025's temperature-rejection ValueError is the concrete case this
+                # guards: the caller asked for something a model cannot honour, and
+                # silently retrying against a DIFFERENT model would substitute an answer
+                # the caller never agreed to, the exact failure D-025 itself was written
+                # to prevent one field over (temperature). Propagates immediately,
+                # unwrapped -- the original exception type and message survive.
+                raise
+            except Exception as exc:  # noqa: BLE001 -- classified immediately, not swallowed
+                elapsed = time.time() - t0
+                classification = _classify_transport_error(exc)
+                attempts.append(
+                    f"{provider.value}/{model}: {classification} -- "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                print(f"llm: {provider.value}/{model} failed ({classification}) "
+                     f"after {elapsed:.1f}s -- {type(exc).__name__}")
+                if classification == "quota_billing":
+                    break   # this provider's whole account is exhausted -- stop its chain
+                continue    # transient or unknown -- try the next model in this chain
+
+            elapsed = time.time() - t0
+            if provider != primary_provider or model != primary_model:
+                print(f"llm: fallback served the call -- provider={provider.value} "
+                     f"model={model} (primary was {primary_provider.value}/{primary_model})")
+            if use_cache:
+                CACHE[cache_key] = text
+            return provider, model, text, tokens_in, tokens_out, elapsed, False
+
+    if not other_providers:
+        print("llm: no fallback provider configured "
+             f"(checked {', '.join(v for v in _FALLBACK_KEY_ENV_VARS.values())})")
+
+    raise RuntimeError(
+        "every provider/model in the fallback chain failed. Attempts, in order:\n  "
+        + "\n  ".join(attempts) if attempts else
+        "no provider/model was even attempted -- this should not happen"
+    )
+
+
+def _cache_key(prompt: str, provider: Provider, model: str, temperature: float) -> str:
     """**D-020 (OPEN) -- four sources disagree on what this keys on.**
 
     | source | claimed key |
@@ -433,8 +642,21 @@ def _cache_key(prompt: str, model: str, temperature: float) -> str:
     One constraint holds under every candidate and is why `temperature` is a key input at
     all: without it, a `judge` result at 0 and a `generate` result at 0.9 for the same prompt
     and model collide, and the judging path would silently serve a sampled response.
+
+    `provider` joins the key as of D-04X (the fallback chain): before it, `PROVIDER` was
+    fixed for the whole process, so it was implicitly constant and adding it to the key
+    would have changed nothing. Once a fallback chain can genuinely serve one call from
+    Google and a later, identical-looking call from Anthropic, the two providers' answers
+    must never collide under one cache entry -- and the KEYING scheme this function uses is
+    per-(provider, model) by construction (`_call_with_fallback` looks the cache up once
+    per candidate in its chain, not once for the whole call), which is also why a fallback
+    response is never cached under the PRIMARY model's key: caching it there would make a
+    future request for the primary model silently return an answer a different model gave
+    once, during an outage, rather than asking the primary model fresh once it recovers.
     """
-    return hashlib.sha256(f"{model}:{temperature}:{prompt}".encode()).hexdigest()
+    return hashlib.sha256(
+        f"{provider.value}:{model}:{temperature}:{prompt}".encode()
+    ).hexdigest()
 
 
 def _log_cost(record: CallRecord) -> None:
