@@ -28,7 +28,20 @@ vdel_complete_design_document.md
 SETUP.md
 EXECUTION.md
 .claude/
-docs/
+
+# docs/ is ignored wholesale EXCEPT the three files CLAUDE.md's own documentation contract
+# (CLAUDE.md §11) calls "Permanent": DECISIONS.md (the append-only viva answer sheet),
+# STATUS.md (the DoD-evidence board), and explanation.md (meant to update in the same
+# commit as the code it describes). Until 2026-08-31 this line ignored the whole directory,
+# which meant those three "Permanent" files had never actually entered git history since
+# acffca6 -- fixed same day (see DECISIONS.md). docs/HANDOFF.md stays ignored: it's
+# explicitly "One session; overwritten," so tracking it would only add churn, not history
+# worth having. docs/reading/ stays ignored too: a disposable compression cache, "Until the
+# code changes," not a permanent record.
+docs/*
+!docs/DECISIONS.md
+!docs/STATUS.md
+!docs/explanation.md
 
 # Local scratch at the repo root: one-off DB queries and a manual Code Agent driver.
 # Neither is part of any deliverable, and neither is worth promoting to scripts/ -- they
