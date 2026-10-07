@@ -36,13 +36,16 @@ also logged as `test_result` traces through `memory.Memory` -- never raw SQL to 
 (invariant 2) -- so V1 (BKT), V5 (Error Response) and V6 (Error Frequency) can read the
 full pre-freeze failure history, not just whatever survives to the frozen commit. Traced
 ONLY for outcomes carrying a real `gap_id` (untagged tests have no concept to attribute
-evidence to -- see `_gap_id_from_case`) and ONLY for genuinely NEW `test_results` rows
+evidence to -- see `_gap_id_from_case`), ONLY for gaps this attempt actually HID (D-054:
+a pre-solved gap's tests pass whatever the student did, so they are not evidence of
+anything), and ONLY for genuinely NEW `test_results` rows
 (`_write_test_results`'s `xmax = 0` check) -- re-grading an already-recorded commit must
 not silently inflate `n`, the observation count invariant 8 makes load-bearing.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tempfile
@@ -207,6 +210,47 @@ def _gap_id_from_case(case: ET.Element) -> str | None:
     return None
 
 
+# `tests.hidden.<stem>` -- the part of a JUnit classname that is the same wherever the repo
+# sits, because `_inject_hidden_test` always puts the file at tests/hidden/<name>.py.
+# Everything BEFORE it is a path prefix (the render directory, relative to wherever
+# pytest decided its rootdir was) and is not part of the test's identity.
+_HIDDEN_MODULE = re.compile(r"(?:^|\.)tests\.hidden\.([^.:]+)((?:\.[^.:]+)*)$")
+_ALREADY_NORMALISED = re.compile(r"^tests/hidden/[^:]+\.py::")
+
+
+def normalise_test_name(raw: str) -> str:
+    """Path-independent identity for a stored test: `tests/hidden/<file>.py[::Class]::<test>`.
+
+    D-055: pytest's JUnit `classname` is derived from the test's node id relative to
+    pytest's ROOTDIR, and the rootdir is whatever ancestor holds a config file
+    (`pyproject.toml`). The same rendered repo therefore produced
+    `renders.anas_attempt1.tests.hidden.test_x::t` when it sat inside this project and
+    `tests.hidden.test_x::t` anywhere else. `test_results` and the `xmax = 0` new-row check
+    both key on that string, so grading one commit from two directories looked like two
+    sets of new tests and logged every BKT observation twice (invariant 8).
+
+    `raw` is `"<classname>::<name>"` exactly as `_parse_junit` builds it. Idempotent: an
+    already-normalised name is returned unchanged, which is what lets the migration script
+    reuse this function on rows that may or may not have been rewritten yet.
+
+    Raises TestRunnerError on a classname with no `tests.hidden.<stem>` module in it rather
+    than storing a path-dependent name silently -- the hidden file is always injected at
+    that location (`_inject_hidden_test`), so its absence means the run is not what this
+    module thinks it is, and a loud failure beats a quietly wrong identity.
+    """
+    if _ALREADY_NORMALISED.match(raw):
+        return raw
+    classname, sep, name = raw.partition("::")
+    match = _HIDDEN_MODULE.search(classname)
+    if not sep or match is None:
+        raise TestRunnerError(
+            f"cannot derive a path-independent test name from {raw!r}: expected the "
+            "classname to contain 'tests.hidden.<module>'"
+        )
+    stem, class_path = match.group(1), match.group(2)
+    return f"tests/hidden/{stem}.py" + class_path.replace(".", "::") + f"::{name}"
+
+
 def _parse_junit(junit_path: Path) -> list[TestOutcome]:
     """JUnit XML, not stdout scraping -- pytest's own structured report, immune to `-q`
     output formatting changing between versions. A skipped test is EXCLUDED, not counted
@@ -232,7 +276,7 @@ def _parse_junit(junit_path: Path) -> list[TestOutcome]:
         elif error is not None:
             message = (error.get("message") or error.text or "")[:2000]
         outcomes.append(TestOutcome(
-            test_name=f"{case.get('classname')}::{case.get('name')}",
+            test_name=normalise_test_name(f"{case.get('classname')}::{case.get('name')}"),
             passed=failure is None and error is None,
             message=message,
             gap_id=_gap_id_from_case(case),
@@ -305,9 +349,24 @@ def _gap_metadata(cur, gap_ids: set[str]) -> dict[str, tuple[list[str], float]]:
             for gid, concept_ids, difficulty in cur.fetchall()}
 
 
+def _hidden_gap_ids(cur, attempt_id: int) -> frozenset[str]:
+    """The gaps this attempt actually HID: `attempts.variant_id` -> `variants.gap_ids`
+    (sql/06). Only these were left for the student to write; every other gap in the file
+    was handed over already solved (render_student_file keeps its original body).
+    `attempts.variant_id` is NOT NULL, so the join always resolves for a real attempt."""
+    cur.execute(
+        "SELECT v.gap_ids FROM attempts a JOIN variants v USING (variant_id)"
+        " WHERE a.attempt_id = %s",
+        (attempt_id,),
+    )
+    row = cur.fetchone()
+    return frozenset(row[0]) if row else frozenset()
+
+
 def _log_mastery_traces(mem: Memory, conn, student_id: str, assignment_id: str,
                          commit_sha: str | None, outcomes: list[TestOutcome],
-                         new_test_names: set[str], gap_meta: dict) -> None:
+                         new_test_names: set[str], gap_meta: dict,
+                         hidden_gap_ids: frozenset[str]) -> None:
     """One `test_result` trace per genuinely-new, gap-tagged outcome (EXECUTION.md Stage
     C1, memory.py's MASTERY_TRACE_KINDS docstring), THEN one `update_mastery` per
     concept touched -- through `memory.Memory` only, no raw SQL to `traces` or
@@ -324,6 +383,13 @@ def _log_mastery_traces(mem: Memory, conn, student_id: str, assignment_id: str,
         -- that would silently inflate `n`, which invariant 8 makes load-bearing.
       - `o.gap_id is not None`: an untagged test has no concept to attribute evidence
         to. Silently attributing it to nothing would be worse than not logging it.
+      - `o.gap_id in hidden_gap_ids`: a test on a gap this attempt did NOT hide exercises
+        code the student was handed already solved, so it passes whatever the student
+        does. Counting it as a success would credit mastery for work never done -- found
+        live: a student who submitted the untouched render ended at p_mastery 0.938,
+        n=4 on py.data_structures, two of those four observations from the pre-solved
+        gap (D-054). Such outcomes are still stored in `test_results` (they feed the
+        100%-pass freeze check); they just are not BKT evidence.
 
     `conclusion` uses the exact two-value vocabulary `ci_run` already established
     (`memory.OUTCOME`'s keys) -- one vocabulary for "did this pass", not a second one
@@ -340,7 +406,8 @@ def _log_mastery_traces(mem: Memory, conn, student_id: str, assignment_id: str,
     # (update_mastery replays the whole log regardless of which trace_id it is given).
     concept_to_trace_id: dict[str, int] = {}
     for o in outcomes:
-        if o.test_name not in new_test_names or o.gap_id is None:
+        if (o.test_name not in new_test_names or o.gap_id is None
+                or o.gap_id not in hidden_gap_ids):
             continue
         meta = gap_meta.get(o.gap_id)
         if meta is None:
@@ -445,7 +512,8 @@ def grade_attempt(
         new_test_names = _write_test_results(cur, attempt_id, commit_sha, outcomes)
         gap_meta = _gap_metadata(cur, {o.gap_id for o in outcomes if o.gap_id is not None})
         _log_mastery_traces(mem, c, student_id, assignment_id, commit_sha,
-                            outcomes, new_test_names, gap_meta)
+                            outcomes, new_test_names, gap_meta,
+                            _hidden_gap_ids(cur, attempt_id))
         frozen = _maybe_freeze(cur, attempt_id, commit_sha, tests_passed, tests_total)
 
     return RunResult(
