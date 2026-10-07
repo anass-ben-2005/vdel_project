@@ -1719,17 +1719,41 @@ hidden tests against a real rendered repo, in a real subprocess (`sys.executable
 and 13 both hold without contradicting each other (see §8's reconciliation note). It parses
 JUnit XML for real pass/fail per test, attributes each outcome to a `gap_id` via
 `@pytest.mark.gap(...)` (D-046), and writes one `test_results` row per test per commit
-(D-045c) — never overwriting a different commit's row, so a student's pre-freeze failure
+(D-045c; the stored name is path-independent, `tests/hidden/<file>.py::<test>` — D-055) — never overwriting a different commit's row, so a student's pre-freeze failure
 history survives even after the attempt eventually freezes. Freezing itself (D-045a) is
 this module's other job: `attempts.commit_sha`/`submitted_at` are written if and only if
 hidden tests reach 100% pass on a real, already-collected commit — never merely on push,
 which is why `collectors/collect_github.py` (§5) deliberately does not write those columns
-itself. Every genuinely new, gap-tagged outcome also becomes a `test_result` trace through
+itself. Every genuinely new, gap-tagged outcome **on a gap the attempt actually hid** (D-054 —
+read from `attempts.variant_id` → `variants.gap_ids`; tests on handed-over, pre-solved gaps are
+still stored in `test_results` and still count toward the freeze, but are not mastery evidence)
+also becomes a `test_result` trace through
 `memory.Memory` (D-048, §7.10) — never raw SQL to `traces` (invariant 2) — which is what
 lets V1/V5/V6 read a student's full failure history, not only the commit that eventually
 passed. Proven live: `EXECUTION.md` Beat 3 (`12 failed, 3 passed` against an unsolved
 render, then `4/4 passed` once `anas` actually solved `extract.py` for real — same function,
 two real outcomes, no code changed in between).
+
+**`scripts/publish_repo.py` — publishes a rendered repo and registers it (D-057).**
+Renders attempt N (`render_student_repo`), refuses if any path component is `hidden` (checked on the
+work tree and again on `git ls-files`), preflights GitHub *before creating anything* (the token must
+be able to push `.github/workflows/ci.yml`; an existing repo with commits is never overwritten),
+creates the private repo (`vdel-<project>-gapfill-<student>`), pushes, confirms the remote head, and
+only then adds/updates the student's roster rows — text-level, so the roster's comments survive.
+`--dry-run` makes no network, git, roster or DB write. Status: tested (23 tests, real git against a
+local bare repo) and dry-run proven; **no real repo has been created yet** — the current token has
+scope `repo` only and lacks `workflow`, so a real run refuses at preflight.
+
+**`scripts/grade_collected.py` — grades what the collector collected (D-056).**
+For each attempt, finds the commits in `raw_commits` attributed to it that have no
+`test_results` row yet, fetches exactly that sha from the student's GitHub repo into a temp
+directory (fetch-by-sha, HEAD verified), runs `grade_attempt(..., commit_sha=sha)`, and deletes
+the directory. Every ungraded commit is graded oldest-first (`--latest-only` for just the
+newest); `--student`, `--assignment`, `--dry-run` narrow or preview it. Idempotent: "already
+graded" is read from `test_results`. Commits the collector could not attribute to one
+assignment (`assignment_id IS NULL`) are counted, never graded. Proven live on `anas`'s two real
+`weather_etl_extract` pushes: `5759078602` 2/4 (not frozen), `2d087f5c17` 4/4 (attempt frozen on
+that sha); a second run graded nothing.
 
 **`scripts/render_student_repo.py` — materialises one attempt as a real file tree.**
 Calls `gap_generator.select_variant` and `gap_parser.render_student_file` to produce a real

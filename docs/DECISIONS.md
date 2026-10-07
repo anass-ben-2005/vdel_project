@@ -2196,3 +2196,279 @@ Defence:     "DeepSeek was agreed on 19 Aug and I checked for it directly this s
              too. The provider seam (`_PROVIDER_HANDLERS`) is still open for it; nothing
              about the current three-provider gateway would need to change to add a
              fourth handler the day a key exists."
+
+### D-054 -- Only gaps the attempt HID count as mastery evidence; tests on pre-solved
+             gaps are stored in test_results but never logged as BKT observations
+Date:        2026-10-07
+Status:      DECIDED
+Authority:   Anas
+Context:     `assessment/test_runner.py::_log_mastery_traces` logged a `test_result` trace
+             for every genuinely-new outcome whose `gap_id` was not None. It never asked
+             whether that gap was HIDDEN in this attempt. `grade_attempt` runs every test
+             in the assignment's hidden test file, and `render_student_file` hands over
+             every non-hidden gap already solved -- so those tests pass regardless of what
+             the student did, and each pass was credited as a BKT success. Found by
+             running the pipeline end to end, not by inspection. Reproduced live before
+             the fix (rolled-back transaction, throwaway student): an attempt hiding ONLY
+             `g_ext_retry`, graded as rendered (student did nothing, 2/4 tests pass),
+             ended at `py.data_structures` p_mastery=0.938, n=4 -- two of the four
+             observations from the handed-over `g_ext_parse`. After the fix, the same
+             script: `py.data_structures` p_mastery=0.188, n=2 (only `g_ext_retry`, which
+             is tagged with both concepts); `test_results` still holds all four rows.
+Decision:    `grade_attempt` reads the attempt's hidden gap set (`attempts.variant_id` ->
+             `variants.gap_ids`) and `_log_mastery_traces` skips any outcome whose
+             `gap_id` is not in it. Outcomes on non-hidden gaps are still written to
+             `test_results` and still count toward the 100%-pass freeze (D-045a) -- the
+             freeze is about whether the whole file works, mastery is about what the
+             student was asked to write. Two regression tests in
+             `tests/test_test_runner.py`; both fail on the old code and pass on the new
+             (checked by reverting the fix and re-running). The existing freeze/dedup
+             tests were also changed: they borrowed an arbitrary live `variants` row and
+             silently relied on every test counting, so their fixture now inserts a
+             variant hiding all three transform gaps (inside the rolled-back transaction).
+Alternative: Filter at read time instead (leave the bad traces, have BKT ignore them).
+             Rejected -- `traces` is the source of truth and replay must give the same
+             profile; a rule that only exists in the reader makes the log itself lie
+             about what was observed.
+Cost:        FORWARD-ONLY. `traces` is append-only (invariant 1), so observations already
+             logged under the old behaviour stay in the log and in every replay. Checked
+             in the live DB: `anas`'s `weather_etl_transform` attempt has 6 `test_results`
+             rows on gaps its variant did not hide (`weather_etl_extract`: 0). Their
+             traces were not audited individually, but `anas`'s stored mastery for
+             `py.data_structures` / `py.errors_debugging` (n=6 / n=5 at last read) is
+             therefore partly inflated, and nothing here corrects it. Whether to
+             quarantine or compensate is a separate decision not made here; no profile or
+             trace was touched. Also: an assignment whose concepts are all non-hidden for
+             a given attempt now yields zero mastery evidence from that attempt, which is
+             the intent, not a gap.
+Defence:     "A test that passes whether or not you did anything is not evidence. I found
+             it by running the system, showed it with a number -- doing nothing scored
+             0.938 -- fixed it at the point the evidence is created, and kept the
+             unfiltered outcome in test_results so the freeze rule still sees the whole
+             file. The old traces are still in the log because the log is append-only; I
+             have named the inflated student rather than rewrite history."
+
+### D-055 -- test_results.test_name is stored in a path-independent form; existing rows
+             migrated by an explicit, dry-run-by-default script, not left to a cutoff
+Date:        2026-10-07
+Status:      DECIDED; migration APPLIED to the live DB on 2026-10-07 after a pg_dump backup
+             (test_results 22 -> 17: 9 renamed, 5 duplicate rows deleted; traces untouched
+             at 48; old-style names 14 -> 0; a second --apply was a no-op)
+Authority:   Anas
+Context:     `test_results.test_name` was `"<JUnit classname>::<test>"`. Pytest derives the
+             classname from the node id relative to its ROOTDIR, and the rootdir is the
+             nearest ancestor holding a config file -- this project's `pyproject.toml`. So
+             the same rendered repo produced `renders.anas_attempt1.tests.hidden.test_x::t`
+             when graded from inside this project and `tests.hidden.test_x::t` from
+             anywhere else. Both unique indexes (sql/06) and `_write_test_results`'s
+             `xmax = 0` new-row check key on that string, so grading one commit from a
+             second directory looked like a full set of new tests and logged every BKT
+             observation again (invariant 8). Reproduced live before touching anything
+             (rolled-back transaction, throwaway student, same commit graded from a
+             directory outside and a directory inside the project): second run added
+             +4 `test_results` rows and +2 traces. It had already happened in real data:
+             `anas`'s `weather_etl_transform` attempt holds the same five tests under both
+             names (10 rows, 5 of them duplicates).
+Decision:    `assessment.test_runner.normalise_test_name` rewrites every name to
+             `tests/hidden/<file>.py[::Class]::<test>` inside `_parse_junit`, i.e. BEFORE
+             the row is stored and therefore before the dedup check sees it. It is
+             idempotent and RAISES `TestRunnerError` on a classname with no
+             `tests.hidden.<module>` segment instead of storing a path-dependent name
+             quietly -- `_inject_hidden_test` always puts the file there, so its absence
+             means the run is not what the module assumes. The identical run after the fix:
+             second grade adds +0 rows, +0 traces.
+             EXISTING ROWS -- migration, not a cutoff: `scripts/normalise_test_names.py`.
+             Dry run by default; `--apply` is one transaction, deletes before renames so the
+             unique indexes are never violated, idempotent. Per (attempt, commit, name)
+             group: a lone old-style row is renamed; several rows (the same test stored
+             under two names) collapse to the most recently run one. Dry run on the live DB
+             reports 9 renames, 5 deletes, 0 unrecognised.
+Alternative: A documented cutoff (old rows keep their names; only new rows normalised).
+             Rejected on a concrete failure, not taste: `scripts/demo.py` re-grades
+             `renders/anas_attempt1` on every run. Against old-style stored names, the
+             first post-fix run would look entirely "new" and log `anas`'s observations a
+             second time -- re-introducing the bug exactly once, silently, in the one
+             student the defence demo uses. Also rejected: forcing `--rootdir` on the
+             pytest subprocess -- it would not repair the rows already stored, and
+             pyproject discovery can still influence naming, so normalising the stored
+             string is the only layer that is verifiably independent of pytest's behaviour.
+Cost:        (1) The migration DELETES rows (5 on the live DB). They are exact duplicates of
+             one test's outcome, but `test_results` rows are gone once deleted -- which is
+             why it is dry-run by default and why applying it is left to Anas.
+             (2) FORWARD-ONLY for mastery, as with D-054: `traces` is append-only and a
+             `test_result` trace's payload carries no test name, so the traces the
+             duplication already logged cannot be identified or removed. `anas`'s
+             transform observations were double-counted for the one attempt above; this
+             adds to D-054's note that his stored mastery is partly inflated. Nothing
+             corrects it here. (3) Names are now stable only for the `tests/hidden/<file>`
+             layout the grader injects; a different layout would raise rather than adapt.
+Defence:     "Same commit, same tests, same answer -- and now the database agrees,
+             wherever the repo is checked out. I reproduced the double-counting first, fixed
+             it where the identity is created, and proved the fixed path adds zero. The
+             history I couldn't fix I named, and the one destructive step is a dry-run
+             script that waits for my go-ahead."
+
+### D-056 -- scripts/grade_collected.py connects collected commits to the test runner;
+             it grades EVERY ungraded commit oldest-first, not only the latest
+Date:        2026-10-07
+Status:      DECIDED
+Authority:   Anas
+Context:     `collect_github.py` lands pushes in `raw_commits` and (D-045a) writes nothing
+             about test outcomes; `assessment/test_runner.py::grade_attempt` can grade a
+             commit and freeze an attempt. Nothing connected them: checked by reading every
+             caller of `grade_attempt` (only `scripts/demo.py`, which passes no
+             `commit_sha`, the CLI, and tests) and by query -- 0 `test_results` rows with a
+             `commit_sha`, 0 of 12 attempts frozen. No collected commit had ever been graded.
+Decision:    `scripts/grade_collected.py` finds, per attempt, the attributed commits with no
+             `test_results` row for (attempt, sha), fetches EXACTLY that sha from the
+             student's GitHub repo into a temp directory (fetch-by-sha, detached checkout,
+             HEAD verified == sha), calls `grade_attempt(..., commit_sha=sha)`, deletes the
+             directory in a `finally`. Idempotent because "already graded" is read from
+             `test_results`. `--student`, `--assignment`, `--dry-run`, `--latest-only`.
+             Where the request left room, stated here rather than assumed:
+             (1) EVERY ungraded commit is graded, oldest first; the literal "latest commit
+             only" is `--latest-only`. D-045c makes each commit a separate BKT observation
+             and the source of V5/V6; "latest only" would leave earlier commits ungraded
+             forever (or graded out of order on a later run, which breaks the fail->pass
+             sequence BKT replays). (2) A commit belongs to the highest-numbered OPEN attempt
+             of its (student, assignment), else the highest overall -- the collector's own
+             rule; `raw_commits` carries no attempt_no, so with several attempts per
+             assignment this is an assumption, not a fact. (3) Commits with
+             `assignment_id IS NULL` (several files touched) are not graded -- no single
+             hidden test file applies -- and are counted in the output. (4) Repo
+             coordinates come from `scripts.seed_data.load_roster()` (the loader the
+             collector's callers use); `raw_commits` has none. (5) The GitHub token reaches
+             git via GIT_CONFIG_* environment variables only -- never argv, never a URL.
+Alternative: Grade only the newest commit per attempt (the literal wording). Rejected as
+             above. Also rejected: cloning a branch tip -- a ref can move between collection
+             and grading, attaching results to the wrong commit; fetch-by-sha plus a HEAD
+             check cannot.
+Cost:        A live run is PERMANENT: traces are append-only and a 100%-pass freezes the
+             attempt (D-045a). Run on `anas`'s two real `weather_etl_extract` commits:
+             `5759078602` 2/4 (both `g_ext_parse` tests failed; `g_ext_retry` passed) ->
+             not frozen; `2d087f5c17` 4/4 -> attempt 1 frozen on that sha, 4/4. 8 new
+             `test_result` traces (anas total 9 -> 17); mastery n went from the 6/5
+             (`py.data_structures`/`py.errors_debugging`) last recorded in D-054 to 14/9,
+             both p_mastery ~1.000. That mastery was already partly inflated before this
+             run (D-054, D-055) and these new observations are legitimate hidden-gap
+             evidence, but they land on top of that history, uncorrected. Known limits: a
+             commit yielding ZERO test rows would be retried every run (warned, not hidden);
+             `weather_etl_load`'s one commit `d818c872b5` is still ungraded (the proof was
+             scoped to extract); the grading environment is the machine's own Python, as
+             `test_runner.py` already documents -- process isolation, not a sandbox.
+Defence:     "The pipeline had a missing link and I measured it: zero collected commits ever
+             graded. I built the link, kept it idempotent, and proved it on the two real
+             pushes -- the first commit failed the parse tests and did not freeze, the
+             second passed everything and froze the attempt on exactly that sha. Where the
+             brief said 'latest', I explained why every commit matters to BKT and kept the
+             literal behaviour behind a flag."
+
+### D-057 -- scripts/publish_repo.py publishes a rendered repo and registers it in the
+             roster; a classic PAT without the `workflow` scope cannot publish at all
+Date:        2026-10-07
+Status:      DECIDED (code, tests, dry-run); the REAL run is NOT yet done -- see Cost
+Authority:   Anas
+Context:     Nothing moved a rendered repo to GitHub: `render_student_repo.py` writes to
+             disk, `collect_github.py` reads from GitHub, and the two real repos were
+             created by hand. Checked first: no `git push` / repo-creation code anywhere in
+             `*.py`. Two facts found while designing it, both by running something rather
+             than by reading: (1) the token in `.env` is a classic PAT with scope `repo`
+             only (`GET /user` -> `X-OAuth-Scopes: repo`), and GitHub rejects a push that
+             creates `.github/workflows/*` from a PAT lacking `workflow` -- every rendered
+             repo contains `ci.yml`; (2) `seed_data` upserts `assignments`/`items` from the
+             roster in one `INSERT ... ON CONFLICT DO UPDATE`, which raises
+             `CardinalityViolation` if two roster rows share an assignment_id -- reproduced
+             -- so a SECOND student's rows would have broken seeding for everyone.
+Decision:    `scripts/publish_repo.py --student X --attempt N [--project] [--repo-name]
+             [--owner] [--public] [--dry-run] [--no-roster] [--yes]`. Order is the safety
+             design: render (persists the attempt) -> refuse if any path component is
+             `hidden` (work tree, then again on `git ls-files` after staging) -> GitHub
+             PREFLIGHT before creating anything (token scopes vs the workflow file; repo
+             state) -> refuse if the repo already has commits -> create (private, asks
+             y/N unless --yes) -> git init/add/commit/push -> confirm remote head == the
+             commit -> ONLY THEN edit the roster, so the collector never points at a repo
+             that is not there. `--dry-run` makes no network or git call, writes no roster,
+             and persists no DB row (the render runs inside a savepoint it rolls back --
+             a test caught that the first version only did this for its own connection).
+             Name: `vdel-<project, _ -> ->-gapfill-<student>`, derived from the one real
+             repo; for `anas` the dry run reports "no roster change needed", i.e. the
+             script reproduced the real roster rows exactly. Covers attempt 1 only; N>1
+             needs --repo-name (no convention is invented). Roster is edited as TEXT, not
+             load/dump, to keep the hand-written comments; the result is re-parsed before
+             it replaces the file (previous kept as roster.yaml.bak, gitignored); a
+             present row only has owner/repo updated, never `released_at`; new rows get the
+             publish time as `released_at` (the real release moment). Two supporting
+             changes: `render_student_repo(conn=)` (optional caller transaction, as
+             `grade_attempt` has) and `seed_data.unique_assignments` (first row per
+             assignment_id wins for the two global tables).
+Alternative: `PyYAML` load/dump for the roster -- rejected, silently deletes comments in a
+             file the author edits by hand. Fine-grained "skip the workflow file" mode --
+             not built: it would publish repos with no CI, i.e. no `raw_workflow_runs`
+             signal, a quiet degradation that should be Anas's call, not a default.
+Cost:        (1) With the current token the real command REFUSES at preflight ("Nothing
+             was created on GitHub") -- by design, and it is the actual state today: the
+             token needs the `workflow` scope (or a replacement with it) before any
+             publish can succeed. (2) Because of (1) the live proof requested is the
+             dry-run plus 23 tests (real git against a local bare repo, fake GitHub
+             client); NO real repo has been created by this script. (3) The GitHub client
+             (`GitHub.whoami/repo_state/create_repo/head_sha`) is the one part not
+             exercised end-to-end by anything here. (4) `seed_data.main()` itself was not
+             re-run with a duplicate-row roster; the new helper is unit-tested and
+             `main()` now routes both global upserts through it. (5) Attempt N>1 into an
+             existing repo is refused, not handled.
+Defence:     "A deploy script that can destroy a student's work or leak the hidden tests
+             has to refuse first and create last. It checks the tree for hidden tests twice,
+             checks the token can actually push the CI file before it creates the repo,
+             refuses to touch a repo that already has history, and edits the roster only
+             after the push is verified. I found the token lacks `workflow` by asking
+             GitHub, not by hoping, and I'd rather report 'blocked on one token scope' than
+             ship something that fails halfway."
+
+### D-058 -- weather_etl load and quality keep a single fixed variant (known limit);
+             splitting them into two concepts is rejected because it needs mislabeled ones
+Date:        2026-10-07
+Status:      DECIDED
+Authority:   Anas
+Context:     `select_variant` picks a CONCEPT, then hides every gap tagged with it (D-042),
+             so an assignment whose gaps all share one concept can only ever produce one
+             variant. `weather_etl_load` (both gaps `sql.select_filter`) and
+             `weather_etl_quality` (both gaps `py.testing`) are exactly that. Observed, not
+             assumed: the live `variants` table holds one variant for each, shared by
+             `anas` and `student2`; and the real `select_variant` run on 3,000 pairs of
+             cold students (simulation, no mastery history) gave different variants for
+             0/3000 pairs on load and 0/3000 on quality, against 1,495/3,000 and
+             1,506/3,000 for a hypothetical two-concept split (~0.50, i.e. a coin flip per
+             assignment). `extract` and `transform` tag two concepts each and do vary.
+Decision:    Option (b): keep both fixed and treat it as a documented known limit. No
+             master file, tag, schema or code is changed. The demo claim "two students get
+             different variants" is scoped to assignments that tag two or more concepts
+             (extract, transform); it holds there with probability ~1/2 per assignment for
+             any given pair of students, so Beat 2 passing for `anas`/`student2` is a
+             reproducible property of that pair's seeds, not a guarantee for every pair.
+             That matches the source DoD ("two students, same assignment, demonstrably
+             different variants", VDEL_REDESIGN.md 14), which does not say every assignment.
+Alternative: Option (a): re-tag one gap in each file with a different EXISTING concept
+             (`g_ld_insert` -> `py.data_structures`, `g_qa_range` -> `py.errors_debugging`).
+             REJECTED because it needs mislabeled concepts: an INSERT is not
+             `py.data_structures` and a range assertion is not `py.errors_debugging`, so
+             BKT would credit mastery for skills the gap does not test -- trading
+             explainability for demo variety, the third stop-and-ask trigger in CLAUDE.md.
+             (The taxonomy has no INSERT/DML or data-validation concept; `g_ld_insert` is
+             already tagged `sql.select_filter` although it is an INSERT -- a pre-existing
+             imprecision, noted here, not fixed.) Also costly independent of honesty:
+             `master_version` is one hash over all four stage files, so any tag edit
+             re-pins every weather_etl gap and changes every future variant id, loosening
+             invariant 15 for the attempts already made; and the adaptive rule would then
+             hand `anas` the concept he is already best at (it ignores concepts with n < 3).
+Cost:        load and quality give no variant diversity and no adaptive signal for any
+             student; the adaptive claim in the demo rests on extract and transform only.
+             Revisit trigger: real concept ids for INSERT/DML and data validation added to
+             `config/concepts.yaml` from the curriculum (Dr. Ezzatul / Hanafi's SKG) -- then
+             split the gaps against those. Not done here: a pinning test asserting the
+             limit (offered, not requested).
+Defence:     "Two of four assignments teach one concept each, so there is nothing to choose
+             between -- I measured it rather than assumed it. I could have tagged my way to
+             variety, but then mastery would be credited for skills the gap doesn't test,
+             and auditability is the one thing I won't trade. So the claim is scoped to the
+             assignments where adaptation is real, and the fix is a better taxonomy, not
+             a relabel."
