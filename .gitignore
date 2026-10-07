@@ -14,6 +14,8 @@ htmlcov/
 # Real personal data: student's GitHub username and repo names (BUILD_PLAN 1.2). The
 # template, config/roster.example.yaml, stays tracked -- same split as .env/.env.example.
 config/roster.yaml
+config/roster.yaml.bak
+config/roster.yaml.tmp
 
 # Internal source-of-truth design documents and generated explainer. Kept locally as
 # the authority every formula in variables/ is transcribed from and reviewed against,
@@ -66,3 +68,7 @@ renders/
 # survives the process exiting even when --commit is never passed. Reproducible from a
 # live LLM call each time, same reasoning as renders/ above -- not source, not tracked.
 benchmark/results/
+
+# pg_dump backups of the dev database (real student data -- names, code, traces). Taken
+# before destructive migrations such as scripts/normalise_test_names.py --apply.
+backups/

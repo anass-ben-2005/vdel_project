@@ -232,6 +232,23 @@ def _released_at_problems(aid: str, released_at) -> list[str]:
     return []
 
 
+def unique_assignments(roster: dict) -> list[dict]:
+    """One roster row per assignment_id, first occurrence winning.
+
+    `assignments` and `items` are keyed by assignment_id ALONE -- global curriculum
+    structure, not per-student -- but the roster has one row per (student, assignment) so
+    the collector knows each student's repo. Two students on the same assignment therefore
+    give two rows with one key, and a single INSERT ... ON CONFLICT DO UPDATE cannot touch
+    the same row twice (`CardinalityViolation`, reproduced live): publishing a second
+    student's repo (scripts/publish_repo.py) would have broken seeding for everyone. Only
+    these two global tables are deduped; students and the collector still see every row.
+    """
+    seen: dict[str, dict] = {}
+    for a in roster.get("assignments", []):
+        seen.setdefault(a["assignment_id"], a)
+    return list(seen.values())
+
+
 def validate(roster: dict) -> list[str]:
     """Every problem at once, rather than one per run."""
     problems = []
@@ -330,7 +347,7 @@ def main() -> int:
             [
                 (a["assignment_id"], f"{a['owner']}/{a['repo']}", a["released_at"],
                  a.get("due_at"), a.get("concepts") or [])
-                for a in roster["assignments"]
+                for a in unique_assignments(roster)
             ],
         )
 
@@ -349,7 +366,7 @@ def main() -> int:
         # difficulty. difficulty/n_cohort_obs are then owned by the cohort estimator --
         # DO NOTHING so seeding never overwrites a learned value.
         items = []
-        for a in roster["assignments"]:
+        for a in unique_assignments(roster):
             cids = a.get("concepts") or []
             if not cids:
                 continue

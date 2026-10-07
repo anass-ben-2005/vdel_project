@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from assessment.gap_generator import compute_seed, select_variant
@@ -29,6 +30,20 @@ from memory.memory import Memory
 from system import db
 
 CURRICULUM_ROOT = Path(__file__).resolve().parent.parent / "curriculum" / "master"
+
+
+@contextmanager
+def _cursor(conn):
+    """The caller's transaction when `conn` is given (never committed here), else the
+    usual own-transaction `db.cursor()`. Exists so scripts/publish_repo.py --dry-run can
+    render for real -- and show the real tree -- inside a transaction it then rolls back,
+    instead of leaving a variants/attempts row behind for a repo that was never published."""
+    if conn is None:
+        with db.cursor() as cur:
+            yield cur
+    else:
+        with conn.cursor() as cur:
+            yield cur
 
 
 def _load_project(cur, project_id: str) -> dict:
@@ -70,13 +85,13 @@ def _load_project(cur, project_id: str) -> dict:
     return {"assignments": assignments}
 
 
-def _mastery_maps(student_id: str) -> tuple[dict[str, float], dict[str, int]]:
+def _mastery_maps(student_id: str, conn=None) -> tuple[dict[str, float], dict[str, int]]:
     """The student's current belief state, reshaped for select_variant's two mappings.
     A concept absent from the profile (no observations yet) is simply absent from both
     dicts -- select_variant's own `.get(c, 0.0)`/`.get(c, 0)` already treat that as the
     correct cold-start default; duplicating the default here would be a second place it
     could drift from select_variant's."""
-    mastery = Memory().get_profile(student_id)["mastery"]
+    mastery = Memory().get_profile(student_id, conn=conn)["mastery"]
     mastery_by_concept = {c: v["p_mastery"] for c, v in mastery.items()}
     n_obs_by_concept = {c: v["n"] for c, v in mastery.items()}
     return mastery_by_concept, n_obs_by_concept
@@ -173,7 +188,7 @@ __pycache__/
 
 
 def render_student_repo(
-    project_id: str, student_id: str, attempt_no: int, out_dir: str | Path
+    project_id: str, student_id: str, attempt_no: int, out_dir: str | Path, *, conn=None
 ) -> dict:
     """Render one student's one attempt at `project_id` into a real repo at `out_dir`.
 
@@ -197,16 +212,16 @@ def render_student_repo(
     project_dir = CURRICULUM_ROOT / project_id
     out_dir = Path(out_dir)
 
-    with db.cursor() as cur:
+    with _cursor(conn) as cur:
         project = _load_project(cur, project_id)
-    mastery_by_concept, n_obs_by_concept = _mastery_maps(student_id)
+    mastery_by_concept, n_obs_by_concept = _mastery_maps(student_id, conn)
 
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
 
     assignment_md_entries = []
-    with db.cursor() as write_cur:
+    with _cursor(conn) as write_cur:
         for assignment in project["assignments"]:
             file_path = assignment["file_path"]
             master_path = project_dir / file_path
