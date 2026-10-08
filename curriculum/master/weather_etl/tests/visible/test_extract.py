@@ -7,10 +7,12 @@ parse_response. Missing-key handling, the retry loop, and the max-attempts failu
 the hidden suite's job (tests/hidden/test_extract.py, gap_id g_ext_parse / g_ext_retry)
 -- this file exists for a quick "does it basically work" signal, not full correctness.
 
-No conftest.py, no @pytest.mark.gap, no assessment/test_runner.py involvement of any
+No conftest.py LOGIC, no @pytest.mark.gap, no assessment/test_runner.py involvement of any
 kind: this file is copied wholesale into every rendered student repo
 (scripts/render_student_repo.py) and run with a bare `pytest tests/visible`, on the
-student's own machine, before anything is pushed.
+student's own machine, before anything is pushed. (The rendered repo does carry a
+comment-only root conftest.py -- its sole job is putting the repo root on sys.path so this
+file can import `weather_etl`; D-060.)
 """
 from weather_etl.extract import parse_response
 
