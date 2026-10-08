@@ -155,6 +155,27 @@ def _upsert_attempt(cur, student_id: str, project_id: str, assignment_id: str,
     )
 
 
+# D-060. Two things the first published repo showed (CI run failed with `ruff: command not
+# found`, exit 127, and `pytest tests/visible` never ran):
+#   - the tools the workflow itself runs are installed BY THE WORKFLOW, in their own step --
+#     not smuggled in through the student's requirements.txt, which lists the project's
+#     runtime dependencies and nothing else.
+#   - the ruff step is `continue-on-error: true`. Lint is a signal, not a correctness gate
+#     (invariants 12, 13: correctness comes from executed tests), and a freshly rendered
+#     repo is full of things ruff will flag that are not the student's fault yet -- stubs,
+#     and imports that become unused the moment a gap is hidden. Lint must never be able
+#     to stop pytest from running. Note the consequence (observed on a real run, not assumed):
+#     the failing ruff step exits 1 and logs an error, but GitHub's API reports that step's
+#     conclusion as "success" -- lint failures are visible only in the step's log, never in
+#     the step list or in raw_workflow_runs.conclusion, which now reflects pytest alone.
+#   - pytest runs as `python -m pytest`, not the bare `pytest` console script. Found by
+#     running the workflow's commands locally on a fresh render: bare `pytest tests/visible`
+#     fails at collection with `ModuleNotFoundError: No module named 'weather_etl'` (the
+#     console script does not put the repo root on sys.path; `-m` does), so every visible
+#     test would error in CI whatever the student wrote. The same bare command is what the
+#     visible tests' docstrings tell a student to run locally, so the render also ships a
+#     root conftest.py (_ROOT_CONFTEST) that makes the bare form work too; `python -m` is
+#     kept in CI anyway as the form that needs nothing from the repo layout.
 _CI_WORKFLOW = """\
 name: ci
 on: [push]
@@ -167,8 +188,10 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
+      - run: pip install ruff pytest
       - run: ruff check .
-      - run: pytest tests/visible
+        continue-on-error: true
+      - run: python -m pytest tests/visible
 """
 
 # `tests/hidden/` is never written here (see `_assert_no_hidden_tests_leaked` below) --
@@ -184,6 +207,22 @@ tests/hidden/
 __pycache__/
 *.pyc
 .pytest_cache/
+"""
+
+# D-060. A conftest.py at the repo root makes pytest put the repo root on sys.path, so
+# `from weather_etl.extract import ...` resolves under BOTH `pytest tests/visible` (the
+# command the visible tests' docstrings and VDEL_REDESIGN.md 8.3 tell a student to run) and
+# `python -m pytest tests/visible` (what the CI workflow runs). Without it the bare console
+# script cannot import the project and every visible test errors at collection. Comment-only
+# on purpose: no fixtures, no hooks, nothing that could differ from one student's repo to
+# another's. It does not interact with the hidden suite's own tests/hidden/conftest.py
+# (assessment/test_runner.py injects that one separately, in a different directory).
+_ROOT_CONFTEST = """\
+# Intentionally empty of code.
+#
+# Its presence is the point: pytest adds this directory (the repo root) to sys.path when it
+# finds a conftest.py here, which is what lets `pytest tests/visible` import the
+# `weather_etl` package. Please leave it in place.
 """
 
 
@@ -203,7 +242,9 @@ def render_student_repo(
       5.   tests/visible/ copied if present; tests/hidden/ never copied, by construction
            (the loop below only ever walks tests/visible, never tests/hidden at all).
       6.   ASSIGNMENT.md: every hidden gap, its file, its line, its instruction.
-      7.   .github/workflows/ci.yml: install, lint, run VISIBLE tests only.
+      7.   .github/workflows/ci.yml: install, lint (non-blocking), run VISIBLE tests only.
+      8.   conftest.py (comment-only) at the repo root, so bare `pytest tests/visible` can
+           import the project -- see _ROOT_CONFTEST / D-060.
 
     Idempotent to re-run: `out_dir` is recreated fresh each call (old contents removed
     first) rather than merged into, so a stale prior render can't leave orphaned files
@@ -293,6 +334,7 @@ def render_student_repo(
     (workflow_dir / "ci.yml").write_text(_CI_WORKFLOW, encoding="utf-8")
 
     (out_dir / ".gitignore").write_text(_GITIGNORE, encoding="utf-8")
+    (out_dir / "conftest.py").write_text(_ROOT_CONFTEST, encoding="utf-8")
 
     _assert_no_hidden_tests_leaked(out_dir)
 

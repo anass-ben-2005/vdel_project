@@ -2523,3 +2523,83 @@ Defence:     "The model sometimes wraps correct JSON in a markdown fence. I foun
              match the schema, and every quote still has to match the submission. And the
              error now keeps what the model actually said, so a failure is diagnosable
              the first time."
+
+### D-060 -- the generated CI workflow installs its own tools, lint cannot block pytest, and
+             pytest runs as `python -m pytest`
+Date:        2026-10-08
+Status:      DECIDED; CONFIRMED on a real GitHub runner (2026-10-08, republished to a new
+             throwaway repo, run 37777616178): install steps passed, ruff ran and exited 1
+             without stopping the job, pytest then ran -> 2 passed, 2 failed (stub gaps).
+             ADDED 2026-10-08: every render also ships a comment-only root conftest.py so
+             bare `pytest tests/visible` works for students; proven LOCALLY (2 passed,
+             2 failed, no ModuleNotFoundError; 4 collection errors without it) and by
+             tests, NOT yet through a real GitHub run. anas's hand-made repo has the old
+             workflow and 4 failed runs (read-only check) -- unchanged.
+Authority:   Anas
+Context:     The first repo published by `scripts/publish_repo.py` got a CI run that FAILED at
+             `ruff check .` with `ruff: command not found` (exit 127; read from the run's
+             own log), so `pytest tests/visible` was skipped. The workflow ran `pip install
+             -r requirements.txt` then `ruff check .`, but the curriculum's requirements.txt
+             lists only `requests` and `pytest`. Every rendered repo would start red whatever
+             the student did. Reproducing it locally -- fresh render of student2 attempt 1,
+             clean virtualenv, ruff 0.16.10, the workflow's commands in order -- found a
+             SECOND failure hidden behind the first: (a) `ruff check .` -> 5 errors on the
+             untouched render (I001 + four F401: `time`/`requests` unused in extract.py,
+             `datetime`/`timezone` unused in transform.py, because hiding a gap removes the
+             only use of its imports); (b) bare `pytest tests/visible` -> every test file
+             errors at collection, `ModuleNotFoundError: No module named 'weather_etl'` (the
+             console script does not put the repo root on sys.path); (c) `python -m pytest
+             tests/visible` -> 2 passed, 2 failed -- the failures are the visible tests of
+             gaps that are still stubs, i.e. real student work not yet done.
+Decision:    Three changes to `_CI_WORKFLOW` in scripts/render_student_repo.py. (1) A step
+             `pip install ruff pytest` inside the workflow, not via the student's
+             requirements.txt (runtime dependencies only). (2) `continue-on-error: true` on
+             the ruff step only: lint is a signal, not a correctness gate (invariants 12,
+             13), and a fresh render always has lint findings that are not the student's
+             fault. (3) `python -m pytest tests/visible` instead of bare `pytest`. (3) goes
+             beyond the two changes asked for; it was made because without it the pytest
+             step, once reachable, fails on every repo -- found only by running the real
+             commands. tests/test_ci_workflow.py (7 tests) parses the generated YAML and
+             checks install-before-lint-before-pytest, that ONLY ruff may fail quietly and
+             pytest may not (so a failing test still reddens the run), and runs the command
+             read from the template against a real render. With the old template text, 4
+             structural tests fail; with the template set back to bare `pytest`, the
+             behavioural test fails with the real ModuleNotFoundError. Suite: 503 passed,
+             2 skipped, 1 xfailed.
+Alternative: Add ruff to requirements.txt -- rejected (mixes a CI tool into the student's
+             runtime dependencies; instructed otherwise). Silence the F401s with a ruff
+             config or `# noqa` in the render -- not done: it would hide the very signal lint
+             exists to give, and the findings disappear by themselves once a gap is solved.
+Cost:        (1) `continue-on-error` hides lint from every structured signal. Observed on the
+             real republished run: ruff exited 1 and logged "Found 5 errors", yet GitHub's
+             API reports that step's conclusion as "success" (an earlier version of this
+             entry wrongly said it would show as failed). Lint is therefore visible only in
+             the step's log, and `raw_workflow_runs.conclusion` reflects pytest alone.
+             (2) FIXED 2026-10-08: the command the visible tests' docstrings and
+             VDEL_REDESIGN 8.3 tell a STUDENT to run locally, bare `pytest tests/visible`,
+             also failed with ModuleNotFoundError on a rendered repo. Every render now ships
+             a root `conftest.py` (comment-only, no code -- not literally empty, so a
+             student has a hint why it is there), which makes pytest put the repo root on
+             sys.path. Proven: the bare console script on a fresh `student2` render -> 2
+             passed, 2 failed (the stub gaps), against 4 collection errors on a render
+             without it; test_runner's hidden-test injection and gap attribution still work
+             with both conftest files present (all four assignments graded on that render,
+             every outcome keeps its gap_id). The CI step stays `python -m pytest`, the
+             form that needs nothing from the repo layout. (3) CHECKED, read-only: the
+             hand-made `vdel-weather-etl-gapfill-anas` repo has the SAME flaw -- the old
+             workflow verbatim (no ruff install, bare pytest), no conftest.py; all 4 of its
+             CI runs failed at the ruff step and pytest never ran in any. Nothing was
+             modified there. Effect on the numbers (recomputed read-only, in a transaction
+             rolled back): the 4 runs sit in raw_workflow_runs as failure/unmatched/unclassified, so V1
+             mastery is unaffected (unclassified is excluded, invariant 10; recomputed
+             identical with and without them) but V5/V6 count them as failures: V6 fail_ratio
+             0.397 -> 0.356 and unclassified bucket 12 -> 8 without them, V5 score 0.996 ->
+             0.998. Not corrected: they are real runs that really failed, just not for a
+             reason about the student; excluding them is a separate decision. (4) The real-runner
+             proof (see Status) covers the three workflow changes; the root conftest.py is
+             proven locally and by tests only -- it has not yet been through a GitHub run.
+Defence:     "I read the CI log, not the summary: ruff was never installed. Reproducing it
+             locally found a second bug the first one was hiding -- the project wasn't
+             importable under the bare pytest command -- so I fixed that too and wrote tests
+             that fail against the old workflow. Lint is now a signal that can't stop the
+             tests, and the tests are the only thing that can turn a run red."
