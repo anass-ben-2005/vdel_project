@@ -2472,3 +2472,54 @@ Defence:     "Two of four assignments teach one concept each, so there is nothin
              and auditability is the one thing I won't trade. So the claim is scoped to the
              assignments where adaptation is real, and the fix is a better taxonomy, not
              a relabel."
+
+### D-059 -- judge() strips ONE surrounding markdown code fence before schema validation,
+             and SchemaValidationError keeps the first 300 chars of each raw attempt
+Date:        2026-10-08
+Status:      DECIDED
+Authority:   Anas
+Context:     The full demo rehearsal failed Beat 6 (`SchemaValidationError: two attempts,
+             both invalid against Verdict`). `judge()` threw the raw text away when it
+             raised, so the cause had to be reproduced with a second billed call wrapped in
+             a recorder: the model's FIRST attempt came back as the JSON inside a markdown
+             fence (a json-tagged triple-backtick block) and `model_validate_json`
+             rejected it with `json_invalid ... line 1 column 1`; only the corrective
+             retry, which happened to be bare, passed. Nothing in `system/llm.py` or
+             `agents/` handled fences (grepped). The demo's own failing run discarded both
+             raw attempts, so that it was fences both times is an inference, not a
+             recording; the single recorded failure was a fenced attempt.
+Decision:    `_strip_one_code_fence` removes one fence that wraps the WHOLE response
+             (anchored both ends; any language tag or none) and is applied to the text
+             handed to `model_validate_json`, on both attempts. Prose before the fence, a
+             truncated reply with no closing fence, and a fence nested inside a JSON value
+             are not touched and still fail. The schema check, the single corrective
+             retry, the cost log and the Code Agent's string-matched evidence quotes
+             (invariants 5, 6) are unchanged; the cache and cost log keep the model's text
+             exactly as received. `SchemaValidationError` gains `raw_prefixes` (the first
+             300 chars of each attempt) and shows them in its message, so the next failure
+             explains itself without another paid call. 10 tests in tests/test_llm.py; the
+             four fenced-JSON ones fail with stripping disabled and pass with it. Suite:
+             496 passed, 2 skipped, 1 xfailed.
+Alternative: Loosen the prompt ("return only JSON") -- it already says that (agents/
+             prompts.py) and the model fences anyway. Add a third retry -- violates D-022's
+             single corrective retry and pays for a failure we can fix deterministically.
+Cost:        Live check, 3 fresh processes (judge() caches in-process): 3/3 Beat 6 passes,
+             and in all three the model's first attempt WAS fenced, i.e. each would have
+             burned its retry before the fix. That is 3 runs, not a failure-rate estimate.
+             Beat 6 still takes ~35 s: the primary (gemini-3.7-flash) hit the 30 s call
+             timeout (D-051) in all three and the fallback served the call -- a separate,
+             unaddressed latency/availability issue. Every successful Beat 6 appends 3
+             traces for `anas` (a verdict + two profile_update); these are real, permanent
+             and replay-neutral. The diagnostic and trials wrote 12: 65423-65425 (the
+             diagnostic reproduction) and 66324-66332 (the three trials). Kept, not
+             flagged: `traces` is append-only (invariant 1) and has no flag mechanism, and
+             they are genuine verdicts on the same file, not corrupt data. Checked after:
+             `prove_event_sourcing` IDENTICAL over 60 traces; mastery unchanged (1.000/14,
+             1.000/9, 0.215/1). `anas` now has 10 verdict traces, so a count of verdicts is
+             not a count of distinct gradings.
+Defence:     "The model sometimes wraps correct JSON in a markdown fence. I found that by
+             recording the raw output rather than guessing, and fixed it at the one place
+             that parses it -- the contract is untouched: it still has to be valid JSON,
+             match the schema, and every quote still has to match the submission. And the
+             error now keeps what the model actually said, so a failure is diagnosable
+             the first time."
