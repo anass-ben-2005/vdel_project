@@ -277,6 +277,96 @@ def test_a_failed_first_attempt_is_logged_before_the_retry(monkeypatch):
     assert llm.COST_LOG[1].attempt == 2
 
 
+# ---------- one surrounding markdown fence is transport, not content (D-059) ----------
+
+_FENCE = "`" * 3
+FENCED = f"{_FENCE}json\n{VALID}\n{_FENCE}"
+
+
+def test_fenced_json_passes_on_the_first_attempt_without_a_retry(monkeypatch):
+    """The live Beat 6 failure: a model wrapped valid JSON in a markdown fence. Previously
+    that burned the one corrective retry (and lost the verdict if the retry was fenced too)."""
+    fake = _install_fake_client(monkeypatch, [FENCED])
+
+    verdict, record = judge("grade this", Verdict)
+
+    assert len(fake.calls) == 1                      # no corrective retry was needed
+    assert verdict.score == 4 and verdict.note == "clean"
+    assert record.attempt == 1 and record.schema_valid is True
+
+
+def test_fence_without_a_language_tag_also_passes(monkeypatch):
+    _install_fake_client(monkeypatch, [f"{_FENCE}\n{VALID}\n{_FENCE}"])
+    verdict, _ = judge("grade this", Verdict)
+    assert verdict.score == 4
+
+
+def test_bare_json_still_passes_unchanged(monkeypatch):
+    fake = _install_fake_client(monkeypatch, [VALID])
+    verdict, record = judge("grade this", Verdict)
+    assert len(fake.calls) == 1 and verdict.score == 4 and record.attempt == 1
+
+
+def test_a_fenced_retry_rescues_an_invalid_first_attempt(monkeypatch):
+    fake = _install_fake_client(monkeypatch, [INVALID, FENCED])
+    verdict, record = judge("grade this", Verdict)
+    assert len(fake.calls) == 2 and verdict.score == 4 and record.attempt == 2
+
+
+def test_the_cache_keeps_the_models_response_exactly_as_it_arrived(monkeypatch):
+    """The fence is stripped for validation only -- stored text and cost log are the
+    model's real output, so a replay reproduces what the provider actually said."""
+    _install_fake_client(monkeypatch, [FENCED])
+    judge("grade this", Verdict)
+    assert list(llm.CACHE.values()) == [FENCED]
+
+
+def test_stripping_the_fence_does_not_bypass_the_schema(monkeypatch):
+    """Invariant 5 unchanged: what is INSIDE the fence must still match the schema."""
+    wrong_type = f'{_FENCE}json\n{{"score": "high", "note": "x"}}\n{_FENCE}'
+    fake = _install_fake_client(monkeypatch, [wrong_type, wrong_type])
+
+    with pytest.raises(SchemaValidationError):
+        judge("grade this", Verdict)
+
+    assert len(fake.calls) == 2
+
+
+@pytest.mark.parametrize("text", [
+    f"Sure! Here is the verdict:\n{_FENCE}json\n{VALID}\n{_FENCE}",   # prose before the fence
+    f"{_FENCE}json\n{VALID}",                                         # truncated: no closing fence
+])
+def test_a_fence_that_is_not_the_whole_response_is_not_stripped(monkeypatch, text):
+    _install_fake_client(monkeypatch, [text, text])
+    with pytest.raises(SchemaValidationError):
+        judge("grade this", Verdict)
+
+
+# ---------- the error keeps the start of what the model said (D-059) ----------
+
+def test_invalid_json_still_fails_and_the_error_carries_the_raw_prefix(monkeypatch):
+    _install_fake_client(monkeypatch, [INVALID, "second bad answer"])
+
+    with pytest.raises(SchemaValidationError) as exc_info:
+        judge("grade this", Verdict)
+
+    err = exc_info.value
+    assert err.raw_prefixes == [INVALID, "second bad answer"]
+    assert repr(INVALID) in str(err) and repr("second bad answer") in str(err)
+    assert len(err.records) == 2 and err.records[1].flagged is True    # unchanged behaviour
+
+
+def test_the_raw_prefix_is_capped_at_300_characters(monkeypatch):
+    long_bad = "x" * 1000
+    _install_fake_client(monkeypatch, [long_bad, long_bad])
+
+    with pytest.raises(SchemaValidationError) as exc_info:
+        judge("grade this", Verdict)
+
+    assert [len(p) for p in exc_info.value.raw_prefixes] == [300, 300]
+    assert "x" * 301 not in str(exc_info.value)
+
+
 # ---------- temperature-0 enforcement (invariant 4, D-025) ----------
 
 def test_judge_sends_temperature_zero_on_a_model_that_accepts_it(monkeypatch):

@@ -186,7 +186,13 @@ def beat5_mastery() -> BeatResult:
     mastery = profile["mastery"]
     for concept, m in sorted(mastery.items()):
         print(f"  {concept:24s} p_mastery={m['p_mastery']:.3f}  n={m['n']}  "
-              f"ci90={m.get('ci90')}  trend={m.get('trend')}")
+              f"pass-rate ci90={m.get('ci90')}  trend={m.get('trend')}")
+    # The stored key stays `ci90` (the stored mastery shape is in the design docs); only this
+    # label changes. The interval is a Beta posterior on the raw pass rate (variables/
+    # mastery.py credible_interval), NOT an interval around p_mastery, so p_mastery can lie
+    # outside it -- e.g. p_mastery=1.000 after a late run of passes, ci90=[0.497, 0.872].
+    print("  p_mastery = current BKT belief; pass-rate ci90 = Beta interval on raw pass rate "
+          "over all attempts (different quantities)")
 
     if not mastery:
         return BeatResult(False, "learner_profile.mastery is empty for anas")

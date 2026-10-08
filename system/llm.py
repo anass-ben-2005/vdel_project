@@ -125,6 +125,7 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import os
+import re
 import time
 from collections.abc import Callable
 from enum import StrEnum
@@ -282,12 +283,49 @@ class SchemaValidationError(RuntimeError):
     exactly the model whose JSON breaks most, which is the comparison M3 is built to make.
     """
 
-    def __init__(self, message: str, records: list[CallRecord]) -> None:
+    def __init__(self, message: str, records: list[CallRecord],
+                 raw_prefixes: list[str] | None = None) -> None:
         super().__init__(message)
         self.records = records
+        # The first _RAW_PREFIX_CHARS of each attempt's raw text, in attempt order. Without
+        # this the failure is undiagnosable: the raw text is discarded when the error is
+        # raised, and a Beat 6 failure had to be reproduced with a second billed call to
+        # learn the model had wrapped its JSON in a markdown fence (D-059).
+        self.raw_prefixes = raw_prefixes or []
 
 
 # ---- The two doors -------------------------------------------------------------------------
+
+_RAW_PREFIX_CHARS = 300
+
+# ONE surrounding markdown code fence: an opening fence line (``` plus an optional language
+# tag such as "json"), the body, and a closing fence -- with nothing else around it.
+# Anchored at both ends, so a fence that is not the whole response (prose before it, or a
+# missing closing fence from a truncated reply) does not match and the text goes to
+# validation unchanged, where it fails as it should.
+_CODE_FENCE = re.compile(r"\A\s*```[A-Za-z0-9_-]*[ \t]*\r?\n(.*?)\s*```\s*\Z", re.DOTALL)
+
+
+def _strip_one_code_fence(raw: str) -> str:
+    """Remove a single surrounding markdown code fence, if (and only if) it wraps the
+    whole response. D-059.
+
+    Models routinely wrap JSON in a fence even when told to return only JSON -- seen live:
+    a Gemini model answered with the JSON inside a json-tagged fence, `model_validate_json`
+    rejected it at line 1 column 1, and when the corrective retry came back fenced too the
+    Code Agent's verdict was lost. A fence is transport formatting, not content: stripping
+    it loosens nothing about the contract, because what is inside still has to parse as
+    JSON and match the pydantic schema (invariant 5), and the Code Agent still
+    string-matches every evidence quote against the submission (invariant 6). Applied to
+    the text handed to the validator only -- the cache and the cost log keep the model's
+    response exactly as it arrived.
+
+    ONE fence, not a loop: fences nested inside the JSON (a quoted code sample in a "why"
+    field) are content and are left alone.
+    """
+    match = _CODE_FENCE.match(raw)
+    return match.group(1) if match else raw
+
 
 _CORRECTIVE_SUFFIX = (
     "\n\nYour previous response did not parse as valid JSON matching the required schema. "
@@ -326,7 +364,7 @@ def judge(prompt: str, schema: type[T], *,
 
     raw, first = _complete(prompt, 0.0, resolved_model, use_cache, model_tier=model_tier)
     try:
-        validated = schema.model_validate_json(raw)
+        validated = schema.model_validate_json(_strip_one_code_fence(raw))
     except ValidationError:
         pass
     else:
@@ -344,14 +382,17 @@ def judge(prompt: str, schema: type[T], *,
                              model_tier=model_tier)
     second = second.model_copy(update={"attempt": 2})
     try:
-        validated = schema.model_validate_json(raw2)
+        validated = schema.model_validate_json(_strip_one_code_fence(raw2))
     except ValidationError:
         flagged = second.model_copy(update={"schema_valid": False, "flagged": True})
         _log_cost(flagged)
+        prefixes = [raw[:_RAW_PREFIX_CHARS], raw2[:_RAW_PREFIX_CHARS]]
         raise SchemaValidationError(
             f"two attempts, both invalid against {schema.__name__} -- flagged for review, "
-            "never silently dropped (invariant 5). See .records for both attempts' cost.",
+            "never silently dropped (invariant 5). See .records for both attempts' cost. "
+            f"Raw text began: attempt 1 {prefixes[0]!r}; attempt 2 {prefixes[1]!r}.",
             [failed_first, flagged],
+            prefixes,
         ) from None
 
     second = second.model_copy(update={"schema_valid": True})
