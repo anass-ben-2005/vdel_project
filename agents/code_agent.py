@@ -46,17 +46,20 @@ slot rather than adding one". `tests/test_code_agent.py` asserts the two signatu
    `CLAUDE.md` §11 names as the failure mode to avoid.
 
 **The open decision this file deliberately does not resolve.** `memory.MASTERY_TRACE_KINDS`
-is `frozenset({"ci_run"})`, and `verdict` sits in `NON_MASTERY_KINDS` with a reason written
-in anticipation of this milestone: *"M4. An agent verdict IS mastery evidence, but its payload
+is `frozenset({"ci_run", "test_result"})` (memory.py:150) -- executed outcomes only -- and
+`verdict` sits in `NON_MASTERY_KINDS` (memory.py:158-161) with a reason written in
+anticipation of this milestone: *"M4. An agent verdict IS mastery evidence, but its payload
 is a per-criterion 0/2/4 rubric rather than a pass/fail, so the mapping from rubric score to
 BKT outcome is a decision that has not been made. Adding it here without that mapping would
 silently score every verdict as a failure."* D.5 proposes the mapping (`correctness >= 3`),
-and Echo chose 4/0 scores specifically so that threshold reproduces its binary unchanged — so
-the pieces line up, but making a verdict move mastery means editing `memory.py`, the only door
-(invariant 2), and changing what `rebuild_from_traces` produces, which is the M2 DoD's proof.
-That is a shared-contract change and a stop-and-ask, not a side effect of writing this file.
-Until it is decided, this agent behaves exactly as Echo does: it calls `update_mastery`, which
-recomputes from the `ci_run` traces already in the log, and the verdict itself moves nothing.
+and Echo chose 4/0 scores specifically so that threshold reproduces its binary unchanged --
+but that mapping is NOT implemented, and since D-036 / invariant 13 the rubric's
+`correctness` is the model's reading of the code, never an executed result. Making a verdict
+move mastery means editing `memory.py`, the only door (invariant 2), and changing what
+`rebuild_from_traces` produces, which is the M2 DoD's proof. That is a shared-contract change
+and a stop-and-ask (D-061), not a side effect of writing this file. Until it is decided,
+this agent calls `update_mastery`, which recomputes from the `ci_run` and `test_result`
+traces already in the log, and the verdict itself moves nothing.
 """
 from __future__ import annotations
 
@@ -194,7 +197,7 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
         parent_trace_id=parent_trace_id, conn=conn,
     )
 
-    # Recomputes from the `ci_run` traces already in the log; the verdict itself moves
+    # Recomputes from the `ci_run`/`test_result` traces already in the log; the verdict itself moves
     # nothing until the open decision in this module's docstring is made. Idempotent, so
     # calling it is safe whether or not anything changed.
     for concept in concepts:

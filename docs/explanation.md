@@ -1224,7 +1224,7 @@ those say something about CI infrastructure rather than about a person. A conclu
 `None` raises instead, because that is a caller who forgot the one fact Echo grades on.
 
 **What actually moves mastery — the part worth understanding (D-017).** Echo's scores feed
-nothing. `MASTERY_TRACE_KINDS` is `{"ci_run"}`, and `NON_MASTERY_KINDS["verdict"]` says
+nothing. `MASTERY_TRACE_KINDS` is `{"ci_run", "test_result"}`, and `NON_MASTERY_KINDS["verdict"]` says
 plainly that the rubric→BKT mapping has not been decided. So Echo logs its `verdict` as a
 *child* of the `ci_run` it judges and then calls `update_mastery`, which replays that
 `ci_run`. **Mastery moves because of the CI event, not because of the agent's opinion.** Three
@@ -1640,7 +1640,7 @@ judge that fabricated a quote destroys the evidence that it did. The payload car
 verdict can be traced back to everything that produced it.
 
 **The open decision this file deliberately does not resolve.** §7.10's `MASTERY_TRACE_KINDS`
-is `frozenset({"ci_run"})`, and `verdict` sits in `NON_MASTERY_KINDS` with a reason written in
+is `frozenset({"ci_run", "test_result"})`, and `verdict` sits in `NON_MASTERY_KINDS` with a reason written in
 anticipation of this milestone: *"M4. An agent verdict IS mastery evidence, but its payload is
 a per-criterion 0/2/4 rubric rather than a pass/fail, so the mapping from rubric score to BKT
 outcome is a decision that has not been made. Adding it here without that mapping would
@@ -2060,7 +2060,7 @@ know where the designed seams are for when it's time:
 | `update_mastery` (fast path), the recurrence rule, `rebuild_from_traces` | M2 pieces 2–4 | `memory/memory.py` exists with `log_trace`/`get_profile`/`snapshot_profile`; every method already takes an optional `conn` so the fast path can write profile+trace atomically. DAG's `update_profiles` task now calls `sync_features_ref` (D-034) — the rest of this row is historical, predating those pieces' construction |
 | A Code Agent verdict against a *real* model | Needs `ANTHROPIC_API_KEY` | `agents/code_agent.py` (§7.18) is built and calls the gateway, but every test fakes the one `llm.judge()` call — nothing has run against a live provider |
 | The M4 stability table (BUILD_PLAN 4.5) | Needs a key, and ground truth for the accuracy half | 3 runs × 5 submissions is unmeasured; `benchmark/ground_truth.json` (§7.14) is still unwritten |
-| A verdict moving mastery | Open decision, not a missing feature | `MASTERY_TRACE_KINDS` is `{"ci_run"}`; the rubric→BKT mapping is a stop-and-ask (§7.18) |
+| A verdict moving mastery | Open decision, not a missing feature | `MASTERY_TRACE_KINDS` is `{"ci_run", "test_result"}`; the rubric→BKT mapping is a stop-and-ask (§7.18) |
 | `_discipline()`'s `cleanliness` wired to real lint counts | M5 | `agents/tools.py` (§7.16) now produces the ruff/sqlfluff findings this needs, but `compute_features.py` does not yet consume them |
 | Tiered LLM error classification | Optimization 6 in the source doc, deferred | `error_classifier.py`'s rule table is v1-only |
 | V7 Help-Seeking | Needs the coach's interaction log (M7) | `learner_features.help_seeking` is nullable, always `NULL` currently |

@@ -230,8 +230,11 @@ def beat6_code_agent(skip_llm: bool) -> BeatResult:
     )
     s = verdict.scores
     print(f"  trace_id={trace_id}")
-    print(f"  correctness={s.correctness} approach={s.approach} "
+    print(f"  LLM correctness estimate (not authoritative)={s.correctness} "
+          f"approach={s.approach} "
           f"readability={s.readability} idiomatic={s.idiomatic}")
+    print("  (correctness here is the model's reading of the code; correctness is decided "
+          "only by the executed hidden tests (Beat 3))")
     print(f"  confidence={verdict.confidence}  evidence_failures={evidence_failures or []}")
     quotes_checked = 0
     for criterion, quotes in verdict.evidence.items():
@@ -241,7 +244,8 @@ def beat6_code_agent(skip_llm: bool) -> BeatResult:
 
     return BeatResult(
         passed=not evidence_failures,
-        evidence=f"trace_id={trace_id}, correctness={s.correctness}, "
+        evidence=f"trace_id={trace_id}, "
+                 f"LLM correctness estimate (not authoritative)={s.correctness}, "
                  f"{quotes_checked} evidence quote(s), "
                  f"{len(evidence_failures or [])} evidence failure(s)",
     )

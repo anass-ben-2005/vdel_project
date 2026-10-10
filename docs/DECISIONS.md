@@ -2603,3 +2603,39 @@ Defence:     "I read the CI log, not the summary: ruff was never installed. Repr
              importable under the bare pytest command -- so I fixed that too and wrote tests
              that fail against the old workflow. Lint is now a signal that can't stop the
              tests, and the tests are the only thing that can turn a run red."
+
+### D-061 -- an agent verdict never feeds mastery; the rubric's `correctness` is an LLM
+             estimate, relabelled in the demo; renaming the stored field is deferred
+Date:        2026-10-10
+Status:      DECIDED (display and docs only; no schema, trace or Verdict change)
+Authority:   Anas
+Context:     Beat 6 printed `correctness=0` next to Beat 3's executed hidden tests, which
+             reads as if the LLM decides correctness. A read-only audit of every use of the
+             field found: produced by one `llm.judge()` call (agents/code_agent.py:171; the
+             prompt gets the task, code, linter findings and the master's reference code,
+             but no test results); stored in the `verdict` trace payload
+             (payload built at agents/code_agent.py:183, `log_trace` at :194); printed and echoed in Beat 6's evidence string
+             (scripts/demo.py); read statistically by benchmark/run_benchmark.py; compared
+             with test results NOWHERE; feeding mastery NOWHERE. Mastery reads only
+             `MASTERY_TRACE_KINDS = {"ci_run", "test_result"}` (memory/memory.py:150);
+             `verdict` is in `NON_MASTERY_KINDS` (memory/memory.py:158-161), reason: the
+             mapping from a 0/2/4 rubric score to a BKT outcome "has not been made".
+Decision:    (1) Verdicts do not feed mastery. (2) Beat 6 now prints "LLM correctness
+             estimate (not authoritative)=" plus one line saying correctness is decided only
+             by the executed hidden tests (Beat 3). (3) The stale docstring in
+             agents/code_agent.py (it said MASTERY_TRACE_KINDS was {"ci_run"}) now matches
+             memory.py. (4) Renaming the stored `correctness` key / `Verdict` field (for
+             example `correctness_estimate`) is DEFERRED: it touches the prompt, the schema,
+             the benchmark, the tests and the prompt version, and old traces are append-only
+             and keep the old key.
+Trigger:     If anyone proposes adding `verdict` to MASTERY_TRACE_KINDS (e.g. the
+             `correctness >= 3` mapping sketched in D.5 and the Echo agent comments), STOP
+             AND ASK. It would let an LLM opinion move BKT, against D-036 and invariant 13,
+             and it changes what `rebuild_from_traces` produces (the M2 DoD proof).
+Alternative: Rename the field now -- rejected for this change: a schema/prompt change with a
+             version bump, out of proportion to a demo-labelling problem.
+Cost:        The stored key is still named `correctness`, so anyone reading raw traces sees
+             the unqualified name; the label fix covers the demo, not the data.
+Defence:     "The model's correctness number is an explanation, not a grade. It is stored
+             with its quotes but never feeds mastery; only executed tests do, and the code
+             says so in one place a reviewer can check."
