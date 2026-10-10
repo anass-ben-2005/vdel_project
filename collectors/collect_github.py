@@ -274,14 +274,17 @@ def collect_repo(conn, owner, repo, student_id, assignment_ids):
         if w["conclusion"] == "failure":
             error_class, concept_id = classify_error(_failure_log(owner, repo, w["id"]))
             _STATS.classifications.append((error_class, concept_id))
+        # D-063: the commit this run ran against. Lets features tell a run triggered by a
+        # template-sync commit from a student's own push. .get(): a payload without it
+        # stores NULL, which the features treat as a student run.
         run_rows.append((w["id"], student_id, run_assignment_id, w["status"],
                          w["conclusion"], w["run_started_at"], w["updated_at"], dur,
-                         error_class, concept_id))
+                         error_class, concept_id, w.get("head_sha")))
     if run_rows:
         execute_values(cur, """
             INSERT INTO raw_workflow_runs (run_id, student_id, assignment_id, status,
                                            conclusion, started_at, completed_at, duration_s,
-                                           error_class, concept_id)
+                                           error_class, concept_id, head_sha)
             VALUES %s ON CONFLICT (run_id) DO NOTHING
         """, run_rows)
         _STATS.runs_upserted += len(run_rows)

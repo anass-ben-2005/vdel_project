@@ -23,3 +23,11 @@ CREATE TABLE IF NOT EXISTS raw_workflow_runs (
   error_class    TEXT,
   concept_id     TEXT
 );
+
+-- D-063. The commit a run ran against (the Actions API's `head_sha`). CLAUDE.md section 6
+-- does not list this column: an ADDITIVE, NULLABLE exception, no existing row changed.
+-- It is what lets features/compute_features.py recognise a run that was triggered by a
+-- template-sync commit (a re-evaluation of already-pushed code, not a student action) by
+-- joining to raw_commits.message. NULL = not known yet (rows collected before D-063 until
+-- scripts/backfill_head_sha.py fills them); a NULL run is treated as a student run.
+ALTER TABLE raw_workflow_runs ADD COLUMN IF NOT EXISTS head_sha TEXT;

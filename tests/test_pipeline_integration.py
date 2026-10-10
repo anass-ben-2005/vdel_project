@@ -60,6 +60,9 @@ def sara():
     yield
 
     with db.cursor() as c:
+        # run() now also points learner_profile.features_ref at the row it wrote (D-063), so
+        # the synthetic student has a profile row too; students cannot go while it exists.
+        c.execute("DELETE FROM learner_profile WHERE student_id=%s", (STUDENT,))
         c.execute("DELETE FROM learner_features WHERE student_id=%s", (STUDENT,))
         c.execute("DELETE FROM raw_workflow_runs WHERE student_id=%s", (STUDENT,))
         c.execute("DELETE FROM raw_commits WHERE student_id=%s", (STUDENT,))
@@ -76,7 +79,7 @@ def features_for(student_id):
 
 
 def test_all_seven_variables_are_written(sara):
-    run()
+    run(only=[STUDENT])
     row = features_for(STUDENT)
     assert row is not None, "no learner_features row was written"
     mastery, discipline, effort, pace, v5, v6 = row
@@ -105,9 +108,9 @@ def test_all_seven_variables_are_written(sara):
 
 def test_rerunning_changes_nothing(sara):
     """The M1 DoD: 'a deliberate re-run changes nothing'."""
-    run()
+    run(only=[STUDENT])
     first = features_for(STUDENT)
-    run()
+    run(only=[STUDENT])
     second = features_for(STUDENT)
 
     with db.cursor() as cur:
@@ -122,7 +125,22 @@ def test_unclassified_errors_move_no_mastery(sara):
         cur.execute(f"""INSERT INTO raw_workflow_runs VALUES
             (9099,'{STUDENT}','{ASSIGNMENT}','completed','failure',
              '2026-03-03 09:00+00','2026-03-03 09:03+00',180,'unmatched','unclassified')""")
-    run()
+    run(only=[STUDENT])
     mastery = features_for(STUDENT)[0]
     assert "unclassified" not in mastery
     assert set(mastery) == {"spark.joins", "spark.aggregation"}
+
+
+def test_run_only_writes_for_the_requested_students(sara):
+    """D-063: a test must never write a feature row for a REAL student in the shared dev
+    database. `run(only=...)` is what guarantees it; compare everyone else's rows."""
+    def others():
+        with db.cursor() as cur:
+            cur.execute("SELECT student_id, computed_at, formula_ver FROM learner_features "
+                        "WHERE student_id <> %s ORDER BY 1, 2", (STUDENT,))
+            return cur.fetchall()
+
+    before = others()
+    run(only=[STUDENT])
+    assert others() == before
+    assert features_for(STUDENT) is not None

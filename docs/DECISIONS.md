@@ -2639,3 +2639,303 @@ Cost:        The stored key is still named `correctness`, so anyone reading raw 
 Defence:     "The model's correctness number is an explanation, not a grade. It is stored
              with its quotes but never feeds mastery; only executed tests do, and the code
              says so in one place a reviewer can check."
+
+### D-062 -- scripts/sync_template.py: a reusable, dry-run-first tool to re-apply the
+             template files (CI workflow, root conftest.py) to already-published repos
+Date:        2026-10-10
+Status:      DECIDED; BUILT and tested with a mocked HTTP layer (tests/test_sync_template.py,
+             33 tests). NOT yet run against real GitHub -- the first real dry-run on
+             anass-ben-2005/vdel-weather-etl-gapfill-anas is Anas's to run.
+Authority:   Anas
+Context:     D-060 fixed the CI template, but `publish_repo.py` only creates repos, so the
+             fix never reaches repos published before it. anas's hand-made repo still has
+             the old workflow (ruff never installed; its 4 runs failed before pytest). Every
+             future template change has the same problem. A one-off update script was
+             proposed first and rejected in favour of a reusable tool.
+Decision:    (1) `render_student_repo.TEMPLATE_FILES` is the single mapping path -> content
+             for template files ({.github/workflows/ci.yml, conftest.py}); the renderer now
+             writes through it (behaviour unchanged) and sync_template imports it -- no copied
+             strings, so path and content cannot drift. (2) The tool may touch ONLY those
+             paths, refuses any other, and refuses any path with a `hidden` component.
+             (3) Default and `--dry-run` are READ-ONLY (GET only): per path it prints a
+             unified diff vs the template, `missing` / `identical`, and the exact --apply
+             command with the blob SHAs it saw. (4) `--apply` requires `--confirm-sha
+             PATH=SHA` for every changing file (`missing` for a file that does not exist),
+             re-reads the remote first, and writes NOTHING if any SHA differs or a changing
+             file is unconfirmed; each write is `PUT /contents` with the SHA (GitHub's 409 is
+             a second guard), message "ci: sync template (D-060)", then it prints the commit
+             sha and the triggered run's URL. (5) The repo must be in config/roster.yaml
+             (`--allow-unlisted` overrides, with a warning); `--student` must match the
+             roster's owner of that repo. (6) The token comes from the environment the way
+             scripts.collect does, goes only in the Authorization header, and is replaced by
+             `***` in every printed line (tested, including a server error that echoes it).
+Alternative: A one-off update_anas_ci.py -- rejected, the next template change would need
+             another. The gh CLI -- not installed here. Git Data API for ONE combined commit
+             -- not built; nothing needs it yet.
+Cost:        PUT /contents makes one commit per file, so two changed files are two commits
+             and a partial failure (first written, second rejected) is possible; the error
+             names exactly what was and was not written. Writing .github/workflows needs the
+             `workflow` token scope (refused up front by preflight_scopes if absent).
+             Extending the allowlist is a code change to TEMPLATE_FILES, deliberately.
+             Old failed runs on a synced repo stay in raw_workflow_runs (append-only); this
+             tool does not touch them. Suite with the DB up: 539 passed, 2 skipped,
+             1 xfailed; ruff clean; DB baseline (weather_etl attempts/variants,
+             master_version 75b5b786..., Beat 2 ids 864fe8bbecf4 / c4c18c3e10e9, 63 traces)
+             identical before and after the suite and two offline demo runs. The baseline
+             was taken AFTER the TEMPLATE_FILES refactor (Docker was down earlier), so it
+             shows the suite and demo leave the DB alone, not that the refactor is
+             byte-identical -- that rests on the diff, which only moves two writes into a loop.
+Defence:     "A template change is not finished until the repos that already exist have it.
+             The tool shows exactly what it would change, makes me type back the version I
+             saw, and refuses to overwrite anything else -- it can only do what I reviewed."
+
+### D-063 -- raw_workflow_runs.head_sha (CLAUDE.md section 6 exception) and formula_ver v3:
+             two SEPARATE exclusion rules, (a) tooling failures and (b) sync-triggered runs
+             and commits
+Date:        2026-10-10
+Status:      DECIDED; IMPLEMENTED and tested. Backfill APPLIED by Anas (48/48 runs now have a
+             head_sha; exactly 2 are sync-triggered). NO v3 learner_features row has been
+             written -- that waits for Anas's OK, and see "Finding" below: at today's data a
+             v3 write is SKIPPED by design because it collides with an existing v2 row.
+Authority:   Anas
+Context:     scripts/sync_template.py (D-062) pushed two commits to anas's hand-made repo.
+             Their CI runs (38020209828, 38020210808) failed with a REAL SyntaxError already
+             present in anas's load.py (taken from Anas's reading of the logs; not verified
+             by me, who cannot read them). The classification is correct -- but the runs
+             re-evaluate already-pushed code, so they are not a student action and must not
+             count against the student. Separately, four older runs failed only because the
+             old CI template never installed ruff (D-060). Two different reasons, two rules.
+Decision:    1. SCHEMA EXCEPTION to CLAUDE.md section 6: `raw_workflow_runs.head_sha TEXT`,
+             ADDITIVE and NULLABLE, `ADD COLUMN IF NOT EXISTS` in sql/02_raw_tables.sql; no
+             existing row was changed by the migration (all 48 were NULL until the backfill).
+             Section 6 itself is not edited (a session-boundary matter). Chosen over a
+             time-proximity heuristic, which cannot be audited.
+             2. The collector stores the Actions API's `head_sha` on every new run.
+             3. RULE (a), tooling failures: an explicit list, TOOLING_FAILURE_RUNS
+             (32752484942, 32798574508, 32798808645, 32799183586; each with its reason).
+             Excluded from the OUTCOME features only -- V1, V5, V6. KEPT in V2 (discipline),
+             V4 (pace), the watermark and the active-student list: the student really pushed.
+             Rule (a) does NOT apply to commits.
+             4. RULE (b), sync-triggered RUNS: a run whose head_sha joins to a raw_commits
+             row whose message starts with "ci: sync template" (raw_commits.message is
+             stored in full, so no payload fallback was needed). Excluded from EVERYTHING
+             that reads raw_workflow_runs in compute_features.py: V1, V2 (tests_state), V4
+             (both queries), V5, V6, the watermark, dirty_students. Not because the failure
+             is false, but because it is not a new student action. A run with NULL head_sha,
+             or whose commit is not in raw_commits, is KEPT: the rule fails open and never
+             excludes by guess.
+             4b. RULE (b) ALSO APPLIES TO COMMITS, with a STRICTER definition of "sync commit"
+             (Anas, 2026-10-10). A raw_commits row is a sync commit only when ALL THREE
+             stored facts agree: (i) its message starts with "ci: sync template"; (ii)
+             assignment_id IS NULL (the collector sets it when a commit touches no assignment
+             file, and a sync commit only touches template files); (iii) files_changed <= 2
+             (= len(TEMPLATE_FILES), asserted by a test). One SQL predicate,
+             compute_features.sync_commit_sql(), is used by the run join (4), the commit
+             filter and the backfill report, so they cannot disagree. Such a commit is
+             excluded from V3 (commit gaps and the release-to-first-commit lag), V6's
+             changed_loc, and the commit side of the watermark and dirty_students. Fail-open:
+             every term is COALESCEd to a definite true/false, so a NULL message or NULL
+             files_changed means "not a sync commit" (without that, a NULL would silently
+             drop the row from a WHERE). Rule (a) does not apply to commits.
+             On the live data the predicate matches exactly the 2 sync commits (1318730c3e,
+             f724b45592) and none of the other 45; the conditions alone would catch far more
+             (files_changed <= 2: 27 commits; assignment_id NULL: 3), which is why all three
+             are required.
+             5. formula_ver "v3" (compute_for_student(cur, sid, formula_ver); "v2" is still
+             computable and equals the pre-D-063 behaviour, so the two can be compared). v3
+             rows record error_frequency.excluded_runs = {tooling, sync_triggered} and
+             excluded_commits. write_features only updates a row of the SAME formula_ver: a
+             v3 row never overwrites a v2 row.
+             6. scripts/backfill_head_sha.py: GETs each run with head_sha NULL, writes
+             `UPDATE ... WHERE head_sha IS NULL` (never overwrites; an already-set run is not
+             even fetched). Dry-run default, --apply writes; the token is never printed.
+             7. run() keeps learner_profile.features_ref in step (Anas, 2026-10-10): after each
+             row it actually WROTE it calls Memory().sync_features_ref(sid, conn=conn) in the
+             SAME transaction (sync_features_ref joins the caller's transaction and leaves the
+             commit to it). Before this only the DAG's update_profiles task did that, and
+             Airflow is not installed, so the CLI path would have left the pointer behind and
+             Beat 7 / prove_event_sourcing would show features_ref DIFFERENT after the first
+             real v3 write. A student whose write was SKIPPED (the v2 conflict) is not synced;
+             a failure or a caller's rollback undoes row and pointer together.
+Proof:       Computed for anas inside a ROLLED-BACK transaction with the REAL head_sha values
+             (no simulation), rules (a) and (b) on runs and commits. learner_features stayed
+             at 2 rows. v2 -> v3:
+               V1 py.errors_debugging n 11 -> 9 (p 1.0 both; other concepts unchanged)
+               V3 regularity 0.163 -> 0.273, burstiness 0.675 -> 0.455 (sync commits no
+                  longer make gaps); procrastination_h 0.0 both
+               V5 score 0.959 -> 0.998, resolution_ratio 0.926 -> 1.0
+               V6 score 0.699 -> 0.749, fail_ratio 0.415 -> 0.356, by_concept loses
+                  py.errors_debugging, unclassified 12 -> 8; excluded_runs {tooling: 4,
+                  sync_triggered: 2}, excluded_commits 2
+               V2 testing 1.0 and V4 keys unchanged for anas (the hand-made repo's runs have
+                  no assignment_id, so the pace join never saw them); synthetic tests cover
+                  V2/V4.
+               watermark: v2 2026-10-10 03:20:25 (the sync run) -> v3 with runs-only rule
+                  03:20:23 (the sync commit) -> v3 with the commit rule 2026-08-25 01:52:06
+                  (anas's last real event). dirty_students since 2026-10-01: v2 [anas],
+                  v3 [].
+Finding:     The v3 watermark for anas (2026-08-25 01:52:06) equals the computed_at of an
+             existing v2 row. learner_features is keyed (student_id, computed_at), and v3
+             never overwrites v2, so a v3 write for anas is SKIPPED today, not stored.
+DECIDED (Anas, 2026-10-10): do NONE of the three ways round it -- the primary key is not
+             changed, v3 is not written under a different computed_at, and the v2 row is
+             not overwritten. The conflict concerns ONLY anas's historical v2 row: v3 will
+             store by itself once anas has new real activity (the watermark moves), and any
+             new student has no v2 row, so there is no conflict for them. Changing
+             learner_features' key would be a separate schema decision that must first
+             review learner_profile.features_ref (which points at a learner_features row by
+             computed_at). No row was written and nothing was changed.
+Verification: tests/test_feature_exclusions.py (rules a and b separately; (b) also in
+             pace/discipline/watermark/active list; (a) NOT in pace/discipline; commits: V3
+             gaps, V6 changed_loc, watermark, dirty_students, fail-open on NULL message; v3
+             never overwrites v2), tests/test_backfill_head_sha.py (never overwrites, even in
+             a race; dry-run writes nothing; token redacted), tests/test_collect_head_sha.py.
+             Full suite with the DB up: see the closing report; ruff clean. A fingerprint of
+             all 17 tables before and after a full suite run is identical, so no test leaks
+             into real data.
+Incident:    The first full-suite run wrote a REAL learner_features row (anas, v3, computed_at
+             2026-10-10 03:20:25) and broke test_prove_event_sourcing (features_ref drift).
+             Cause: tests/test_pipeline_integration.py called compute_features.run(), which
+             computes for EVERY student with activity, including real ones; this predates
+             D-063 and was latent until the sync commits moved anas's watermark. That one row
+             (verified to be the only v3 row) was deleted, leaving the two original v2 rows
+             -- a deletion made without asking first, which Anas has ruled out for the
+             future: stop and ask before deleting any DB row. Fixed at the root:
+             run(only=[...]) and the integration tests pass their own test student, plus a
+             regression test that other students' rows are untouched. Remaining callers of
+             run() with no `only`: dags/vdel_pipeline.py (the real pipeline, intended) and
+             `python -m features.compute_features` (a real write path -- do not run it
+             before the OK).
+Incident 2:  Making run() write the profile pointer (item 7) made the integration test's
+             synthetic student _test_sara get a learner_profile row. That fixture's teardown
+             did not know the table, so its single cleanup transaction hit the foreign key
+             and rolled back as a whole, leaving 12 committed synthetic rows in the dev
+             database (1 student, 1 assignment, 3 commits, 5 runs, 1 learner_features v3
+             row, 1 learner_profile row; no traces; nothing belonging to a real student) and
+             making the next setup fail on a duplicate key. Found by running the file, not
+             by reading. The fixture teardown now deletes the profile row first. The
+             leftover rows were NOT deleted until Anas approved (any DB-row deletion needs
+             his approval first). Cleaned up 2026-10-10 on his approval: pg_dump to
+             backups/vdel_pre_test_sara_cleanup_20261010_050953.sql (94,532 bytes, gitignored)
+             first; counts verified exactly (1 student, 1 assignment, 3 commits, 5 runs, 1
+             feature row, 1 profile row, 0 elsewhere); six DELETEs in foreign-key order in ONE
+             transaction, each checked against its expected row count, with a content
+             fingerprint of every other row in 12 tables compared before COMMIT (all
+             identical). Afterwards test_pipeline_integration ran twice in a row (4 passed
+             each, no duplicate key) and left all 17 tables identical.
+Alternative: Time-proximity join (a run starting seconds after a sync commit) -- rejected,
+             a heuristic with no audit trail. Excluding the sync commits' runs by an explicit
+             run-id list -- rejected for (b): it would not cover the next sync. Using the run
+             payload's head_commit.message -- not needed, raw_commits stores the message.
+Cost:        Rule (b) needs head_sha: a repo's runs collected before D-063 and not
+             backfilled fail open. Rule (a)'s four ids were derived from the database (every
+             failed run of anas with no assignment_id, dated before the sync), consistent
+             with HANDOFF's "4 runs failed before pytest"; their logs are gone, so the reason
+             is TODO(verify) against GitHub.
+             KNOWN HOLE in rule (b): a legacy single-assignment repo gives EVERY commit an
+             assignment_id (D-043: with no file_path to match, a commit matches the one
+             assignment), so a sync commit pushed to such a repo fails condition (ii) and is
+             NOT recognised -- its run and commit still count. That is the safe direction
+             (nothing is excluded by guess), and it has not happened: the sync was run only
+             on the curriculum-shaped repo. UPGRADE TRIGGER: the day sync_template.py is run
+             on a legacy-shaped repo, or a student commit is wrongly excluded, store the
+             commit's file list (or a "touches only TEMPLATE_FILES" flag) at collection time
+             and test that instead -- a new nullable column plus a backfill, a further
+             section-6 exception, to be decided then.
+Defence:     "A re-run of code the student had already pushed is not something the student
+             did, and a CI that could not run is not something the student broke. I keep the
+             raw rows, give each reason its own rule, and put the result under a new formula
+             version so the old numbers stay valid and the two can be compared."
+
+### D-064 -- the test suite runs against a throwaway `<real>_test` database, never the real one
+Date:        2026-10-10
+Status:      DECIDED and IMPLEMENTED. Full suite twice in a row: 613 passed, 1 xfailed, 0
+             skipped, both times; baseline.py --full identical before and after; the real
+             database was opened zero times (see Evidence).
+Authority:   Anas
+Context:     The DB tests shared the demo's database and were kept off real data only by
+             convention (each test cleaning up after itself). The convention failed twice in
+             one session (D-063): a feature row written for a real student, and 12 synthetic
+             rows left behind by a teardown that hit a foreign key. `traces` is append-only,
+             so one committing test pollutes it forever -- the 5 `_test_runner` traces already
+             in the real database are exactly that (below).
+Decision:    1. tests/conftest.py creates `<real name>_test` (vdel -> vdel_test) at session
+             start, applies the schema (scripts/init_db.py), seeds the curriculum
+             (seed_curriculum, both projects), points PG_DSN at it, and drops it at the end
+             (VDEL_KEEP_TEST_DB=1 keeps it). The name is DERIVED from the real DSN.
+             2. HARD REFUSAL: immediately before EVERY DROP, CREATE and ALTER DATABASE,
+             assert_safe_target checks (1) the target is derived from the real DSN, (2) it
+             ends with "_test", (3) it differs from the real name (case-insensitively).
+             Explicit raises, not `assert`. Each check is proven alone by a test, and the
+             whole build step handed the real name refuses before any statement.
+             3. VDEL_TESTING=1 is set by tests/conftest.py and nothing else (a test scans the
+             source tree for any other assignment). With it present system/db.py::_open
+             refuses any database not ending "_test"; with it absent _open is unchanged, so
+             the demo, the scripts and the pipeline behave exactly as before (proved: demo
+             --skip-network --skip-llm, Beat 2 864fe8bbecf4 / c4c18c3e10e9, Beat 7 IDENTICAL).
+             `_open` is the only place in the repo that calls psycopg2.connect.
+             4. psycopg2.connect is wrapped for the session: a connection to the real
+             database (or to an unnamed one) is refused, every other connection is counted per
+             database name, and the terminal summary prints the counts.
+             5. FAIL CLOSED: if the test database cannot be built (server down, no CREATEDB
+             right), PG_DSN is set to the EMPTY STRING -- not removed: system.db runs
+             load_dotenv() on import and would put the real DSN back from .env (found by
+             running this path live; before the fix the DB tests errored instead of skipping).
+             DB tests then skip. VDEL_REQUIRE_DB=1 turns that into an error (for CI).
+             6. One session at a time: an advisory lock on the maintenance database, so two
+             concurrent runs cannot drop each other's database (a deviation from the plain
+             proposal; the second run is refused with a message).
+             7. lock_timeout 20 s and idle_in_transaction_session_timeout 300 s on the test
+             database only: the first run against an empty database HUNG (a fixture failed
+             while holding an open transaction and the next test's INSERT of the same key
+             waited on its lock forever); such a test now fails after 20 s.
+             8. tests/support.py::ensure_variant builds a variant from the SEEDED gaps, with
+             the renderer's own id function and upsert; scripts/baseline.py is the read-only
+             before/after snapshot (--full fingerprints every table).
+Evidence:    Two consecutive full runs: 309 psycopg2 connections to vdel_test + 1 to the
+             maintenance database each, 0 opened and 0 refused for the real database. Server
+             side, independent of the conftest: pg_stat_database.sessions for vdel rose by 26
+             in 134 s, exactly the container health check (pg_isready every 5 s: 134/5 = 26.8),
+             and by 6 in 30 s at rest; vdel's write counters (inserted/updated/deleted
+             11272/1807/687) did not move. baseline.py --full identical (attempts hash
+             94a82edcb5e828ff421ed12fb16672de, 10 variants, master_version 75b5b786...,
+             63 traces, 47 commits, 48 runs, 2 learner_features rows, mastery 14/9/1).
+             The coarser read counters (xact, tup_returned) are NOT used as evidence: the
+             health check moves them too and they cannot be attributed row by row.
+Item 3:      Tests that depended on REAL data, and how each was handled -- none weakened:
+             - test_diagnose.py (6 tests) and test_collect_attribution.py (1): borrowed a
+               `variants` row that existed only because a real student's repo had been
+               rendered. REWRITTEN to create their own via ensure_variant; assertions
+               unchanged.
+             - test_prove_event_sourcing.py: its proofs ran over ALL profiles, so the real
+               `anas` profile took part (that is how D-034 was found). They now run over the
+               test's own synthetic profiles only. The two "vacuous proof" tests
+               (:273, :288) were SKIPPED for as long as any real profile existed and now
+               run and pass -- a coverage gain. The real-data check is NOT in the suite any
+               more: it is `python -m scripts.prove_event_sourcing` and demo Beat 7, plus
+               scripts/baseline.py, to be run by hand before and after a change.
+             - test_pipeline_integration.py: was the D-063 leak; already restricted by
+               run(only=...), now isolated entirely.
+             - Curriculum-only readers (test_grade_collected, test_test_runner,
+               test_publish_repo, test_ci_workflow, test_collect_head_sha) read seeded
+               structure, which a fresh database reproduces; unchanged.
+Traces:      The 63 real traces: 58 anas (ci_run 1, profile_update 29, test_result 17,
+             verdict 11 by code_agent) and 5 `_test_runner` test_result traces, all written in
+             one transaction at 2026-08-24 18:58:40 for weather_etl_transform -- synthetic
+             rows an earlier version of a test committed to the real database. Append-only,
+             so they stay; nothing was modified or deleted. D-064 stops new ones.
+Alternative: A separate schema in the same database -- rejected: extensions live in public
+             and a mis-set search_path would write to the real schema. Keeping the shared
+             database and hardening each test -- rejected: that is the convention that failed.
+             Cloning the real database as a template -- rejected: it would copy real student
+             data into the tests, which is the problem.
+Cost:        A few seconds per session to create, migrate and seed (even for a pure-HTTP test
+             file). The protection lives in tests/conftest.py, so a test file placed OUTSIDE
+             tests/ would not load it. The seeded master_version is a content hash, so it
+             matches the real one only while the curriculum files are unchanged. The
+             real-data checks above are manual now. A run that cannot build the database
+             SKIPS its DB tests (loudly, in the header) rather than failing, unless
+             VDEL_REQUIRE_DB=1 -- a green run with many skips must be read as such.
+Defence:     "The tests can no longer touch real student data, and I can show it: the code
+             refuses by name, the server confirms it never saw a session, and a before/after
+             snapshot of every table is identical."

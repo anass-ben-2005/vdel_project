@@ -849,6 +849,35 @@ is ever modified:**
    any activity ever" — the Airflow DAG (§7.9) instead passes the actual previous run's
    timestamp, so daily runs only touch students who did something that day.
 
+3. **`formula_ver` v3 (D-063) filters two kinds of run, for two different reasons.**
+   `compute_for_student(cur, sid, formula_ver)` — `'v2'` is every run (the old behaviour,
+   still computable so the two can be compared), `'v3'` (the default now) applies
+   `_run_scopes()`: **(a) tooling failures** — an explicit list, `TOOLING_FAILURE_RUNS`, of
+   runs that failed because CI could not run (the old template never installed ruff) —
+   leave only the *outcome* features V1, V5, V6, and still count in V2 and V4 because the
+   student really pushed; **(b) sync-triggered runs** — a run whose `head_sha` joins to a
+   `raw_commits` row whose message starts `ci: sync template` — leave *everything* that
+   reads `raw_workflow_runs` (V1, V2, V4, V5, V6, the watermark, `dirty_students`),
+   because re-evaluating already-pushed code is not a student action (the failure may be
+   perfectly real; it is just not new). A run with `head_sha` NULL (not yet backfilled) or
+   whose commit is unknown is kept: the rule needs positive evidence to exclude. v3 rows
+   record the counts in `error_frequency.excluded_runs`. `write_features()` never lets a v3
+   row overwrite a v2 row at the same `(student_id, computed_at)`. Rule (b) also covers
+   **commits**, by one shared predicate, `sync_commit_sql()`: a `raw_commits` row is a sync
+   commit only when its message starts `ci: sync template` **and** `assignment_id IS NULL`
+   **and** `files_changed <= 2` (= the number of template files). It is out of V3's commit
+   gaps and lag, V6's `changed_loc`, and the commit side of the watermark and
+   `dirty_students`, and the same predicate decides which runs are sync-triggered
+   (fail-open: NULLs mean "not a sync commit"; rule (a) never applies to commits). **Known
+   hole:** a legacy single-assignment repo gives every commit an `assignment_id`, so a sync
+   commit there is not recognised (safe direction; upgrade = store a file list or a "touches
+   only TEMPLATE_FILES" flag). `run()` also calls `Memory.sync_features_ref` for each row it
+   wrote, in the same transaction, so `learner_profile.features_ref` never lags the row. **Known consequence:** for anas the v3 watermark equals an
+   existing v2 row's `computed_at`, and v3 never overwrites v2, so a v3 write is skipped
+   until new real activity moves the watermark (D-063 "Finding"). `run(only=[...])`
+   restricts a run to given students — tests must use it so they never write feature rows
+   for real students.
+
 **What each helper does, briefly** (all read-only SQL against the raw tables, feeding
 the pure formula functions from `variables/`):
 
@@ -1743,6 +1772,49 @@ only then adds/updates the student's roster rows — text-level, so the roster's
 `--dry-run` makes no network, git, roster or DB write. Status: tested (23 tests, real git against a
 local bare repo) and dry-run proven; **no real repo has been created yet** — the current token has
 scope `repo` only and lacks `workflow`, so a real run refuses at preflight.
+
+**`scripts/sync_template.py` — re-applies the template files to an already-published repo (D-062).**
+`publish_repo` only ever creates repos, so a template change like D-060 (CI installs its own
+tools) never reached repos published before it. This tool manages a fixed allowlist,
+`render_student_repo.TEMPLATE_FILES` (`.github/workflows/ci.yml`, `conftest.py`) — the same
+mapping the renderer writes from, so path and content cannot drift — and refuses any other path
+and any path containing `hidden`. Default is a **read-only dry-run**: GET each file from the
+Contents API, print a unified diff against the template (`missing` / `identical` where true) and
+the exact `--apply` command with the blob SHAs just seen. `--apply` needs `--confirm-sha PATH=SHA`
+for every changing file, re-reads the remote first, and writes nothing if any SHA differs; each
+write is `PUT /contents` with that SHA (GitHub's own 409 is a second guard). The repo must be in
+`config/roster.yaml` (`--allow-unlisted` overrides; `--student` checks the roster's owner). The
+token comes from the environment as in `scripts.collect` and is replaced by `***` in all output.
+Status: tested with a mocked HTTP layer (33 tests); **not yet run against real GitHub**. Limit:
+`PUT /contents` is one commit per file, so a partial failure is possible and is reported.
+
+**`tests/conftest.py` — the test suite never touches the real database (D-064).**
+At session start it creates `<real name>_test` (`vdel` → `vdel_test`), applies the schema and seeds
+the curriculum, points `PG_DSN` at it, sets `VDEL_TESTING=1`, and drops it at the end. Before every
+DROP/CREATE/ALTER DATABASE it checks the target is derived from the real DSN, ends `_test`, and
+differs from the real name. `psycopg2.connect` is wrapped to refuse the real database and to count
+connections per database (printed in the terminal summary); `system/db.py::_open` refuses any
+non-`_test` database when `VDEL_TESTING=1` and is unchanged when it is absent, so the demo, scripts and
+pipeline are unaffected. If the test database cannot be built it **fails closed**: `PG_DSN` is blanked
+(not removed — `load_dotenv` would restore it), DB tests skip, and `VDEL_REQUIRE_DB=1` makes that an
+error. One session at a time (advisory lock). `tests/support.py::ensure_variant` lets a test create the
+variant it needs instead of borrowing a real student's. **`scripts/baseline.py`** is the read-only
+before/after snapshot (attempts hash, variants, master_version, traces, raw counts, `learner_features`
+with version, mastery, Beat 2 ids; `--full` fingerprints every table) — run it before and after any
+change. The real-data proof is no longer in the suite: use `python -m scripts.prove_event_sourcing`,
+demo Beat 7 and `baseline.py`.
+
+**`scripts/backfill_head_sha.py` — fills `raw_workflow_runs.head_sha` for older runs (D-063).**
+The collector now stores the Actions API's `head_sha` on every new run; this fills the
+runs collected before that. For each run with `head_sha IS NULL` it GETs
+`/repos/OWNER/REPO/actions/runs/ID` across the student's roster repos (the run's own
+assignment's repo first; run ids are global, so one answers) and writes the value with
+`UPDATE ... WHERE head_sha IS NULL` — it never overwrites, and an already-set run is not
+even fetched. Dry-run (GET only) is the default; `--apply` writes. It prints counts (in
+scope / already set / would fill / not found / errors) and how many filled runs point at
+a sync commit (the runs rule (b) will exclude). Token handling and `***` redaction are
+shared with `sync_template.py`. Status: tested (8 tests, HTTP mocked, real DB rolled
+back); **not yet run against GitHub** — run it yourself, dry-run first.
 
 **`scripts/grade_collected.py` — grades what the collector collected (D-056).**
 For each attempt, finds the commits in `raw_commits` attributed to it that have no

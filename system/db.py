@@ -16,6 +16,7 @@ import os
 from contextlib import contextmanager
 
 import psycopg2
+import psycopg2.extensions
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -29,6 +30,29 @@ def dsn() -> str:
     return value
 
 
+TEST_DB_SUFFIX = "_test"
+
+
+def check_test_mode(dsn_value: str) -> None:
+    """D-064. When VDEL_TESTING=1 -- set by tests/conftest.py and by nothing else -- refuse to
+    open any database whose name does not end in `_test`.
+
+    This is the last line of defence behind the conftest: it covers a code path, a
+    subprocess, or a test that reaches `_open()` some way the conftest did not anticipate.
+    `_open` is the only place in the repo that calls psycopg2.connect, so one check here
+    covers all of it. With the variable absent this does nothing, so the demo, the scripts
+    and the pipeline behave exactly as before."""
+    if os.environ.get("VDEL_TESTING") != "1":
+        return
+    name = psycopg2.extensions.parse_dsn(dsn_value).get("dbname", "")
+    if not name.endswith(TEST_DB_SUFFIX):
+        raise RuntimeError(
+            f"VDEL_TESTING=1 but the target database is {name!r}, which does not end in "
+            f"{TEST_DB_SUFFIX!r}: refusing to open it. Tests may only touch a throwaway "
+            "*_test database (tests/conftest.py)."
+        )
+
+
 def _open():
     """psycopg2.connect, with libpq's error message made readable.
 
@@ -39,8 +63,10 @@ def _open():
     an hour to find that the actual message was "authentification par mot de passe
     echouee". Decoding it here means the next person reads the cause instead.
     """
+    target = dsn()
+    check_test_mode(target)
     try:
-        return psycopg2.connect(dsn())
+        return psycopg2.connect(target)
     except UnicodeDecodeError as exc:
         detail = exc.object.decode("cp1252", errors="replace").strip()
         raise psycopg2.OperationalError(detail) from None

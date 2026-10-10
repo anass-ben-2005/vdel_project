@@ -23,6 +23,7 @@ import pytest
 
 import collectors.collect_github as cg
 from system import db
+from tests.support import ensure_variant
 
 STUDENT = "_test_attr"
 OWNER, REPO = "test-org", "weather_etl_repo"
@@ -106,14 +107,8 @@ def attribution_scenario(monkeypatch):
 
     cur = conn.cursor()
     cur.execute("INSERT INTO students VALUES (%s,%s,'vdel-2026')", (STUDENT, STUDENT))
-    cur.execute(
-        "SELECT variant_id FROM variants WHERE assignment_id=%s", ("weather_etl_extract",)
-    )
-    extract_variant = cur.fetchone()[0]
-    cur.execute(
-        "SELECT variant_id FROM variants WHERE assignment_id=%s", ("weather_etl_load",)
-    )
-    load_variant = cur.fetchone()[0]
+    extract_variant = ensure_variant(cur, "weather_etl_extract")
+    load_variant = ensure_variant(cur, "weather_etl_load")
 
     # weather_etl_extract: attempt_no=1, OPEN (submitted_at NULL) -- the multi-file
     # commit should attach here successfully.

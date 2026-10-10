@@ -23,6 +23,7 @@ import pytest
 
 from assessment.diagnose import diagnose
 from system import db
+from tests.support import ensure_variant
 
 STUDENT = "_test_diagnose"
 PROJECT = "weather_etl"
@@ -62,8 +63,7 @@ def diagnose_scenario():
 
     cur = conn.cursor()
     cur.execute("INSERT INTO students VALUES (%s,%s,'vdel-2026')", (STUDENT, STUDENT))
-    cur.execute("SELECT variant_id FROM variants WHERE assignment_id=%s", (ASSIGNMENT,))
-    variant_id = cur.fetchone()[0]
+    variant_id = ensure_variant(cur, ASSIGNMENT)
     cur.execute(
         "INSERT INTO attempts (student_id, project_id, assignment_id, attempt_no,"
         "  variant_id, gap_seed) VALUES (%s,%s,%s,1,%s,1) RETURNING attempt_id",
@@ -152,8 +152,7 @@ def test_an_attempt_with_no_test_results_yet_is_not_an_error(diagnose_scenario):
     to diagnose yet" honestly, not raise, matching how the rest of this codebase
     treats cold-start absence of evidence as a real, valid state."""
     cur, _old_attempt_id = diagnose_scenario
-    cur.execute("SELECT variant_id FROM variants WHERE assignment_id=%s", (ASSIGNMENT,))
-    variant_id = cur.fetchone()[0]
+    variant_id = ensure_variant(cur, ASSIGNMENT)
     cur.execute(
         "INSERT INTO attempts (student_id, project_id, assignment_id, attempt_no,"
         "  variant_id, gap_seed) VALUES (%s,%s,%s,2,%s,2) RETURNING attempt_id",
