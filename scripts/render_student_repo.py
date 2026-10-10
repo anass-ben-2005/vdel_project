@@ -225,6 +225,15 @@ _ROOT_CONFTEST = """\
 # `weather_etl` package. Please leave it in place.
 """
 
+# D-062. The files that are TEMPLATE, not student work: the same bytes in every student's
+# repo, so a template change (D-060) can be re-applied to repos already published.
+# render_student_repo writes exactly these, and scripts/sync_template.py is allowed to
+# touch exactly these -- one mapping, so the path and the content cannot drift apart.
+TEMPLATE_FILES = {
+    ".github/workflows/ci.yml": _CI_WORKFLOW,
+    "conftest.py": _ROOT_CONFTEST,
+}
+
 
 def render_student_repo(
     project_id: str, student_id: str, attempt_no: int, out_dir: str | Path, *, conn=None
@@ -329,12 +338,12 @@ def render_student_repo(
         )
     (out_dir / "ASSIGNMENT.md").write_text("".join(assignment_md), encoding="utf-8")
 
-    workflow_dir = out_dir / ".github" / "workflows"
-    workflow_dir.mkdir(parents=True, exist_ok=True)
-    (workflow_dir / "ci.yml").write_text(_CI_WORKFLOW, encoding="utf-8")
+    for rel_path, content in TEMPLATE_FILES.items():
+        dest = out_dir / rel_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content, encoding="utf-8")
 
     (out_dir / ".gitignore").write_text(_GITIGNORE, encoding="utf-8")
-    (out_dir / "conftest.py").write_text(_ROOT_CONFTEST, encoding="utf-8")
 
     _assert_no_hidden_tests_leaked(out_dir)
 
