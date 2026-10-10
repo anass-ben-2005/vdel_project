@@ -20,11 +20,28 @@ merely conventionally separate from agents/ -- it imports NOTHING from agents/ o
 system/llm.py, checked by grep before every commit that touches this file, so that
 boundary is structural, not a comment someone has to remember to keep true.
 
-Real limitation, stated rather than pretended away: subprocess isolation is
-PROCESS-level only -- no container, no sandbox, no resource cap beyond a wall-clock
-timeout. Acceptable for this project's v1 scope (a single known curriculum, run by the
-person who owns the machine), not acceptable for untrusted multi-tenant grading. That
-line is deliberately not crossed here.
+SANDBOX (D-065) -- what it does, and what it does NOT do. The student's tests run in a
+throwaway COPY of the repo (the original is never modified), as a subprocess with an explicit
+environment allowlist (none of GITHUB_TOKEN, PG_DSN or any other `.env` key reaches it), with
+every `conftest.py`, pytest config and `sitecustomize.py` the student wrote removed and the
+trusted root `conftest.py` (render_student_repo.TEMPLATE_FILES) put in their place, with
+pytest pointed at a config of ours (`-c`), and with the JUnit report written outside the
+student's directory under a random name. That closes the cheap ways to forge a grade (a
+conftest hook, `addopts`, a config file) and to read secrets from the environment.
+
+It does NOT make the grading safe for untrusted code. Still possible: reading `.env` by
+absolute path; any network call; exhausting CPU, memory or processes (only a wall-clock timeout
+on the direct child); writing anywhere the Windows/Linux user can write; and tampering from
+INSIDE the test process (the student's own module is imported by the hidden test, so it can
+patch pytest, or read the JUnit path from `sys.argv` and overwrite it). A container -- no
+network, read-only filesystem, non-root user, resource limits, and the JUnit/judge outside it --
+is REQUIRED before the first real student. Until then this is for a known curriculum run by
+the person who owns the machine.
+
+COLLECTION ERRORS (D-066): when the hidden test file cannot be imported, the traceback decides.
+It points into the student's code -> a real failure (`collection_error`, every `@gap` test of
+that file recorded as failed). It points into our test file or tooling -> `tooling`, which is
+NOT a failure and is never mastery evidence. Neither crashes the grader or is retried forever.
 
 `test_results.gap_id` is populated via `@pytest.mark.gap("g_id")`, read from JUnit XML
 `<properties>` (D-046) -- STALE NOTE CORRECTED: an earlier version of this docstring said
@@ -45,7 +62,11 @@ not silently inflate `n`, the observation count invariant 8 makes load-bearing.
 
 from __future__ import annotations
 
+import ast
+import os
 import re
+import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -86,8 +107,8 @@ def _session(conn):
 
 # Wall-clock ceiling for one assignment's hidden-test run. Generous for four small ETL
 # functions; exists so a student's accidental infinite loop or hung network call cannot
-# hang the runner indefinitely -- the one resource control this process-level isolation
-# does provide (see module docstring's stated limitation).
+# hang the runner indefinitely -- the ONLY resource control there is, and it bounds the
+# direct child only (see the module docstring's SANDBOX section for what is not covered).
 _TIMEOUT_S = 120
 
 
@@ -97,6 +118,7 @@ class TestOutcome:
     passed: bool
     message: str | None
     gap_id: str | None    # D-046: from @pytest.mark.gap("g_..."), NOT from the test name
+    status: str = "ok"    # D-066: ok | collection_error | tooling (test_results.status)
 
 
 @dataclass(frozen=True)
@@ -108,6 +130,18 @@ class RunResult:
     tests_passed: int
     tests_total: int
     frozen: bool
+    status: str = "ok"          # D-066: ok | collection_error | tooling
+    detail: str | None = None   # why, for the two non-ok statuses
+
+
+@dataclass(frozen=True)
+class Evaluation:
+    """What running the hidden tests produced -- everything `grade_attempt` needs EXCEPT
+    the database. Separate so a dry run can show exactly what would be recorded."""
+
+    outcomes: tuple[TestOutcome, ...]
+    status: str
+    detail: str | None
 
 
 class TestRunnerError(RuntimeError):
@@ -169,7 +203,81 @@ def _inject_hidden_test(repo_dir: Path, project_id: str, test_src: Path) -> str:
     return f"tests/hidden/{test_src.name}"
 
 
-def _run_pytest(repo_dir: Path, test_rel_path: str, junit_path: Path) -> None:
+# D-065. The ONLY environment variables the grading subprocess receives. Everything else the
+# parent has -- GITHUB_TOKEN, PG_DSN, every LLM key, every other `.env` entry -- is absent
+# inside the student's test process. What is here is what Python and pytest need to start on
+# Windows and Linux; HOME/USERPROFILE and TEMP/TMP are NOT passed through but pointed at empty
+# directories inside the sandbox, so the real home directory is not handed over either.
+_ENV_PASSTHROUGH = (
+    "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC",
+    "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+)
+
+# Files removed from the sandbox copy wherever they sit: anything that can change how pytest
+# collects, configures or reports, or run code before pytest starts.
+_SANDBOX_REMOVE = frozenset({
+    "conftest.py", "pytest.ini", ".pytest.ini", "tox.ini", "sitecustomize.py", "usercustomize.py",
+})
+# Shared config files are removed only when they carry a pytest section.
+_SANDBOX_PYTEST_SECTIONS = {
+    "setup.cfg": ("[tool:pytest]", "[pytest]"),
+    "pyproject.toml": ("[tool.pytest",),
+}
+_SANDBOX_NOT_COPIED = shutil.ignore_patterns(
+    ".git", "__pycache__", "*.pyc", ".pytest_cache", ".venv", "venv", "node_modules")
+
+
+def grading_env(home: Path) -> dict[str, str]:
+    """The explicit allowlist, built from scratch (never `os.environ.copy()`)."""
+    env = {k: os.environ[k] for k in _ENV_PASSTHROUGH if k in os.environ}
+    scratch = home / "tmp"
+    scratch.mkdir(parents=True, exist_ok=True)
+    env.update({
+        "HOME": str(home), "USERPROFILE": str(home),
+        "TEMP": str(scratch), "TMP": str(scratch), "TMPDIR": str(scratch),
+        "PYTHONPATH": "",                      # set by us: nothing inherited, nothing added
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",  # no third-party pytest plugin is loaded
+    })
+    return env
+
+
+def _ignore_for_copy(directory: str, names: list[str]) -> set[str]:
+    """Skip caches/VCS data AND every symlink -- a link is never followed or copied."""
+    skip = set(_SANDBOX_NOT_COPIED(directory, names))
+    skip.update(n for n in names if os.path.islink(os.path.join(directory, n)))
+    return skip
+
+
+def prepare_sandbox(src: Path, dst: Path) -> None:
+    """Copy `src` to `dst` and strip everything a student could use to steer pytest.
+
+    A COPY, never the original: the demo grades `renders/<student>_attempt1` in place, and
+    deleting a student's conftest there would destroy their working copy. After this, `dst`
+    holds the student's source and visible tests, no conftest of theirs, no pytest config,
+    and the trusted root conftest.py -- the one the template ships to every student
+    (render_student_repo.TEMPLATE_FILES), which only puts the repo root on sys.path.
+    """
+    from scripts.render_student_repo import TEMPLATE_FILES  # lazy: avoids an import cycle
+
+    shutil.copytree(src, dst, ignore=_ignore_for_copy)
+    shutil.rmtree(dst / "tests" / "hidden", ignore_errors=True)   # re-injected, never inherited
+    for path in sorted(dst.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.name in _SANDBOX_REMOVE:
+            path.unlink()
+            continue
+        markers = _SANDBOX_PYTEST_SECTIONS.get(path.name)
+        if markers and any(m in path.read_text(encoding="utf-8", errors="replace")
+                           for m in markers):
+            path.unlink()
+    (dst / "conftest.py").write_text(TEMPLATE_FILES["conftest.py"], encoding="utf-8")
+
+
+def _run_pytest(repo_dir: Path, test_rel_path: str, junit_path: Path,
+                ini_path: Path | None = None) -> None:
     """The one subprocess call in this module -- see the module docstring's invariant
     12/13 note for why this MUST be a real subprocess and never an in-process pytest.main()
     call: a separate process is what makes "executes here, not inside an agent" a fact
@@ -179,19 +287,177 @@ def _run_pytest(repo_dir: Path, test_rel_path: str, junit_path: Path) -> None:
     therefore the same installed packages) as the process that invoked grading -- a
     student repo has no venv of its own, it reuses this project's.
 
+    `--tb=short` (not `line`): a collection error is classified by WHERE its traceback points
+    (D-066), and `line` drops the frames for an exception raised inside an imported module --
+    found by observing it. Stored failure messages come from the report's `message`
+    attribute, which does not depend on the traceback style.
+
+    D-065: `-P` (do not put the working directory on sys.path -- a student `pytest.py` or
+    `json.py` cannot shadow what pytest imports at start-up; the trusted root conftest adds
+    the repo root afterwards), `-c <ours>` (pytest reads OUR config, not the student's, and
+    `--rootdir` pins the root), no cache plugin, and `grading_env` instead of the parent's
+    environment.
+
     Exit code is deliberately not checked here: pytest exits non-zero when tests FAIL,
     which is the normal, expected case this function exists to observe, not an error
     condition. `_parse_junit` is what decides pass/fail per test; a genuinely broken run
     (test file doesn't parse, no junit report written) is caught there instead.
     """
+    results_dir = junit_path.parent
+    if ini_path is None:
+        ini_path = results_dir / "pytest-trusted.ini"
+    ini_path.write_text("[pytest]\n", encoding="utf-8")
     subprocess.run(
-        [sys.executable, "-m", "pytest", test_rel_path,
-         f"--junitxml={junit_path}", "-q", "--tb=line"],
+        [sys.executable, "-P", "-m", "pytest", test_rel_path,
+         "-c", str(ini_path), "--rootdir", str(repo_dir),
+         f"--junitxml={junit_path}", "-q", "--tb=short", "-p", "no:cacheprovider"],
         cwd=repo_dir,
+        env=grading_env(results_dir / "home"),
         capture_output=True,
         text=True,
         timeout=_TIMEOUT_S,
     )
+
+
+def _expected_gap_tests(test_src: Path, test_rel_path: str) -> list[tuple[str, str]]:
+    """`(test_name, gap_id)` for every `@pytest.mark.gap("g_...")` test in a hidden test
+    file, read STATICALLY (ast; nothing is imported or run). Used only when the file could
+    not be imported at all: the tests exist even though pytest could not collect them."""
+    tree = ast.parse(test_src.read_text(encoding="utf-8"))
+    found: list[tuple[str, str]] = []
+
+    def gap_of(fn: ast.AST) -> str | None:
+        for dec in getattr(fn, "decorator_list", []):
+            if not isinstance(dec, ast.Call) or not dec.args:
+                continue
+            target = dec.func
+            if isinstance(target, ast.Attribute) and target.attr == "gap" \
+                    and isinstance(dec.args[0], ast.Constant):
+                return str(dec.args[0].value)
+        return None
+
+    def walk(body, prefix: str) -> None:
+        for node in body:
+            if isinstance(node, ast.ClassDef):
+                walk(node.body, f"{prefix}{node.name}::")
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and node.name.startswith("test"):
+                gap = gap_of(node)
+                if gap is not None:
+                    found.append((f"{test_rel_path}::{prefix}{node.name}", gap))
+
+    walk(tree.body, "")
+    return found
+
+
+_COLLECTION_FAILURE = "collection failure"
+_FRAME = re.compile(r'File "([^"\n]+\.py)", line (\d+)|^\s*E?\s*(\S[^\n]*?\.py):(\d+):', re.M)
+_EXC_LINE = re.compile(r"^\s*E?\s*((?:\w+\.)*\w*(?:Error|Exception))\b[:\s]?(.*)$", re.M)
+
+
+def _collection_errors(root: ET.Element) -> list[str]:
+    """The text of every `collection failure` entry in a JUnit report."""
+    out = []
+    for case in root.iter("testcase"):
+        error = case.find("error")
+        if error is not None and (error.get("message") or "").startswith(_COLLECTION_FAILURE):
+            out.append((error.get("message") or "") + "\n" + (error.text or ""))
+    return out
+
+
+def classify_collection_error(error_text: str, repo_dir: Path,
+                              student_packages: tuple[str, ...] = ()) -> tuple[str, str]:
+    """`("collection_error", why)` when the traceback is the STUDENT's fault, else
+    `("tooling", why)`. Decided by where the traceback points, innermost in-repo frame first:
+
+      - a frame in a file of the student's (anything in the repo that is not under
+        tests/hidden/) -> the student's code does not import (SyntaxError, a name error at
+        import time, ...): `collection_error`.
+      - the innermost in-repo frame is our hidden test file, but the exception is an
+        ImportError / ModuleNotFoundError about the STUDENT's own package ("cannot import
+        name 'insert_readings' from 'weather_etl.load'", "No module named 'weather_etl'"):
+        the student removed or renamed something the task requires -> `collection_error`.
+      - everything else (our test file or conftest is broken, a third-party library is
+        missing, no in-repo frame at all) -> `tooling`. When in doubt it is tooling: not
+        charging a student for our fault is the safe direction.
+    """
+    root = repo_dir.resolve()
+    frames: list[tuple[str, int]] = []
+    for m in _FRAME.finditer(error_text):
+        raw, line = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+        p = Path(raw)
+        p = p if p.is_absolute() else root / p
+        try:
+            rel = p.resolve().relative_to(root).as_posix()
+        except (ValueError, OSError):
+            continue                       # outside the repo: pytest / stdlib / site-packages
+        frames.append((rel, int(line)))
+
+    excs = _EXC_LINE.findall(error_text)
+    exc_type, exc_msg = excs[-1] if excs else ("error", "")
+    exc_msg = exc_msg.strip()
+    where = ""
+
+    if frames:
+        rel, line = frames[-1]
+        where = f" at {rel}:{line}"
+        if not rel.startswith("tests/hidden/"):
+            return "collection_error", f"{exc_type}{where}: {exc_msg}"[:500]
+
+    # `student_packages` carries the project's own package name even when the student deleted
+    # it ("No module named 'weather_etl'"): a missing package is the student's doing.
+    student_modules = set(student_packages)
+    student_modules |= {p.name for p in root.iterdir()
+                        if p.is_dir() and (p / "__init__.py").exists() and p.name != "tests"}
+    student_modules |= {p.stem for p in root.glob("*.py") if p.name != "conftest.py"}
+    if exc_type.endswith(("ImportError", "ModuleNotFoundError")):
+        quoted = re.findall(r"'([\w.]+)'", exc_msg)
+        if any(q.split(".")[0] in student_modules for q in quoted):
+            return "collection_error", f"{exc_type}{where}: {exc_msg}"[:500]
+
+    if frames or exc_msg:
+        return "tooling", f"{exc_type}{where}: {exc_msg}"[:500]
+    return "tooling", "collection failure with no usable traceback"
+
+
+def evaluate(project_id: str, file_path: str, repo_dir: str | Path) -> Evaluation:
+    """Run one assignment's hidden tests against a COPY of `repo_dir` and say what happened.
+    Touches no database -- this is the whole of "grading" except recording it, which is what
+    lets a dry run show the exact rows `grade_attempt` would write."""
+    repo_dir = Path(repo_dir)
+    test_src = _hidden_test_file(project_id, file_path)
+    with tempfile.TemporaryDirectory(prefix="vdel_grade_") as tmp:
+        tmp = Path(tmp)
+        work = tmp / "repo"
+        prepare_sandbox(repo_dir, work)
+        test_rel_path = _inject_hidden_test(work, project_id, test_src)
+
+        results = tmp / "results"          # outside the student's directory
+        results.mkdir()
+        junit_path = results / f"junit-{secrets.token_hex(16)}.xml"
+        _run_pytest(work, test_rel_path, junit_path)
+
+        if not junit_path.exists():
+            raise TestRunnerError(
+                f"pytest produced no junit report at {junit_path} -- the run did not "
+                "complete (see module docstring: this is distinct from tests failing)"
+            )
+        errors = _collection_errors(ET.parse(junit_path).getroot())
+        if not errors:
+            return Evaluation(tuple(_parse_junit(junit_path)), "ok", None)
+
+        status, detail = classify_collection_error("\n".join(errors), work, (project_id,))
+        if status == "tooling":
+            return Evaluation((), "tooling", detail)
+        expected = _expected_gap_tests(test_src, test_rel_path)
+        if not expected:
+            return Evaluation((), "tooling",
+                              f"{detail} (but no @gap test found in the hidden file)")
+        message = f"collection error: {detail}"[:2000]
+        return Evaluation(
+            tuple(TestOutcome(name, False, message, gap, "collection_error")
+                  for name, gap in expected),
+            "collection_error", detail)
 
 
 def _gap_id_from_case(case: ET.Element) -> str | None:
@@ -309,27 +575,29 @@ def _write_test_results(cur, attempt_id: int, commit_sha: str | None,
     # violation surfaces as a real, loud FK error rather than this function guessing
     # what to do about it.
     rows = [
-        (attempt_id, commit_sha, o.test_name, o.gap_id, o.passed, o.message)
+        (attempt_id, commit_sha, o.test_name, o.gap_id, o.passed, o.message, o.status)
         for o in outcomes
     ]
     if commit_sha is not None:
         result = execute_values(cur, """
             INSERT INTO test_results
-                (attempt_id, commit_sha, test_name, gap_id, passed, message)
+                (attempt_id, commit_sha, test_name, gap_id, passed, message, status)
             VALUES %s
             ON CONFLICT (attempt_id, commit_sha, test_name) WHERE commit_sha IS NOT NULL
             DO UPDATE SET gap_id = EXCLUDED.gap_id, passed = EXCLUDED.passed,
-                          message = EXCLUDED.message, ran_at = now()
+                          message = EXCLUDED.message, status = EXCLUDED.status,
+                          ran_at = now()
             RETURNING test_name, (xmax = 0) AS is_new
         """, rows, fetch=True)
     else:
         result = execute_values(cur, """
             INSERT INTO test_results
-                (attempt_id, commit_sha, test_name, gap_id, passed, message)
+                (attempt_id, commit_sha, test_name, gap_id, passed, message, status)
             VALUES %s
             ON CONFLICT (attempt_id, test_name) WHERE commit_sha IS NULL
             DO UPDATE SET gap_id = EXCLUDED.gap_id, passed = EXCLUDED.passed,
-                          message = EXCLUDED.message, ran_at = now()
+                          message = EXCLUDED.message, status = EXCLUDED.status,
+                          ran_at = now()
             RETURNING test_name, (xmax = 0) AS is_new
         """, rows, fetch=True)
     return {test_name for test_name, is_new in result if is_new}
@@ -489,17 +757,20 @@ def grade_attempt(
         raise TestRunnerError(f"unknown assignment_id {assignment_id!r}")
     file_path = row[0]
 
-    repo_dir = Path(repo_dir)
-    test_src = _hidden_test_file(project_id, file_path)
-    test_rel_path = _inject_hidden_test(repo_dir, project_id, test_src)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        junit_path = Path(tmp) / "results.xml"
-        _run_pytest(repo_dir, test_rel_path, junit_path)
-        outcomes = _parse_junit(junit_path)
-
+    # D-065/D-066: the tests run in a sandboxed COPY of repo_dir (nothing is injected into, or
+    # deleted from, the original), and a hidden file that cannot be imported no longer raises.
+    evaluation = evaluate(project_id, file_path, repo_dir)
+    outcomes = list(evaluation.outcomes)
     tests_total = len(outcomes)
     tests_passed = sum(1 for o in outcomes if o.passed)
+
+    to_record = outcomes
+    if evaluation.status == "tooling":
+        # NOT a failure and never mastery evidence (no gap_id, not in `outcomes`, so
+        # tests_total stays 0 and nothing can freeze). The marker row exists so the commit
+        # counts as handled: without a row the grader would pick it up again every cycle.
+        marker = f"tests/hidden/test_{Path(file_path).stem}.py::<collection>"
+        to_record = [TestOutcome(marker, False, evaluation.detail, None, "tooling")]
 
     mem = Memory()
     with _session(conn) as c, c.cursor() as cur:
@@ -509,7 +780,7 @@ def grade_attempt(
             raise TestRunnerError(f"unknown attempt_id {attempt_id!r}")
         student_id = student_row[0]
 
-        new_test_names = _write_test_results(cur, attempt_id, commit_sha, outcomes)
+        new_test_names = _write_test_results(cur, attempt_id, commit_sha, to_record)
         gap_meta = _gap_metadata(cur, {o.gap_id for o in outcomes if o.gap_id is not None})
         _log_mastery_traces(mem, c, student_id, assignment_id, commit_sha,
                             outcomes, new_test_names, gap_meta,
@@ -519,6 +790,7 @@ def grade_attempt(
     return RunResult(
         outcomes=tuple(outcomes), tests_passed=tests_passed,
         tests_total=tests_total, frozen=frozen,
+        status=evaluation.status, detail=evaluation.detail,
     )
 
 

@@ -162,7 +162,7 @@ def _failing_tests(cur, attempt_id: int) -> tuple[FailingTest, ...]:
     cur.execute(
         """SELECT test_name, passed, message, gap_id, commit_sha
            FROM test_results
-           WHERE attempt_id = %s
+           WHERE attempt_id = %s AND status <> 'tooling'
            ORDER BY ran_at DESC""",
         (attempt_id,),
     )

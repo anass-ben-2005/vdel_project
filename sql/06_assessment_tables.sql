@@ -193,6 +193,20 @@ ALTER TABLE test_results ADD COLUMN IF NOT EXISTS commit_sha TEXT;
 ALTER TABLE test_results ADD COLUMN IF NOT EXISTS ran_at TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE test_results DROP CONSTRAINT IF EXISTS test_results_pkey;
 
+-- D-066. Why a grading run produced these rows. ADDITIVE, with a default, so every existing
+-- row is 'ok' and no existing value changes (CLAUDE.md section 6 does not list the column).
+--   ok               an ordinary executed test
+--   collection_error the hidden test file could not be imported because of the STUDENT's code
+--                    (a real failure: every gap test of that file is recorded as failed)
+--   tooling          the file could not be imported for a reason that is not the student's
+--                    (our test file, a missing library): a marker row, NOT a failure, never
+--                    mastery evidence. It also records that the commit was handled, so the
+--                    grader does not retry it forever.
+ALTER TABLE test_results ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ok';
+ALTER TABLE test_results DROP CONSTRAINT IF EXISTS test_results_status_check;
+ALTER TABLE test_results ADD CONSTRAINT test_results_status_check
+  CHECK (status IN ('ok', 'collection_error', 'tooling'));
+
 -- A partial unique index rather than a PRIMARY KEY, because `commit_sha` is nullable and
 -- SQL treats NULLs as distinct in a unique constraint -- a plain UNIQUE would happily
 -- accept the same local run twice. Two indexes: one for pushed results (keyed by commit),

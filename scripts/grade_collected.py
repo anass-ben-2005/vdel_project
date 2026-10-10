@@ -229,7 +229,10 @@ def run(
                                       result.tests_total, result.frozen))
             print(f"  GRADED    {label}: {result.tests_passed}/{result.tests_total} passed"
                   f" frozen={result.frozen}")
-            if result.tests_total == 0:
+            status = getattr(result, "status", "ok")        # D-066
+            if status != "ok":
+                print(f"    {status.upper()}: {getattr(result, 'detail', None)}")
+            if result.tests_total == 0 and status == "ok":
                 print("    WARNING: zero test rows -- this commit will be retried next run")
         except Exception as exc:  # noqa: BLE001 -- one bad commit must not stop the rest
             summary["failed"].append((label, f"{type(exc).__name__}: {exc}"))

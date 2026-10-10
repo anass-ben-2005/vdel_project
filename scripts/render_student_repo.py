@@ -195,13 +195,13 @@ jobs:
 """
 
 # `tests/hidden/` is never written here (see `_assert_no_hidden_tests_leaked` below) --
-# but `assessment/test_runner.py` copies the one hidden test a grading run needs
-# straight into this same out_dir to execute it, and never cleans up after itself
-# (test_runner.py's own docstring). Left untracked, that copy is one `git add .` away
-# from being pushed to the student's real GitHub repo, which is exactly the leak
-# render_student_repo.py otherwise refuses to allow. A generated `.gitignore` is the
-# second line of defence for the file that survives *after* rendering, on top of the
-# runtime check that guards rendering itself.
+# but `assessment/test_runner.py` used to copy the one hidden test a grading run needs
+# straight into this same out_dir and never clean up after itself. Left untracked, that copy
+# was one `git add .` away from being pushed to the student's real GitHub repo, which is
+# exactly the leak render_student_repo.py otherwise refuses to allow. Since D-065 the grader
+# works on a throwaway COPY and leaves the directory untouched, so this is now a second line
+# of defence rather than the only one: it still covers a hidden test copied in by hand or by
+# an older grader, on top of the runtime check that guards rendering itself.
 _GITIGNORE = """\
 tests/hidden/
 __pycache__/

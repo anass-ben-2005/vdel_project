@@ -193,5 +193,9 @@ def test_hidden_test_injection_and_grading_still_work_with_the_root_conftest(ren
     assert result.tests_total == 4
     assert all(o.gap_id is not None for o in result.outcomes)
     assert {o.gap_id for o in result.outcomes} == {"g_ext_parse", "g_ext_retry"}
-    assert (repo / "tests" / "hidden" / "conftest.py").is_file()      # the injected one
-    assert (repo / "conftest.py").is_file()                           # and the root one
+    # D-065: grading runs on a COPY, so the injected hidden conftest is no longer left in the
+    # student's directory (it used to be -- the leak the generated .gitignore guards against),
+    # and the student's own root conftest.py is untouched. That both conftests worked together
+    # is what the gap_id assertions above prove.
+    assert not (repo / "tests" / "hidden").exists()
+    assert (repo / "conftest.py").is_file()
