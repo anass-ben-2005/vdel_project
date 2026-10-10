@@ -2939,3 +2939,161 @@ Cost:        A few seconds per session to create, migrate and seed (even for a p
 Defence:     "The tests can no longer touch real student data, and I can show it: the code
              refuses by name, the server confirms it never saw a session, and a before/after
              snapshot of every table is identical."
+
+### D-065 -- grading runs in a sandboxed copy with an explicit environment (P9 quick fix)
+Date:        2026-10-10
+Status:      DECIDED and IMPLEMENTED. NOT a security boundary: a student's own module runs
+             inside the test process and can still tamper with the result, and a container is
+             REQUIRED before the first real student (see "What this does NOT cover").
+Authority:   Anas
+Context:     The P1-P9 diagnostic found that assessment/test_runner.py ran the student's tests
+             with the parent's whole environment (GITHUB_TOKEN with `repo` scope, PG_DSN for a
+             superuser database role, every LLM key), in the student's own directory, so a
+             student `conftest.py` or `pytest.ini` could also force a passing grade.
+Decision:    1. EXPLICIT ENVIRONMENT. The subprocess gets an allowlist built from scratch
+             (never os.environ.copy()): PATH, PATHEXT, SYSTEMROOT, SYSTEMDRIVE, WINDIR,
+             COMSPEC, LANG, LC_ALL, LC_CTYPE, TZ; HOME/USERPROFILE and TEMP/TMP/TMPDIR pointed
+             at empty directories inside the sandbox (the real home is not handed over);
+             PYTHONPATH set by us to the empty string; PYTHONDONTWRITEBYTECODE;
+             PYTEST_DISABLE_PLUGIN_AUTOLOAD. A test sets every secret name (and a hostile
+             PYTEST_ADDOPTS / PYTHONPATH) in the parent and a probe INSIDE the student's test
+             process proves none arrives; the same probe FAILS when the old inherited
+             environment is restored. A second test proves no key listed in `.env.example`
+             (the committed list of every `.env` key) can be passed.
+             2. SANDBOX COPY. The repo is copied to a temp directory (symlinks and caches are
+             never copied or followed) and the ORIGINAL IS NEVER MODIFIED -- grading used to
+             inject files into it and demo Beat 3 grades a student's real working copy, so
+             deleting their conftest in place would have destroyed work. In the copy: every
+             conftest.py, pytest.ini, .pytest.ini, tox.ini, sitecustomize.py and
+             usercustomize.py is removed; setup.cfg and pyproject.toml are removed only if
+             they carry a pytest section; tests/hidden is removed and re-injected; and the
+             ROOT conftest.py is replaced by the trusted one (render_student_repo.
+             TEMPLATE_FILES). pytest is started as `python -P -m pytest -c <our ini>
+             --rootdir <copy> -p no:cacheprovider`, so it reads OUR config and the working
+             directory cannot shadow what pytest imports at start-up.
+             3. JUnit report written OUTSIDE the student's directory (a sibling `results/`),
+             under a random name (`junit-<32 hex>.xml`).
+Evidence:    A hostile repo with a conftest hook that rewrites every outcome to "passed", the
+             same hook in tests/ and in the package, pytest.ini / tox.ini / setup.cfg /
+             pyproject.toml with `addopts` that deselect the tests, and a sitecustomize.py that
+             exits the interpreter, gets the SAME grade as the honest stub (both hidden load
+             tests failed). Mutation check: with the sanitising switched off the same repo gets
+             100% -- the attack is real.
+What this does NOT cover (stated plainly):
+             - the student's own module is imported by the hidden test, so it runs INSIDE the
+               test process and can still patch pytest, or read the JUnit path from sys.argv
+               and overwrite the file: a determined student can still forge a result;
+             - reading `.env` or any file by ABSOLUTE PATH (the process runs as your user);
+             - any network call (credentials are gone, but data can still leave);
+             - CPU, memory and process limits (only a 120 s wall-clock timeout on the direct
+               child; on Windows grandchildren can outlive it);
+             - writing anywhere your user can write; shadowing a stdlib module that is
+               imported AFTER the repo root is added to sys.path.
+             A container -- no network, read-only filesystem, non-root user, resource limits,
+             and the judging/JUnit outside it -- is REQUIRED before the first real student.
+             Until then this is for a known curriculum run by the person who owns the machine.
+Alternative: Deleting files in the original repo (as first worded) -- rejected, destructive.
+             Only the environment fix -- rejected, the conftest forgery is as cheap to do.
+Cost:        A directory copy per grading run (small repos; negligible). The grader no longer
+             leaves tests/hidden behind, so the `.gitignore` entry is now a second line of
+             defence; tests/test_ci_workflow.py asserted the old leftover and was updated.
+             The Windows symlink test skips (this user cannot create symlinks).
+Defence:     "The cheap ways to forge a grade or read a secret are closed and tested, and I can
+             say exactly which expensive ones are not, and what closes them."
+
+### D-066 -- a hidden test file that cannot be imported: student's fault or ours (P2)
+Date:        2026-10-10
+Status:      DECIDED and IMPLEMENTED. d818c872b5 was NOT graded for real (dry-run below).
+Authority:   Anas
+Context:     Commit d818c872b5 (anas, weather_etl_load) adds `hellot workd` to load.py. pytest
+             then cannot import the hidden test file and reports ONE entry with an empty
+             classname; normalise_test_name raised TestRunnerError BEFORE any write, so the
+             commit was "failed" and retried on every grade_collected run, forever, each time
+             fetching and executing it again.
+Decision:    1. The traceback decides, innermost in-repo frame first
+             (assessment/test_runner.py::classify_collection_error). A frame in a file of the
+             student's -> `collection_error`. The innermost frame is our hidden file but the
+             exception is an ImportError / ModuleNotFoundError about the student's package or
+             module ("cannot import name 'insert_readings' from 'weather_etl.load'", "No
+             module named 'weather_etl'") -> `collection_error`. Anything else (our test file
+             or conftest is broken, a third-party library is missing, no usable traceback)
+             -> `tooling`. When in doubt it is tooling: not charging a student for our fault
+             is the safe direction.
+             2. `collection_error`: EVERY `@pytest.mark.gap` test of that hidden file (read
+             statically with ast; nothing imported) is recorded as FAILED with status
+             `collection_error` and the reason as its message. They flow through the normal
+             path, so they are mastery evidence for the gaps the attempt actually hid (D-054)
+             and cannot freeze the attempt.
+             3. `tooling`: ONE marker row (test_name `tests/hidden/<file>::<collection>`,
+             passed=false, gap_id NULL, status `tooling`). It is NOT a failure: tests_total
+             stays 0, no trace, no mastery, no freeze. Its only job is to mark the commit as
+             handled, so it is not retried forever. assessment/diagnose.py ignores it.
+             4. Schema (CLAUDE.md section 6 exception): `test_results.status TEXT NOT NULL
+             DEFAULT 'ok'` with a CHECK in ('ok','collection_error','tooling') -- additive;
+             every existing row is 'ok'.
+             5. The grader uses `--tb=short`: with `--tb=line` an exception raised inside an
+             imported module left no frames at all and was misclassified as tooling (found by
+             observing real output, not assumed). Stored failure messages come from the
+             report's `message` attribute and are unaffected.
+Dry-run:     d818c872b5 evaluated in the sandbox from the local clone, database session
+             read-only, nothing written: status `collection_error`, "SyntaxError at
+             weather_etl/load.py:7: invalid syntax"; 2 test_results rows would be written
+             (test_insert_readings_returns_count / g_ld_insert and
+             test_readings_since_filters_correctly / g_ld_select, both passed=false); attempt 3
+             hides both gaps, stays unfrozen (0/2); `sql.select_filter` would appear in the
+             profile at p=0.1841, n=2 (Beat 5: 3 concepts -> 4).
+Cost:        A `tooling` commit is never re-graded on its own: once the tooling problem is
+             fixed, someone must delete the marker row (which needs approval) to re-grade it.
+             Left as is, and NOT covered by the Defence line: a student module that kills
+             the interpreter (os._exit) or hangs at import, a timeout, or a pytest crash
+             produces no report at all, so TestRunnerError is raised and the commit is
+             retried -- and its code re-run -- on every cycle. A bounded marker for that case
+             is the obvious next step. The classifier knows what pytest 9.1 prints; another pytest
+             version could change the text (it then falls back to `tooling`).
+Defence:     "A student whose code does not import has failed the task, and that is recorded
+             as such; a broken test of ours is never charged to a student; and a hidden file
+             that cannot be imported neither crashes the grader nor loops forever."
+
+### D-067 -- the collector skips logs it already has and retries failed downloads (P5, P8)
+Date:        2026-10-10
+Status:      DECIDED and IMPLEMENTED. Measured on the real roster: 29 -> 6 API calls.
+Authority:   Anas
+Context:     `collect_repo` downloaded the log zip of EVERY failed run on EVERY cycle
+             (`_failure_log`, collect_github.py) and then discarded it, because the INSERT is
+             `ON CONFLICT (run_id) DO NOTHING`: one call per failed run per cycle, growing
+             with history. Separately, a download that FAILED (an expired archive, a 5xx) was
+             stored as 'empty'/'unclassified' and never looked at again, silently.
+Decision:    1. The student's stored runs are loaded once per repo. A failed run that already
+             has a classification (anything but unclassified-NULL or 'empty') costs no
+             download.
+             2. A download that fails is stored 'empty'/'unclassified' with log_attempts=1 and
+             retried on the next cycles, up to MAX_LOG_ATTEMPTS=3; after the third failure the
+             row stays 'empty' with log_reason = "log unavailable after 3 attempts (HTTP 404)"
+             and is never downloaded again. A log that downloads but is empty is final at once
+             (log_reason "log downloaded but empty").
+             3. A retry can only change a row that is still unclassified or 'empty' (the UPDATE
+             carries that guard), and a FAILED retry leaves error_class and concept_id exactly
+             as they were: an existing 'empty' row keeps its value until a retry succeeds. A
+             real classification is never overwritten.
+             4. Schema (CLAUDE.md section 6 exception), additive and defaulted:
+             raw_workflow_runs.log_attempts SMALLINT NOT NULL DEFAULT 0, .log_reason TEXT.
+             The 48 existing rows kept every original value: the hash of the original columns
+             is identical before and after (b2e5d023... and dd139172...).
+Evidence:    Real roster (3 repos, 6 roster rows, 23 failed runs, all classified): committed
+             collector api_calls=29 (3 commit lists + 3 run lists + 23 log downloads); new
+             collector api_calls=6, log_downloads=0, log_skipped=23, and the same again on a
+             second run. Tests (tests/test_collect_log_retry.py, GitHub faked at requests.get
+             so every call is counted): the second cycle makes ONLY the two list calls; calls
+             per cycle no longer grow with the number of failed runs; the retry life-cycle
+             1 -> 2 -> 3 -> final; a recovered log fills the classification in; an existing
+             empty row is retried; unmatched is not retried; a real classification is never
+             overwritten; a success run's log is never requested.
+Cost:        Both lists (commits, runs) are still read in full every cycle: 2 calls per repo
+             minimum, more once a repo has over 100 runs (a `created>=` filter is the next
+             saving). The printed `match_rate` of `scripts.collect` is the rate over what THIS
+             pass classified, so it reads 0.0 on a steady-state pass; the cumulative rate is
+             a database query. A run stored while still in progress keeps conclusion NULL
+             forever (DO NOTHING) -- an older, separate gap, not changed here.
+Defence:     "The collector no longer pays to re-read answers it already has, and a log that
+             could not be fetched is retried a bounded number of times and then explained
+             on the row, not forgotten."

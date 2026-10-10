@@ -31,3 +31,10 @@ CREATE TABLE IF NOT EXISTS raw_workflow_runs (
 -- joining to raw_commits.message. NULL = not known yet (rows collected before D-063 until
 -- scripts/backfill_head_sha.py fills them); a NULL run is treated as a student run.
 ALTER TABLE raw_workflow_runs ADD COLUMN IF NOT EXISTS head_sha TEXT;
+
+-- D-067. Log-download bookkeeping for failed runs. ADDITIVE, defaulted, no existing value
+-- changes (CLAUDE.md section 6 does not list the columns). log_attempts counts the times the
+-- collector tried to download this run's failure log; log_reason is set once the row is final
+-- and says why it stayed 'empty' (all attempts failed, or the log was empty).
+ALTER TABLE raw_workflow_runs ADD COLUMN IF NOT EXISTS log_attempts SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE raw_workflow_runs ADD COLUMN IF NOT EXISTS log_reason TEXT;

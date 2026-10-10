@@ -1773,6 +1773,28 @@ only then adds/updates the student's roster rows — text-level, so the roster's
 local bare repo) and dry-run proven; **no real repo has been created yet** — the current token has
 scope `repo` only and lacks `workflow`, so a real run refuses at preflight.
 
+**`assessment/test_runner.py` — sandboxed grading and collection errors (D-065, D-066).**
+`evaluate()` runs the hidden tests against a throwaway **copy** of the repo (the original is never
+touched): every student `conftest.py`, `pytest.ini`/`tox.ini`/`sitecustomize.py`, and any
+`setup.cfg`/`pyproject.toml` with a pytest section is removed, the trusted root `conftest.py`
+(`TEMPLATE_FILES`) replaces theirs, and pytest runs as `python -P -m pytest -c <our ini>` with an
+explicit environment (`grading_env`: no `GITHUB_TOKEN`, `PG_DSN` or any `.env` key; HOME/TEMP point at
+empty sandbox directories) and a JUnit file outside the student directory under a random name.
+**This is not a security boundary** — the student's module still runs inside the test process, and
+`.env` by absolute path, the network and resource limits are not covered; a container is required
+before the first real student (D-065). If the hidden file cannot be imported, the traceback decides:
+a frame in the student's code (or an import error about the student's own package) →
+`collection_error`, every `@gap` test of that file is recorded as **failed** and counts as mastery
+evidence; otherwise → `tooling`, one marker row (`test_results.status='tooling'`), **not** a failure,
+no mastery, and it marks the commit as handled so it is not retried forever. Neither crashes
+`grade_attempt`. `diagnose` ignores tooling markers.
+
+**`collectors/collect_github.py` — skips logs it already has, retries failed downloads (D-067).**
+The student's stored runs are loaded once per repo; a failed run that already has a classification
+costs no log download (the real roster went from 29 API calls per pass to 6). A download that fails is
+stored `empty`, counted in `raw_workflow_runs.log_attempts`, retried on later passes up to 3 times, then
+left `empty` with `log_reason`; a retry can only change a row that is still unclassified or `empty`.
+
 **`scripts/sync_template.py` — re-applies the template files to an already-published repo (D-062).**
 `publish_repo` only ever creates repos, so a template change like D-060 (CI installs its own
 tools) never reached repos published before it. This tool manages a fixed allowlist,

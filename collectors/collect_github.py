@@ -72,8 +72,12 @@ class Stats:
     api_calls: int = 0
     detail_calls: int = 0
     commits_upserted: int = 0
-    runs_upserted: int = 0
+    runs_upserted: int = 0          # runs LISTED by the API this pass (name kept; not rows written)
     commits_without_open_attempt: int = 0
+    runs_inserted: int = 0          # D-067: rows actually written, vs `runs_upserted` = listed
+    runs_updated: int = 0           # D-067: 'empty' rows a retry filled in (or counted)
+    log_downloads: int = 0          # D-067: failure-log downloads actually made
+    log_skipped: int = 0            # D-067: failed runs whose stored classification was kept
     classifications: list = field(default_factory=list)
     failed_repos: list = field(default_factory=list)
 
@@ -83,7 +87,8 @@ class Stats:
                 f"commits={self.commits_upserted} runs={self.runs_upserted} "
                 f"commits_without_open_attempt={self.commits_without_open_attempt} "
                 f"classified={len(self.classifications)} "
-                f"match_rate={match_rate(self.classifications)}")
+                f"match_rate={match_rate(self.classifications)} "
+                f"log_downloads={self.log_downloads} log_skipped={self.log_skipped}")
 
 
 _STATS = Stats()
@@ -115,20 +120,47 @@ def _paged(url, params=None):
         page += 1
 
 
-def _failure_log(owner, repo, run_id):
+# D-067. How many times the collector tries to download one failed run's log before it gives
+# up and leaves the row 'empty' with a reason. Logs also expire after 90 days, so some runs
+# can never succeed; three tries bound the cost without hiding a transient error.
+MAX_LOG_ATTEMPTS = 3
+
+
+def _fetch_failure_log(owner, repo, run_id):
     """ADDED: fetch a failed run's logs so classify_error has text to match on.
 
+    Returns `(text, None)` on success and `(None, why)` when the download failed (an expired
+    archive is a 404, a server error is a 5xx, a corrupt zip). The caller needs to tell
+    "failed" from "downloaded but empty" to decide whether to retry (D-067).
+
     Only for failures -- a successful run has no error to classify, and the logs
-    endpoint returns a zip that is expensive to pull. Logs expire after 90 days, so a
-    missing archive is normal and returns None (which classifies as 'empty').
+    endpoint returns a zip that is expensive to pull.
     """
     try:
         r = _get(f"{GH}/repos/{owner}/{repo}/actions/runs/{run_id}/logs")
         with zipfile.ZipFile(io.BytesIO(r.content)) as z:
             return "\n".join(z.read(n).decode("utf-8", errors="replace")
-                             for n in z.namelist()[:20])
-    except (requests.RequestException, zipfile.BadZipFile, KeyError):
-        return None
+                             for n in z.namelist()[:20]), None
+    except requests.RequestException as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        return None, f"HTTP {status}" if status else type(exc).__name__
+    except (zipfile.BadZipFile, KeyError) as exc:
+        return None, type(exc).__name__
+
+
+def _failure_log(owner, repo, run_id):
+    """The log text, or None when it could not be downloaded (kept for callers/tests that
+    only want the text)."""
+    return _fetch_failure_log(owner, repo, run_id)[0]
+
+
+def _log_needs_work(error_class, attempts, reason) -> bool:
+    """Does a STORED failed run still need its log downloaded? Never for a run that already
+    has a real classification (D-067: before, every cycle re-downloaded every failed run's
+    log just to discard it). Yes when it was never classified, or when its download failed
+    ('empty' with no final reason) and fewer than MAX_LOG_ATTEMPTS tries have been made."""
+    return error_class is None or (
+        error_class == "empty" and reason is None and attempts < MAX_LOG_ATTEMPTS)
 
 
 def _assignment_file_paths(cur, assignment_ids):
@@ -262,8 +294,25 @@ def collect_repo(conn, owner, repo, student_id, assignment_ids):
     # so it can only be attributed when the repo covers exactly one assignment; NULL
     # otherwise (ambiguous), same convention as raw_commits.
     run_assignment_id = assignment_ids[0] if len(assignment_ids) == 1 else None
-    run_rows = []
+
+    # D-067: what is already stored, loaded ONCE for this student (run ids are global). A failed
+    # run that is already classified costs no download; before this, every failed run's log
+    # zip was fetched every cycle (1 call per failed run per cycle) and then thrown away by
+    # `ON CONFLICT DO NOTHING`.
+    cur.execute("SELECT run_id, error_class, log_attempts, log_reason"
+                " FROM raw_workflow_runs WHERE student_id = %s", (student_id,))
+    stored = {run_id: (cls, attempts, reason) for run_id, cls, attempts, reason in cur.fetchall()}
+
+    run_rows, retry_rows = [], []
     for w in _paged(f"{GH}/repos/{owner}/{repo}/actions/runs"):
+        _STATS.runs_upserted += 1
+        prior = stored.get(w["id"])
+        failed = w["conclusion"] == "failure"
+        if prior is not None and not (failed and _log_needs_work(*prior)):
+            if failed:
+                _STATS.log_skipped += 1
+            continue                      # already stored and final: nothing new to learn
+
         dur = None
         if w.get("run_started_at") and w.get("updated_at"):
             f = "%Y-%m-%dT%H:%M:%SZ"
@@ -271,23 +320,49 @@ def collect_repo(conn, owner, repo, student_id, assignment_ids):
                        - dt.strptime(w["run_started_at"], f)).total_seconds())
         # ADDED: classify at collection time so concept_id is populated.
         error_class, concept_id = (None, None)
-        if w["conclusion"] == "failure":
-            error_class, concept_id = classify_error(_failure_log(owner, repo, w["id"]))
-            _STATS.classifications.append((error_class, concept_id))
+        attempts, reason = (prior[1], None) if prior is not None else (0, None)
+        if failed:
+            text, why = _fetch_failure_log(owner, repo, w["id"])
+            _STATS.log_downloads += 1
+            attempts += 1
+            if text is None:
+                # Download failed: stays 'empty' and is retried next cycle; after the last
+                # allowed attempt it stays 'empty' for good, with the reason on the row.
+                if attempts >= MAX_LOG_ATTEMPTS:
+                    reason = f"log unavailable after {attempts} attempts ({why})"
+            elif not text:
+                reason = "log downloaded but empty"        # final: nothing to retry
+            error_class, concept_id = classify_error(text)
+            if prior is None or text is not None:
+                _STATS.classifications.append((error_class, concept_id))
+        if prior is not None:
+            retry_rows.append((error_class, concept_id, attempts, reason, w["id"]))
+            continue
         # D-063: the commit this run ran against. Lets features tell a run triggered by a
         # template-sync commit from a student's own push. .get(): a payload without it
         # stores NULL, which the features treat as a student run.
         run_rows.append((w["id"], student_id, run_assignment_id, w["status"],
                          w["conclusion"], w["run_started_at"], w["updated_at"], dur,
-                         error_class, concept_id, w.get("head_sha")))
+                         error_class, concept_id, w.get("head_sha"), attempts, reason))
     if run_rows:
         execute_values(cur, """
             INSERT INTO raw_workflow_runs (run_id, student_id, assignment_id, status,
                                            conclusion, started_at, completed_at, duration_s,
-                                           error_class, concept_id, head_sha)
+                                           error_class, concept_id, head_sha,
+                                           log_attempts, log_reason)
             VALUES %s ON CONFLICT (run_id) DO NOTHING
         """, run_rows)
-        _STATS.runs_upserted += len(run_rows)
+        _STATS.runs_inserted += len(run_rows)
+    if retry_rows:
+        # The guard is the whole safety: only a row that is still unclassified or 'empty' can
+        # change, so a real classification is never overwritten, and a failed retry leaves
+        # error_class exactly as it was ('empty') while counting the attempt.
+        cur.executemany("""
+            UPDATE raw_workflow_runs
+            SET error_class = %s, concept_id = %s, log_attempts = %s, log_reason = %s
+            WHERE run_id = %s AND (error_class IS NULL OR error_class = 'empty')
+        """, retry_rows)
+        _STATS.runs_updated += len(retry_rows)
 
     conn.commit()
 
