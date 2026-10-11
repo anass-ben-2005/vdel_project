@@ -54,6 +54,11 @@ def clean_llm(monkeypatch):
     monkeypatch.setattr(llm, "CACHE", {})
     monkeypatch.setattr(llm, "COST_LOG", [])
     monkeypatch.setattr(llm, "PROVIDER", Provider.ANTHROPIC)
+    # OpenAI's real model ids are filled in by the author and its key may sit in the shell:
+    # pin them to TODO(verify) so these tests (written before OpenAI joined the fallback
+    # chain) do not depend on either. OpenAI has its own file: test_llm_openai.py.
+    for tier in llm.MODEL_TIERS:
+        monkeypatch.setitem(llm.MODEL_TIERS[tier], Provider.OPENAI, "TODO(verify)")
 
 
 class _FakeMessages:
@@ -488,13 +493,15 @@ def test_an_unknown_provider_string_still_fails_loudly_not_at_call_time():
             os.environ["LLM_PROVIDER"] = original
 
 
-def test_openai_is_a_real_dispatch_branch_that_raises_not_a_missing_one(monkeypatch):
-    """The abstraction is 'real rather than theoretical': selecting openai must route to
-    OpenAI-shaped code and fail THERE with a clear stub message, not fail at generic
-    provider dispatch the way a typo would."""
+def test_openai_is_a_real_dispatch_branch_that_refuses_an_unconfirmed_model(monkeypatch):
+    """OpenAI is no longer a stub (it has its own tests in test_llm_openai.py). Its model ids
+    are still TODO(verify), and selecting it must fail in OpenAI-shaped code with a clear message
+    BEFORE any network call -- not at generic dispatch, and not with a made-up model id."""
     monkeypatch.setattr(llm, "PROVIDER", Provider.OPENAI)
+    monkeypatch.setitem(llm.MODEL_TIERS["default"], Provider.OPENAI, "TODO(verify)")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
 
-    with pytest.raises(NotImplementedError, match="openai"):
+    with pytest.raises(ValueError, match=r"TODO\(verify\)"):
         judge("grade this", Verdict, use_cache=False)
 
 

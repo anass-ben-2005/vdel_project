@@ -63,14 +63,16 @@ Evidence validation is NOT here: `validate_evidence` string-matches quotes again
 submission and belongs to `agents/validation.py` (BUILD_PLAN 4.4). This gateway knows about
 transport, schemas, cost and caching. It knows nothing about rubrics.
 
-**Three providers live, one stubbed.** Anthropic is `.env.example`'s documented default and
+**Four providers live, one stubbed.** Anthropic is `.env.example`'s documented default and
 the only provider any judged/graded call in this repo has actually exercised. NVIDIA (D-031)
 and Google (D-032) are config-switchable live alternatives (`LLM_PROVIDER=nvidia` /
 `LLM_PROVIDER=google`), added without touching the default or deleting anything. OpenAI
-proper stays a structural stub: the branch exists in `_PROVIDER_HANDLERS` so the dispatch is
-real (selecting "openai" routes to OpenAI-shaped code, not a silent no-op or an "unknown
-provider" error), but calling it raises `NotImplementedError` until BUILD_PLAN 3.2's
-benchmark actually names it a paid candidate. `qwen_local` remains stubbed the same way.
+(`LLM_PROVIDER=openai`, key `OPENAI_API_KEY`) is live as well; its two model ids were supplied
+by Anas and are unverified here (D-225). An id set back to `TODO(verify)` is refused by
+`_call_openai` with a clear error before any network call, and the fallback chain skips it.
+`qwen_local`
+remains a structural stub: the branch exists in `_PROVIDER_HANDLERS` so the dispatch is real, but
+calling it raises `NotImplementedError`.
 
 **D-031 -- the NVIDIA branch's model id is user-supplied, not independently verified.**
 `deepseek-ai/deepseek-v4-pro` was given directly by Anas as the exact string to use. Unlike
@@ -191,7 +193,9 @@ PROVIDER: Provider = _read_provider()
 MODEL_TIERS: dict[str, dict[Provider, str]] = {
     "default": {
         Provider.ANTHROPIC: "claude-sonnet-5",
-        Provider.OPENAI: "TODO(verify)",
+        # D-225: supplied by Anas, NOT independently verified by the session that wrote this
+        # branch (same status as D-031's NVIDIA id). Replace with `TODO(verify)` to disable.
+        Provider.OPENAI: "gpt-6.1-sol",
         Provider.QWEN_LOCAL: "TODO(verify)",
         # D-031: supplied directly by Anas, not independently verified against NVIDIA's
         # live catalog by this session -- see the module docstring.
@@ -202,7 +206,7 @@ MODEL_TIERS: dict[str, dict[Provider, str]] = {
     },
     "cheap": {
         Provider.ANTHROPIC: "claude-haiku-4-5",
-        Provider.OPENAI: "TODO(verify)",
+        Provider.OPENAI: "gpt-6-luna",
         Provider.QWEN_LOCAL: "TODO(verify)",
         Provider.NVIDIA: "TODO(verify)",  # no cheap-tier DeepSeek variant was specified
         Provider.GOOGLE: "gemini-3.5-flash-lite",  # D-032, same live verification as above
@@ -482,13 +486,15 @@ def _complete(prompt: str, temperature: float, model: str, use_cache: bool, *,
 _MAX_MODEL_HOPS_PER_PROVIDER = 2   # up to 2 EXTRA models tried after the first, per provider
 _MAX_PROVIDER_HOPS = 2             # up to 2 EXTRA providers tried after the primary
 
-# Providers this fallback chain considers -- deliberately NOT Provider.OPENAI or
-# Provider.QWEN_LOCAL, which are structural stubs (`_stub_provider`) with no key to check
-# in the first place; falling back TO a stub would just trade one exception for another.
+# Providers this fallback chain considers -- deliberately NOT Provider.QWEN_LOCAL, a structural
+# stub (`_stub_provider`) with no key to check in the first place; falling back TO a stub would
+# just trade one exception for another. OpenAI is eligible only when OPENAI_API_KEY is set, and
+# `_model_chain` still skips it while its model ids are `TODO(verify)`.
 _FALLBACK_KEY_ENV_VARS: dict[Provider, str] = {
     Provider.ANTHROPIC: "ANTHROPIC_API_KEY",
     Provider.NVIDIA: "NVIDIA_API_KEY",
     Provider.GOOGLE: "GOOGLE_API_KEY",
+    Provider.OPENAI: "OPENAI_API_KEY",
 }
 
 
@@ -603,6 +609,23 @@ def _model_chain(provider: Provider, primary_model: str | None, tier: str) -> li
         if candidate and candidate != "TODO(verify)" and candidate not in chain:
             chain.append(candidate)
     return chain[:1 + _MAX_MODEL_HOPS_PER_PROVIDER]
+
+
+_SECRET_LIKE = re.compile(r"\b(?:sk|nvapi|AIza)[A-Za-z0-9_\-*.]{6,}")
+
+
+def _describe_error(exc: Exception, limit: int = 240) -> str:
+    """`Type [status]: first part of the provider's message`, for the failure line.
+
+    The bare exception class (`BadRequestError`) hid WHY a provider refused a request; the
+    message ("Unsupported value: 'temperature' ...") is what makes it fixable. Anything that
+    looks like an API key is masked, the text is cut to `limit` characters, and newlines are
+    flattened so one failure stays one line."""
+    status = getattr(exc, "status_code", None)
+    message = getattr(exc, "message", None) or str(exc)
+    message = _SECRET_LIKE.sub("[masked]", " ".join(str(message).split()))
+    head = type(exc).__name__ + (f" [{status}]" if status else "")
+    return f"{head}: {message[:limit]}" if message else head
 
 
 def _classify_transport_error(exc: Exception) -> str:
@@ -730,7 +753,7 @@ def _call_with_fallback(
                     f"{type(exc).__name__}: {exc}"
                 )
                 print(f"llm: {provider.value}/{model} failed ({classification}) "
-                     f"after {elapsed:.1f}s -- {type(exc).__name__}")
+                     f"after {elapsed:.1f}s -- {_describe_error(exc)}")
                 if classification == "quota_billing":
                     break   # this provider's whole account is exhausted -- stop its chain
                 continue    # transient or unknown -- try the next model in this chain
@@ -937,8 +960,83 @@ def _stub_provider(provider: Provider) -> NoReturn:
     )
 
 
+# OpenAI model ids that reject an explicit `temperature` (reasoning-style models), for D-025's
+# omit-the-parameter rule. Also filled at run time: a 400 that names `temperature` adds the model
+# here (see `_call_openai`). EMPTY AT IMPORT ON PURPOSE: the real model names are not known yet
+# (`MODEL_TIERS` holds `TODO(verify)`), and an id listed here without a source would be exactly
+# the invented fact CLAUDE.md §10 forbids. When the real ids are confirmed, add any that reject
+# temperature to this set. Like `_REJECTS_NONDEFAULT_TEMPERATURE` it is a maintained list, not a
+# live capability query.
+_OPENAI_REJECTS_TEMPERATURE: set[str] = set()
+
+
 def _call_openai(prompt: str, temperature: float, model: str) -> tuple[str, int, int]:
-    _stub_provider(Provider.OPENAI)
+    """OpenAI proper (api.openai.com), through the official `openai` SDK already used for
+    NVIDIA. `import openai` is local, like the other handlers.
+
+    Identical behaviour across providers is the point, so this uses the plain chat-completions
+    call and NO provider-native JSON mode or response schema: the gateway parses the raw text
+    itself (fence stripping, pydantic, one corrective retry).
+
+    - Key: `OPENAI_API_KEY`, passed explicitly, and never placed in an error message.
+    - Model: a `TODO(verify)` id is refused here with a `ValueError` (never retried, never
+      reaches the network) -- the real ids are the author's to confirm in `MODEL_TIERS`.
+    - Temperature (D-025): sent as given, except for ids in `_OPENAI_REJECTS_TEMPERATURE`, where a
+      0.0 request omits it and a non-zero request raises instead of being silently substituted.
+    - `max_completion_tokens`, not `max_tokens`: the newer parameter name accepted by current
+      chat-completions models. ASSUMPTION to confirm in the first live smoke call.
+    - `max_retries=0`: the SDK's own silent retry/backoff would stack on top of the gateway's
+      fallback chain and the 30 s ceiling (D-051); the gateway is the one retry policy.
+    - Errors are left as the SDK raises them: `RateLimitError` (429, "exceeded your current quota
+      ... billing") classifies as `quota_billing`, 429/5xx/overload as `transient`, anything else
+      (a 401 for a bad key, say) as `unknown`, all by `_classify_transport_error`.
+    """
+    import openai
+
+    if model.startswith("TODO(verify)"):
+        raise ValueError(
+            "the OpenAI model id is still TODO(verify): write the real default/cheap ids into "
+            "MODEL_TIERS in system/llm.py (Provider.OPENAI) before using LLM_PROVIDER=openai."
+        )
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set. LLM_PROVIDER=openai requires it -- see .env.example."
+        )
+
+    kwargs: dict[str, object] = {
+        "model": model,
+        "max_completion_tokens": _MAX_TOKENS,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if model not in _OPENAI_REJECTS_TEMPERATURE:
+        kwargs["temperature"] = temperature
+    elif temperature != 0.0:
+        raise ValueError(
+            f"{model} does not accept an explicit temperature and cannot honour "
+            f"temperature={temperature!r} (D-025)."
+        )
+
+    client = openai.OpenAI(api_key=api_key, max_retries=0)
+    try:
+        response = client.chat.completions.create(**kwargs)
+    except openai.BadRequestError as exc:
+        # A 400 that names `temperature` means this model only takes its default (D-025). Learn
+        # it, so later calls omit it up front, and repeat the call once without it. Only for
+        # a 0.0 request: a genuine non-zero request is never silently substituted.
+        refused = "temperature" in str(getattr(exc, "message", exc)).lower()
+        if not (refused and "temperature" in kwargs):
+            raise
+        if temperature != 0.0:
+            raise ValueError(
+                f"{model} does not accept an explicit temperature and cannot honour "
+                f"temperature={temperature!r} (D-025)."
+            ) from None
+        _OPENAI_REJECTS_TEMPERATURE.add(model)
+        del kwargs["temperature"]
+        response = client.chat.completions.create(**kwargs)
+    text = response.choices[0].message.content or ""
+    return text, response.usage.prompt_tokens, response.usage.completion_tokens
 
 
 def _call_qwen_local(prompt: str, temperature: float, model: str) -> tuple[str, int, int]:
