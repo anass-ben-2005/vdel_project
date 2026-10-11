@@ -236,7 +236,8 @@ TEMPLATE_FILES = {
 
 
 def render_student_repo(
-    project_id: str, student_id: str, attempt_no: int, out_dir: str | Path, *, conn=None
+    project_id: str, student_id: str, attempt_no: int, out_dir: str | Path, *, conn=None,
+    only_assignment: str | None = None,
 ) -> dict:
     """Render one student's one attempt at `project_id` into a real repo at `out_dir`.
 
@@ -254,6 +255,9 @@ def render_student_repo(
       7.   .github/workflows/ci.yml: install, lint (non-blocking), run VISIBLE tests only.
       8.   conftest.py (comment-only) at the repo root, so bare `pytest tests/visible` can
            import the project -- see _ROOT_CONFTEST / D-060.
+
+    `only_assignment` (D-072): render and record the attempt for that ONE assignment only
+    (scripts/next_attempt.py). The default, None, is the unchanged whole-project behaviour.
 
     Idempotent to re-run: `out_dir` is recreated fresh each call (old contents removed
     first) rather than merged into, so a stale prior render can't leave orphaned files
@@ -273,6 +277,8 @@ def render_student_repo(
     assignment_md_entries = []
     with _cursor(conn) as write_cur:
         for assignment in project["assignments"]:
+            if only_assignment and assignment["assignment_id"] != only_assignment:
+                continue
             file_path = assignment["file_path"]
             master_path = project_dir / file_path
             master_text = master_path.read_text(encoding="utf-8")
@@ -349,7 +355,8 @@ def render_student_repo(
 
     return {
         "out_dir": str(out_dir),
-        "files_rendered": [a["file_path"] for a in project["assignments"]],
+        "files_rendered": [a["file_path"] for a in project["assignments"]
+                           if not only_assignment or a["assignment_id"] == only_assignment],
         "hidden_gap_count": len(assignment_md_entries),
         "visible_tests_copied": visible_src.exists(),
     }
