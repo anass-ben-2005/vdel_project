@@ -125,6 +125,9 @@ def _session(conn):
 # direct child only (see the module docstring's SANDBOX section for what is not covered).
 _TIMEOUT_S = 120
 
+# D-085: evaluation statuses for which `attempts.out_of_scope_lines` is not computed.
+NOT_MEASURED_STATUSES = frozenset({"collection_error", "timeout"})
+
 
 @dataclass(frozen=True)
 class TestOutcome:
@@ -905,7 +908,16 @@ def grade_attempt(
         # D-073. One column per attempt: it holds the latest graded commit's value until the
         # attempt freezes, and the frozen commit's value afterwards (the WHERE keeps a later
         # grading call from overwriting it).
-        out_of_scope = _out_of_scope_lines(cur, project_id, file_path, Path(repo_dir), attempt_id)
+        #
+        # D-085: a commit graded as collection_error or timeout is NOT measured. The check is
+        # line-based and would happily report 0 for a file that does not load, which reads as
+        # "stayed inside the gaps" when it means "nothing was measured". The column then keeps
+        # whatever an earlier commit set (NULL if none): NULL is "not measured".
+        if evaluation.status in NOT_MEASURED_STATUSES:
+            out_of_scope = None
+        else:
+            out_of_scope = _out_of_scope_lines(
+                cur, project_id, file_path, Path(repo_dir), attempt_id)
         if out_of_scope is not None:
             cur.execute(
                 "UPDATE attempts SET out_of_scope_lines = %s WHERE attempt_id = %s"

@@ -1930,7 +1930,7 @@ stored but writes no `test_result` trace, so it is not a mastery observation; a 
 `timeout`); `grade_collected` skips commits newer than the one an attempt froze on
 (`post_freeze_commits_skipped`). After each graded commit, `attempts.out_of_scope_lines` is set
 from `scope_check` against the released file rebuilt from the master and the attempt's hidden gaps
-(`gap_parser.render_student_file_with_ranges`); fail-open (NULL and a logged warning) on any problem.
+(`gap_parser.render_student_file_with_ranges`); fail-open (NULL and a logged warning) on any problem. A commit graded as `collection_error` or `timeout` is not measured at all (D-085): the column stays NULL ("not measured") or keeps an earlier commit's value.
 
 **`scripts/post_feedback.py` — feedback v0, dry-run only (D-074).** Builds a short markdown message
 per graded commit from `diagnose` and that commit's `test_results` rows (a failing check is shown by

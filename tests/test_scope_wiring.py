@@ -81,13 +81,26 @@ def test_an_edit_outside_the_gaps_is_counted(world, tmp_path):
     assert column(cur, attempt_id)[0] == 1
 
 
-def test_fail_open_a_missing_file_leaves_null_and_grading_still_records(world, tmp_path,
-                                                                        caplog):
+def test_a_missing_file_leaves_null_and_grading_still_records(world, tmp_path):
+    """No load.py at all is a collection_error (D-085): not measured, so the check does not even
+    run, and grading is not blocked."""
     conn, cur, attempt_id, _ = world
-    with caplog.at_level(logging.WARNING, logger="assessment.test_runner"):
-        result = grade(conn, attempt_id, make_repo(tmp_path / "r", load_py=None))
+    result = grade(conn, attempt_id, make_repo(tmp_path / "r", load_py=None))
     assert result.tests_total == 2 and result.frozen is False          # grading was not blocked
     assert column(cur, attempt_id) == (None, False)
+
+
+def test_fail_open_when_the_check_itself_raises(world, tmp_path, caplog, monkeypatch):
+    conn, cur, attempt_id, _ = world
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("scope check broke")
+
+    monkeypatch.setattr(tr, "scope_check", boom)
+    with caplog.at_level(logging.WARNING, logger="assessment.test_runner"):
+        result = grade(conn, attempt_id, make_repo(tmp_path / "r", load_py=SOLVED))
+    assert result.frozen is True                                       # grading was not blocked
+    assert column(cur, attempt_id) == (None, True)
     assert any("scope check skipped" in r.message for r in caplog.records)
 
 
@@ -121,3 +134,33 @@ def test_before_the_freeze_the_latest_graded_commit_wins(world, tmp_path):
 def tr_stub():
     """The released file with both gaps still hidden (the student changed nothing in them)."""
     return render_student_file(MASTER, BOTH_GAPS)
+
+
+# --- D-085: a commit that does not load is "not measured", not 0 ----------------------------------
+
+def test_a_collection_error_commit_leaves_the_value_null_not_zero(world, tmp_path):
+    conn, cur, attempt_id, _ = world
+    result = grade(conn, attempt_id, make_repo(tmp_path / "r", load_py="def broken(:\n"))
+    assert result.status == "collection_error"
+    assert column(cur, attempt_id) == (None, False)
+
+
+def test_a_normally_graded_commit_still_gets_its_value(world, tmp_path):
+    conn, cur, attempt_id, _ = world
+    result = grade(conn, attempt_id, make_repo(tmp_path / "r", load_py="# x\n" + tr_stub()))
+    assert result.status == "ok"
+    assert column(cur, attempt_id) == (1, False)
+
+
+def test_a_later_collection_error_does_not_blank_an_earlier_measurement(world, tmp_path):
+    conn, cur, attempt_id, _ = world
+    grade(conn, attempt_id, make_repo(tmp_path / "a", load_py="# x\n" + tr_stub()),
+          sha="_sc_sha_1")
+    assert column(cur, attempt_id)[0] == 1
+    grade(conn, attempt_id, make_repo(tmp_path / "b", load_py="def broken(:\n"),
+          sha="_sc_sha_2")
+    assert column(cur, attempt_id)[0] == 1                 # left as it was, not 0 and not NULL
+
+
+def test_the_statuses_that_are_not_measured():
+    assert frozenset({"collection_error", "timeout"}) == tr.NOT_MEASURED_STATUSES

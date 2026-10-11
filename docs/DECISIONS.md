@@ -3625,3 +3625,37 @@ Tests:       tests/test_unattempted_not_a_failure.py (7): stub not counted, real
              resolved from test_results, an unnamed trace kept, v2..v5 unchanged, the flag is
              gap-level.
 
+### D-085 -- out_of_scope_lines stays NULL ("not measured") for a collection_error or timeout commit
+Date:        2026-10-11
+Status:      DECIDED and IMPLEMENTED for FUTURE grading (Anas, 2026-10-11). No existing row was
+             rewritten. Amends D-073.
+Authority:   Anas
+Finding:     The second real cycle for anas graded `d818c872b5` as a collection_error (SyntaxError
+             at weather_etl/load.py:7, two `test_results` rows, no trace, no freeze: D-066/D-069,
+             as intended) and the scope check then wrote `attempts.out_of_scope_lines = 0` for
+             attempt 3. The check is line-based, so it measures a file that does not load as
+             "no line outside the gaps", which reads as "stayed inside" when nothing was measured.
+Decision:    `grade_attempt` does not run the scope check when the evaluation status is in
+             `NOT_MEASURED_STATUSES = {collection_error, timeout}`. The column is then left as it
+             was: NULL if no earlier commit measured it, or an earlier commit's value (a later
+             broken push does not blank a measurement). NULL means "not measured". `tooling` (a
+             problem on our side, the student's file is fine) is still measured. The check stays
+             fail-open (D-073): any other problem still logs a warning and leaves the column
+             alone.
+Tests:       tests/test_scope_wiring.py: a collection_error commit leaves NULL (not 0); a normally
+             graded commit still gets its value; a later collection_error does not blank an earlier
+             value; the check raising is still fail-open with a warning. The old "missing file
+             logs a warning" test now describes the collection_error case; the warning path is
+             covered by the raising-check test.
+Existing rows (read as "not measured", NOT rewritten):
+             - anas attempt 3 (weather_etl_load): 0, graded only as collection_error (d818c872).
+               Read it as unknown.
+             - student2 attempt 84 (weather_etl_load): 0, but its graded commit 4832ec3c has
+               `status = ok` (the file loaded; g_ld_select is still a NotImplementedError stub).
+               That 0 IS a measurement and is NOT in the same class as anas's. Anas asked for it to
+               be read as unknown too; the data says otherwise, so only anas attempt 3 is listed
+               here. Checked with: out_of_scope_lines IS NOT NULL joined to test_results.status.
+V9:          Nothing computes V9 yet (the only reader of `out_of_scope_lines` in the code is the
+             writer). When it is built, the rule is: a value is "unknown" when the attempt's
+             graded commit is a collection_error or timeout, even if the column holds 0.
+
