@@ -66,8 +66,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, conint
+from pydantic import AliasChoices, BaseModel, Field, conint
 
+from agents import budget as budget_mod
 from agents import prompts, tools, validation
 from memory.memory import Memory
 from system import llm
@@ -81,7 +82,14 @@ CRITERIA = ("correctness", "approach", "readability", "idiomatic")
 
 
 class Scores(BaseModel):
-    """D.5's `Scores`, field for field — the same shape as `EchoScores`.
+    """D.5's `Scores`, the same four criteria as `EchoScores`, one field renamed (prompt v2).
+
+    `llm_correctness_opinion` is the model's READING of the code. It is not a test result: since
+    D-036 / invariant 13 correctness is decided only by executed hidden tests, so the field is
+    named for what it is and no reader can mistake it for ground truth. Old traces were written
+    with the key `correctness`; reading accepts both (`validation_alias`), and `correctness`
+    stays available as a read-only property for code that still uses the attribute
+    (`scripts/demo.py`, an integration request asks to move it). Writing always uses the new key.
 
     Anchored 0/2/4, but typed 0..4 rather than restricted to {0, 2, 4}: a judge that returns
     3 has said something real about the submission, and coercing it to an anchor would hide
@@ -89,10 +97,16 @@ class Scores(BaseModel):
     scores as a thing to watch in the benchmark rather than a thing to reject.
     """
 
-    correctness: conint(ge=0, le=4)
+    llm_correctness_opinion: conint(ge=0, le=4) = Field(
+        validation_alias=AliasChoices("llm_correctness_opinion", "correctness"))
     approach: conint(ge=0, le=4)
     readability: conint(ge=0, le=4)
     idiomatic: conint(ge=0, le=4)
+
+    @property
+    def correctness(self) -> int:
+        """Read-only alias of `llm_correctness_opinion`. Still an opinion, not a result."""
+        return self.llm_correctness_opinion
 
 
 class Verdict(BaseModel):
@@ -115,12 +129,23 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
           profile_snapshot: dict[str, Any] | None = None,
           reference: str | None = None,
           parent_trace_id: int | None = None,
-          conn=None) -> tuple[Verdict, int, list | None]:
+          conn=None,
+          llm_client=None,
+          budget: budget_mod.CallBudget | None = None,
+          use_cache: bool = True) -> tuple[Verdict, int, list | None]:
     """Judge one submission. Returns `(verdict, trace_id, evidence_failures or None)`.
 
     The signature Echo defined and M4 preserves. `conn` exists for the reason `memory.py`'s
     deviation 2 gives: passing one makes the verdict trace and the mastery updates a single
     transaction, and lets tests roll back rather than pollute an append-only log.
+
+    `llm_client` (default: `system.llm`) is any object with `system.llm.judge`'s signature; tests
+    pass `agents.fake_llm.FakeLLM`. `budget` (default: none) is an `agents.budget.CallBudget`:
+    the call is reserved before it is made and `BudgetExceeded` is raised, with no provider
+    reached, if it does not fit. `use_cache=False` is for the benchmark (llm.py: with the cache
+    on, a re-run replays stored strings and "stability" would measure a dict). All three are
+    keyword-only additions; the D.5 contract (first four
+    positionals, `profile_snapshot`, `reference`, the return triple) is unchanged.
 
     Raises `ValueError` if the assignment carries no `task`, and `FileNotFoundError` if the
     submission is missing — both are callers who forgot to supply the thing being graded, and
@@ -168,7 +193,23 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
     # ---- 3 JUDGE -------------------------------------------------------------------------
     # The only judgement stage. Temperature 0 and the single corrective retry are the
     # gateway's job, not this file's -- see deviation 1.
-    verdict, record = llm.judge(prompt, Verdict)
+    client = llm_client if llm_client is not None else llm
+    if budget is not None:
+        budget.charge(budget_mod.WORST_CASE_CALLS_PER_JUDGE, what="Code Agent judge call")
+    try:
+        verdict, record = client.judge(prompt, Verdict, use_cache=use_cache)
+    except llm.SchemaValidationError as err:
+        if budget is not None:
+            budget.settle(budget_mod.WORST_CASE_CALLS_PER_JUDGE, err.records)
+        raise
+    except Exception:
+        # A provider or transport failure: how many attempts reached a provider is unknown, so
+        # the whole reservation is counted (over-counting is the safe direction).
+        if budget is not None:
+            budget.settle_unknown(budget_mod.WORST_CASE_CALLS_PER_JUDGE)
+        raise
+    if budget is not None:
+        budget.settle(budget_mod.WORST_CASE_CALLS_PER_JUDGE, [record])
 
     # ---- 4 VALIDATE ----------------------------------------------------------------------
     # Invariant 6, mechanically. A quote that is not in the submission was invented.
@@ -182,7 +223,7 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
     # of a judge that fabricated a quote destroys the evidence that it did.
     payload = {
         **verdict.model_dump(),
-        "agent": "code_agent_v1",
+        "agent": "code_agent_v2",
         "prompt_version": prompts.PROMPT_VERSION,
         "provider": record.provider,   # D-04X: which provider actually served this call --
         "model": record.model,         # may differ from LLM_PROVIDER if the fallback fired

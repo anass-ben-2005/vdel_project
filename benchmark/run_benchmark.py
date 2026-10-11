@@ -38,7 +38,7 @@ from pathlib import Path
 
 from agents.code_agent import grade
 from memory.memory import Memory
-from system import db
+from system import db, llm
 
 SUBMISSIONS_DIR = Path(__file__).resolve().parent / "submissions"
 GROUND_TRUTH_PATH = Path(__file__).resolve().parent / "ground_truth.json"
@@ -111,6 +111,29 @@ def _exact_agreement(score_sets: list[dict[str, int]]) -> dict[str, float]:
     return rates
 
 
+def _gateway_stats(records) -> dict:
+    """JSON validity and cost inputs, from the gateway's own cost log for THIS run (llm.py's
+    CallRecord docstring: retry rate = attempt-2 records / attempt-1 records, measured, never a
+    defaulted number). Pure arithmetic over the records; no price is applied here -- prices are
+    `TODO(verify)` and belong in RECOMMENDATION.md once someone has checked them."""
+    live = [r for r in records if not r.cache_hit]
+    first = [r for r in live if r.attempt == 1]
+    second = [r for r in live if r.attempt == 2]
+    return {
+        "provider_calls": len(live),
+        "cache_hits": len(records) - len(live),
+        "first_attempts": len(first),
+        "corrective_retries": len(second),
+        "json_retry_rate": (len(second) / len(first)) if first else None,
+        "first_attempt_valid_rate": (sum(r.schema_valid for r in first) / len(first)
+                                     if first else None),
+        "flagged_after_retry": sum(1 for r in second if r.flagged),
+        "tokens_in": sum(r.tokens_in for r in live),
+        "tokens_out": sum(r.tokens_out for r in live),
+        "calls_by_model": dict(Counter(r.model for r in live)),
+    }
+
+
 def run(*, runs: int, only: str | None, commit: bool) -> dict:
     ground_truth = _load_ground_truth()
     submissions = _submissions()
@@ -126,6 +149,7 @@ def run(*, runs: int, only: str | None, commit: bool) -> dict:
 
     conn = db._open()
     results: dict[str, dict] = {}
+    log_start = len(llm.COST_LOG)
     try:
         with conn.cursor() as cur:
             _ensure_benchmark_fixtures(cur)
@@ -147,13 +171,14 @@ def run(*, runs: int, only: str | None, commit: bool) -> dict:
                     verdict, trace_id, evidence_failures = grade(
                         mem, BENCHMARK_STUDENT, assignment, str(path),
                         reference=reference, conn=conn,
+                        use_cache=False,    # llm.judge's docstring: the benchmark MUST not
                     )
                 except Exception as exc:  # noqa: BLE001 -- recorded, not swallowed
                     call_errors.append(f"{type(exc).__name__}: {exc}")
                     print(f"  run {i + 1}: FAILED -- {type(exc).__name__}: {exc}")
                     continue
                 s = verdict.scores
-                scores = {"correctness": s.correctness, "approach": s.approach,
+                scores = {"correctness": s.llm_correctness_opinion, "approach": s.approach,
                           "readability": s.readability, "idiomatic": s.idiomatic}
                 score_sets.append(scores)
                 print(f"  run {i + 1}: {scores}  trace_id={trace_id}"
@@ -193,6 +218,7 @@ def run(*, runs: int, only: str | None, commit: bool) -> dict:
                 "ground_truth_match": matches if truth_known else None,
             }
 
+        results["_gateway"] = _gateway_stats(llm.COST_LOG[log_start:])
         if commit:
             conn.commit()
             print("\ncommitted -- verdict traces persisted")

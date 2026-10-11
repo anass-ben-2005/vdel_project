@@ -40,3 +40,41 @@ prompt currently instructs the judge to score the lower anchor and quote the lin
 when a criterion cannot be assessed. Whether that is the right treatment — versus marking the
 criterion not-applicable and excluding it from the aggregate — is a real design question and
 is deliberately **not** resolved by silently tuning the prompt. Raise with Dr. Ezzatul.
+
+---
+
+## v2 — 2026-10-11 — the correctness score is an opinion, and is named as one
+
+**What changed.** (1) The score field `correctness` is now `llm_correctness_opinion` in the
+output schema (the rubric criterion, the evidence key `correctness` and the anchors are
+unchanged). (2) One sentence after the rubric tells the judge the score is its reading of the
+code, not a test result, and that executed tests decide correctness. (3) `Scores` in
+`agents/code_agent.py` accepts both names when reading (`correctness` stays as a read-only
+alias for old traces and for `scripts/demo.py`); new traces are written with the new key. The
+payload `agent` field is now `code_agent_v2`.
+
+**Failure mode.** A reader (a dashboard, a future Reviewer, a mastery rule) taking the model's
+reading of the code for a result. D-036 / invariant 13: correctness is decided by executed hidden
+tests, never asserted by an LLM. Naming the field after what it is makes the misuse visible in
+every query and diff.
+
+**Benchmark result:** not yet measured (no live calls were made on the agents branch; no
+`ground_truth.json` labels exist). The rubric anchors and evidence rules did not change, so no
+effect on scores is expected, but that is a hypothesis, not a measurement.
+
+---
+
+## fb1 — 2026-10-11 — Feedback Agent, first prompt (`agents/feedback_prompts.py`)
+
+**What it is.** The prompt of the Feedback Agent (a separate file and version line from the
+Code Agent's `PROMPT_VERSION`). It contains facts computed by code (failed checks by name and
+exception type, recurring gaps, weakest concept, a tone-only mastery slice, a closed list of
+candidate resources) and no student code and no hidden test source.
+
+**Failure modes each element defends:** invented tests/concepts (closed lists, validated),
+invented resources or links (resource_id or null, links rejected), the model asserting correctness
+(rule in the prompt, pattern check after), leaking a hidden check (exception type only, hidden-line
+guard), a mastery claim reaching the student (quoting numbers forbidden, "master*" rejected).
+
+**Benchmark result:** not yet measured. No live call has been made; the agent was exercised only
+against a scripted fake provider.

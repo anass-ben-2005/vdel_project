@@ -76,7 +76,7 @@ def _verdict(evidence=None, **overrides):
             c: [{"quote": "df = pd.read_csv(path)", "why": "reads the file"}]
             for c in code_agent.CRITERIA
         },
-        "scores": {"correctness": 4, "approach": 2, "readability": 4, "idiomatic": 2},
+        "scores": {"llm_correctness_opinion": 4, "approach": 2, "readability": 4, "idiomatic": 2},
         "misconceptions": [],
         "feedback_for_student": "Solid loading logic.",
         "confidence": "high",
@@ -120,9 +120,12 @@ def test_signature_matches_echos_contract():
         assert code[shared].kind is inspect.Parameter.KEYWORD_ONLY
 
 
-def test_scores_shape_matches_echos():
-    """`EchoScores` says: 'M4 replaces the values, not the shape.'"""
-    assert list(Scores.model_fields) == list(echo_agent.EchoScores.model_fields)
+def test_scores_shape_matches_echos_except_the_renamed_field():
+    """`EchoScores` says: 'M4 replaces the values, not the shape.' Prompt v2 renamed ONE field,
+    `correctness` -> `llm_correctness_opinion` (the model's reading, not a test result)."""
+    renamed = ["llm_correctness_opinion" if f == "correctness" else f
+               for f in echo_agent.EchoScores.model_fields]
+    assert list(Scores.model_fields) == renamed
 
 
 def test_verdict_shape_matches_echos():
@@ -246,7 +249,7 @@ def test_payload_is_traceable_to_what_produced_it(submission, fake_judge):
     payload = mem.traces[0]["payload"]
     assert payload["prompt_version"]
     assert payload["model"] == "fake-model"
-    assert payload["agent"] == "code_agent_v1"
+    assert payload["agent"] == "code_agent_v2"
     assert payload["reference_supplied"] is False
     assert payload["tool_reports"][0]["tool"] == "ruff"
     json.dumps(payload)   # JSONB column: must serialise
