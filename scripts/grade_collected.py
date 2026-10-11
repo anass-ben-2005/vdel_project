@@ -83,18 +83,21 @@ def _target_attempts(cur, student: str | None,
             conds.append(f"{column} = %s")
             args.append(value)
     where = f" WHERE {' AND '.join(conds)}" if conds else ""
-    cur.execute("SELECT attempt_id, student_id, project_id, assignment_id, attempt_no,"
-                "       submitted_at IS NULL FROM attempts" + where + " ORDER BY attempt_no",
+    cur.execute("SELECT a.attempt_id, a.student_id, a.project_id, a.assignment_id, a.attempt_no,"
+                "       a.submitted_at IS NULL,"
+                "       (SELECT c.committed_at FROM raw_commits c WHERE c.sha = a.commit_sha)"
+                " FROM attempts a" + where + " ORDER BY a.attempt_no",
                 tuple(args))
     chosen: dict[tuple[str, str], tuple] = {}
-    for attempt_id, student_id, project_id, assignment_id, attempt_no, is_open in cur.fetchall():
+    for (attempt_id, student_id, project_id, assignment_id, attempt_no, is_open,
+         frozen_at) in cur.fetchall():
         key = (student_id, assignment_id)
         prior = chosen.get(key)
         # rows arrive in ascending attempt_no, so a later row is "higher"; an open attempt
         # beats a frozen one regardless of number.
         if prior is None or is_open or not prior[3]:
-            chosen[key] = (attempt_id, project_id, attempt_no, is_open)
-    return {k: v[:3] for k, v in chosen.items()}
+            chosen[key] = (attempt_id, project_id, attempt_no, is_open, frozen_at)
+    return {k: (v[0], v[1], v[2], v[4]) for k, v in chosen.items()}
 
 
 def find_pending(
@@ -104,7 +107,8 @@ def find_pending(
     """Every (attempt, commit) with no test_results row yet, oldest commit first within
     an attempt. Returns (pending, skipped_counts)."""
     pending: list[Pending] = []
-    for (student_id, assignment_id), (attempt_id, project_id, attempt_no) in sorted(
+    post_freeze = 0
+    for (student_id, assignment_id), (attempt_id, project_id, attempt_no, frozen_at) in sorted(
         _target_attempts(cur, student, assignment).items(), key=lambda kv: kv[1][0]
     ):
         cur.execute(
@@ -116,6 +120,13 @@ def find_pending(
             (student_id, assignment_id, attempt_id),
         )
         rows = cur.fetchall()
+        if frozen_at is not None:
+            # D-069: the attempt is frozen at the commit that passed. A later push is
+            # collected (raw_commits keeps it) but is not graded as evidence: the attempt's
+            # result is final, and grading it would add observations after the fact.
+            kept = [r for r in rows if r[1] <= frozen_at]
+            post_freeze += len(rows) - len(kept)
+            rows = kept
         if latest_only:
             rows = rows[-1:]
         owner, repo = repo_for.get((student_id, assignment_id), (None, None))
@@ -131,7 +142,8 @@ def find_pending(
         ambiguous_sql += " AND student_id = %s"
         ambiguous_args = (student,)
     cur.execute(ambiguous_sql, ambiguous_args)
-    return pending, {"unattributed_commits": cur.fetchone()[0]}
+    return pending, {"unattributed_commits": cur.fetchone()[0],
+                     "post_freeze_commits_skipped": post_freeze}
 
 
 # --- getting the exact commit -------------------------------------------------------------
@@ -250,18 +262,20 @@ def main(argv: list[str] | None = None) -> int:
                         help="list what would be graded; fetch and write nothing")
     parser.add_argument("--latest-only", action="store_true",
                         help="grade only each attempt's newest ungraded commit")
+    parser.add_argument("--roster", default=None,
+                        help="roster file (default config/roster.yaml); D-070")
     args = parser.parse_args(argv)
 
-    from scripts.seed_data import load_roster  # the loader collect_github's callers use
-    repo_for = {(a["student_id"], a["assignment_id"]): (a["owner"], a["repo"])
-                for a in load_roster().get("assignments", [])}
+    from scripts.seed_data import load_roster, roster_repo_for  # D-070: the one loader
+    repo_for = roster_repo_for(load_roster(args.roster))
 
     summary = run(student=args.student, assignment=args.assignment, dry_run=args.dry_run,
                   latest_only=args.latest_only, repo_for=repo_for)
     print(f"\npending={summary['pending']} graded={len(summary['graded'])}"
           f" failed={len(summary['failed'])} no_repo={len(summary['no_repo'])}"
           f" would_grade={len(summary['would_grade'])}"
-          f" unattributed_commits_skipped={summary['unattributed_commits']}")
+          f" unattributed_commits_skipped={summary['unattributed_commits']}"
+          f" post_freeze_commits_skipped={summary['post_freeze_commits_skipped']}")
     return 1 if summary["failed"] else 0
 
 

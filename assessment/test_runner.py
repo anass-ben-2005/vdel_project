@@ -38,6 +38,10 @@ network, read-only filesystem, non-root user, resource limits, and the JUnit/jud
 is REQUIRED before the first real student. Until then this is for a known curriculum run by
 the person who owns the machine.
 
+D-069 (addendum to D-066 and D-065): a `collection_error` or a `timeout` row is stored with its
+status but writes NO `test_result` mastery trace, and a pytest timeout is recorded once instead
+of raising out of the grader.
+
 COLLECTION ERRORS (D-066): when the hidden test file cannot be imported, the traceback decides.
 It points into the student's code -> a real failure (`collection_error`, every `@gap` test of
 that file recorded as failed). It points into our test file or tooling -> `tooling`, which is
@@ -63,6 +67,7 @@ not silently inflate `n`, the observation count invariant 8 makes load-bearing.
 from __future__ import annotations
 
 import ast
+import logging
 import os
 import re
 import secrets
@@ -77,10 +82,14 @@ from pathlib import Path
 
 from psycopg2.extras import execute_values
 
+from assessment.gap_parser import render_student_file_with_ranges
+from assessment.scope_check import scope_check
 from memory.memory import Memory
 from system import db
 
 CURRICULUM_ROOT = Path(__file__).resolve().parent.parent / "curriculum" / "master"
+
+log = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -118,7 +127,7 @@ class TestOutcome:
     passed: bool
     message: str | None
     gap_id: str | None    # D-046: from @pytest.mark.gap("g_..."), NOT from the test name
-    status: str = "ok"    # D-066: ok | collection_error | tooling (test_results.status)
+    status: str = "ok"    # D-066/D-069: ok | collection_error | tooling | timeout
 
 
 @dataclass(frozen=True)
@@ -130,7 +139,7 @@ class RunResult:
     tests_passed: int
     tests_total: int
     frozen: bool
-    status: str = "ok"          # D-066: ok | collection_error | tooling
+    status: str = "ok"          # D-066/D-069: ok | collection_error | tooling | timeout
     detail: str | None = None   # why, for the two non-ok statuses
 
 
@@ -435,7 +444,21 @@ def evaluate(project_id: str, file_path: str, repo_dir: str | Path) -> Evaluatio
         results = tmp / "results"          # outside the student's directory
         results.mkdir()
         junit_path = results / f"junit-{secrets.token_hex(16)}.xml"
-        _run_pytest(work, test_rel_path, junit_path)
+        try:
+            _run_pytest(work, test_rel_path, junit_path)
+        except subprocess.TimeoutExpired:
+            # D-069: a hung or endless student module. Recorded ONCE (each @gap test of the
+            # file failed, status "timeout"): the commit then has test_results rows, so
+            # grade_collected does not pick it up again next cycle. Before this the exception
+            # escaped, nothing was written, and the same commit hung the grader every cycle.
+            expected = _expected_gap_tests(test_src, test_rel_path)
+            detail = f"hidden tests did not finish within {_TIMEOUT_S}s"
+            if not expected:
+                return Evaluation((), "tooling", f"{detail} (but no @gap test found)")
+            return Evaluation(
+                tuple(TestOutcome(name, False, f"timeout: {detail}", gap, "timeout")
+                      for name, gap in expected),
+                "timeout", detail)
 
         if not junit_path.exists():
             raise TestRunnerError(
@@ -677,6 +700,12 @@ def _log_mastery_traces(mem: Memory, conn, student_id: str, assignment_id: str,
         if (o.test_name not in new_test_names or o.gap_id is None
                 or o.gap_id not in hidden_gap_ids):
             continue
+        if o.status != "ok":
+            # D-069: a collection_error / timeout is stored (test_results.status, the freeze
+            # check, effort/pace) but is NOT a mastery observation. The student's code did
+            # not run, so it says nothing about the concept; D-066 had charged it as a
+            # failure (a syntax slip cost as much as a wrong retry loop).
+            continue
         meta = gap_meta.get(o.gap_id)
         if meta is None:
             continue   # gap_id didn't resolve against `gaps` -- nothing to attribute
@@ -692,6 +721,48 @@ def _log_mastery_traces(mem: Memory, conn, student_id: str, assignment_id: str,
 
     for concept, trace_id in concept_to_trace_id.items():
         mem.update_mastery(student_id, concept, parent_trace_id=trace_id, conn=conn)
+
+
+def _out_of_scope_lines(cur, project_id: str, file_path: str, repo_dir: Path,
+                        attempt_id: int) -> int | None:
+    """D-073 (V9): how many changed lines of the submitted file lie OUTSIDE the gaps this
+    attempt hid, or None when that cannot be computed. FAIL-OPEN: any problem (file missing,
+    master changed, parse error) logs a warning and returns None, so the column stays NULL --
+    it never blocks grading and never invents a number.
+
+    Gap-scoped only (invariant 14): the released file is rebuilt from the master and the
+    attempt's hidden gaps (`render_student_file_with_ranges`, which also gives the hidden
+    regions in THE RELEASED FILE's line numbers); only a diff against it is read. Nothing is
+    attributed to the student from code the master already contained. Pre-solved gaps are not
+    gap regions here: the student was not asked to touch them.
+
+    Invariant 15: skipped when the attempt's variant pins a different master_version than the
+    project's current one, because the rebuilt released file would not be what the student got.
+    """
+    cur.execute("SAVEPOINT scope_check")
+    try:
+        cur.execute(
+            "SELECT v.gap_ids, v.master_version, p.master_version FROM attempts a"
+            " JOIN variants v USING (variant_id) JOIN projects p ON p.project_id = a.project_id"
+            " WHERE a.attempt_id = %s", (attempt_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError("no variant/project for the attempt")
+        gap_ids, variant_master, project_master = row
+        if variant_master != project_master:
+            raise ValueError(f"variant pins master {variant_master[:10]}, project is at "
+                             f"{project_master[:10]}")
+        master_text = (CURRICULUM_ROOT / project_id / file_path).read_text(encoding="utf-8")
+        released, ranges = render_student_file_with_ranges(master_text, gap_ids)
+        submitted = (Path(repo_dir) / file_path).read_text(encoding="utf-8")
+        count = scope_check(released, submitted, ranges).out_of_scope_lines_changed
+        cur.execute("RELEASE SAVEPOINT scope_check")
+        return count
+    except Exception as exc:  # noqa: BLE001 -- fail-open is the contract
+        cur.execute("ROLLBACK TO SAVEPOINT scope_check")
+        log.warning("scope check skipped for attempt %s (out_of_scope_lines left as it was): "
+                    "%s: %s", attempt_id, type(exc).__name__, exc)
+        return None
 
 
 def _maybe_freeze(cur, attempt_id: int, commit_sha: str | None,
@@ -786,6 +857,15 @@ def grade_attempt(
                             outcomes, new_test_names, gap_meta,
                             _hidden_gap_ids(cur, attempt_id))
         frozen = _maybe_freeze(cur, attempt_id, commit_sha, tests_passed, tests_total)
+        # D-073. One column per attempt: it holds the latest graded commit's value until the
+        # attempt freezes, and the frozen commit's value afterwards (the WHERE keeps a later
+        # grading call from overwriting it).
+        out_of_scope = _out_of_scope_lines(cur, project_id, file_path, Path(repo_dir), attempt_id)
+        if out_of_scope is not None:
+            cur.execute(
+                "UPDATE attempts SET out_of_scope_lines = %s WHERE attempt_id = %s"
+                " AND (submitted_at IS NULL OR commit_sha IS NOT DISTINCT FROM %s)",
+                (out_of_scope, attempt_id, commit_sha))
 
     return RunResult(
         outcomes=tuple(outcomes), tests_passed=tests_passed,

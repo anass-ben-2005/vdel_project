@@ -369,8 +369,10 @@ def rows(cur, attempt_id):
     return cur.fetchall()
 
 
-def test_a_collection_error_is_recorded_as_failed_tests_and_is_mastery_evidence(
+def test_a_collection_error_is_stored_with_its_status_but_writes_no_mastery_trace(
         world, tmp_path):
+    """D-069 (1c, addendum to D-066): stored as failed tests with status, counted as handled,
+    but NOT a mastery observation -- the student's code did not run."""
     conn, cur, attempt_id = world
     repo = make_repo(tmp_path / "r", load_py="def insert_readings(c, r):\n    hellot workd\n")
     result = grade(conn, attempt_id, repo)
@@ -380,13 +382,36 @@ def test_a_collection_error_is_recorded_as_failed_tests_and_is_mastery_evidence(
     assert sorted(rows(cur, attempt_id)) == sorted([
         (INSERT_TEST, "g_ld_insert", False, "collection_error"),
         (SELECT_TEST, "g_ld_select", False, "collection_error")])
-    history = Memory().test_result_history(STUDENT, conn=conn)
-    assert [h["passed"] for h in history] == [False, False]
-    mastery = Memory().get_profile(STUDENT, conn=conn)["mastery"]
-    assert mastery["sql.select_filter"]["n"] == 2
+    assert Memory().test_result_history(STUDENT, conn=conn) == []          # no trace
+    assert "sql.select_filter" not in Memory().get_profile(STUDENT, conn=conn)["mastery"]
 
     grade(conn, attempt_id, repo)                          # the same commit again
-    assert len(Memory().test_result_history(STUDENT, conn=conn)) == 2   # no double counting
+    assert len(rows(cur, attempt_id)) == 2                 # still two rows, nothing doubled
+    assert Memory().test_result_history(STUDENT, conn=conn) == []
+
+
+def test_a_pytest_timeout_is_recorded_once_as_failed_tests_and_writes_no_trace(
+        world, monkeypatch, tmp_path):
+    """D-069 (1e): before, TimeoutExpired escaped, nothing was written and the same commit hung
+    the grader every cycle. Now every gap test of the file is recorded, status 'timeout'."""
+    import subprocess
+
+    def hang(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="pytest", timeout=1)
+    monkeypatch.setattr(tr, "_run_pytest", hang)
+    conn, cur, attempt_id = world
+    repo = make_repo(tmp_path / "r", load_py=SOLVED_LOAD)
+
+    result = grade(conn, attempt_id, repo)
+    assert (result.status, result.tests_passed, result.tests_total, result.frozen) == (
+        "timeout", 0, 2, False)
+    assert sorted(rows(cur, attempt_id)) == sorted([
+        (INSERT_TEST, "g_ld_insert", False, "timeout"),
+        (SELECT_TEST, "g_ld_select", False, "timeout")])
+    assert Memory().test_result_history(STUDENT, conn=conn) == []
+    cur.execute("SELECT NOT EXISTS (SELECT 1 FROM test_results WHERE attempt_id=%s"
+                " AND commit_sha=%s)", (attempt_id, "_sb_sha_1"))
+    assert cur.fetchone()[0] is False        # the commit counts as handled: not retried each cycle
 
 
 def test_a_tooling_error_is_a_marker_not_a_failure_and_is_not_retried(

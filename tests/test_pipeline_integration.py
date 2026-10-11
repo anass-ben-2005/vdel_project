@@ -79,7 +79,9 @@ def features_for(student_id):
 
 
 def test_all_seven_variables_are_written(sara):
-    run(only=[STUDENT])
+    # D-069: v3 is the formula where CI runs feed concept-level V1; v4 takes V1 from the trace
+    # replay (tests/test_stage1_d069.py). This test documents the CI-driven wiring, so it pins v3.
+    run(only=[STUDENT], formula_ver="v3")
     row = features_for(STUDENT)
     assert row is not None, "no learner_features row was written"
     mastery, discipline, effort, pace, v5, v6 = row
@@ -125,7 +127,7 @@ def test_unclassified_errors_move_no_mastery(sara):
         cur.execute(f"""INSERT INTO raw_workflow_runs VALUES
             (9099,'{STUDENT}','{ASSIGNMENT}','completed','failure',
              '2026-03-03 09:00+00','2026-03-03 09:03+00',180,'unmatched','unclassified')""")
-    run(only=[STUDENT])
+    run(only=[STUDENT], formula_ver="v3")      # D-069: CI-driven V1 is the v3 behaviour
     mastery = features_for(STUDENT)[0]
     assert "unclassified" not in mastery
     assert set(mastery) == {"spark.joins", "spark.aggregation"}

@@ -15,26 +15,27 @@ Run:  python -m scripts.collect
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 
 from collectors.collect_github import collect_all
-from scripts.seed_data import load_roster
+from scripts.seed_data import load_roster, roster_repos
 from system import db
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Collect GitHub activity for the roster.")
+    parser.add_argument("--roster", default=None,
+                        help="roster file (default config/roster.yaml); D-070")
+    args = parser.parse_args(argv)
     if not os.environ.get("GITHUB_TOKEN"):
         sys.exit("GITHUB_TOKEN is not set. See .env.example.")
 
-    roster = load_roster()
-    repos = [
-        {"owner": a["owner"], "repo": a["repo"],
-         "student_id": a["student_id"], "assignment_id": a["assignment_id"]}
-        for a in roster.get("assignments", [])
-    ]
+    roster = load_roster(args.roster)
+    repos = roster_repos(roster)
     if not repos:
-        sys.exit("No assignments in config/roster.yaml.")
+        sys.exit("No assignments in the roster.")
 
     print(f"collecting {len(repos)} repo(s)")
     with db.connect() as conn:

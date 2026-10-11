@@ -202,10 +202,12 @@ ALTER TABLE test_results DROP CONSTRAINT IF EXISTS test_results_pkey;
 --                    (our test file, a missing library): a marker row, NOT a failure, never
 --                    mastery evidence. It also records that the commit was handled, so the
 --                    grader does not retry it forever.
+--   timeout          (D-069) the hidden tests did not finish in time; every gap test of the
+--                    file is recorded as failed, once. Like collection_error: no mastery trace.
 ALTER TABLE test_results ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ok';
 ALTER TABLE test_results DROP CONSTRAINT IF EXISTS test_results_status_check;
 ALTER TABLE test_results ADD CONSTRAINT test_results_status_check
-  CHECK (status IN ('ok', 'collection_error', 'tooling'));
+  CHECK (status IN ('ok', 'collection_error', 'tooling', 'timeout'));
 
 -- A partial unique index rather than a PRIMARY KEY, because `commit_sha` is nullable and
 -- SQL treats NULLs as distinct in a unique constraint -- a plain UNIQUE would happily

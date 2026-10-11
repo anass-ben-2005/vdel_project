@@ -19,6 +19,7 @@ Two reconciliations, both flagged where they occur:
 
 Run:  python -m features.compute_features
 """
+import contextlib
 import os
 from statistics import median
 
@@ -60,8 +61,17 @@ NEUTRAL_DIFFICULTY = 0.5
 # why they failed. (b) is a rule: head_sha joined to raw_commits.message. A run with no
 # head_sha (collected before D-063, not yet backfilled) or whose commit is not in
 # raw_commits is treated as a student run -- it fails OPEN, never excludes by guess.
-FORMULA_VER = "v3"
+#
+# D-069 (v4). Two more changes, both for FUTURE rows only (v2/v3 rows stay readable):
+#   (c) the INITIAL TEMPLATE COMMIT ("Initial commit: ..." with no assignment, written by
+#       scripts/publish_repo.py) and the CI run on it are not student actions either. They are
+#       treated exactly like a sync commit / sync-triggered run (rule b), same fail-open test.
+#   (d) V1 is no longer computed here: it is `Memory.replay_mastery`, the same trace replay
+#       the profile uses (one implementation, D-068 option a). Raw CI runs feed NO
+#       concept-level mastery any more; they still feed V5 and V6.
+FORMULA_VER = "v4"
 SYNC_COMMIT_PREFIX = "ci: sync template"
+INITIAL_COMMIT_PREFIX = "Initial commit:"
 TOOLING_FAILURE_RUNS = {
     32752484942: "old CI template, ruff never installed (D-060); failed before pytest",
     32798574508: "old CI template, ruff never installed (D-060); failed before pytest",
@@ -95,6 +105,27 @@ def sync_commit_sql(alias="c"):
             f"AND COALESCE({alias}.files_changed <= {SYNC_MAX_FILES}, false))")
 
 
+def initial_commit_sql(alias="c"):
+    """SQL condition: `alias` (a raw_commits row) is the initial template commit (D-069).
+
+    Same shape as `sync_commit_sql` and the same fail-open stance: a NULL message or a
+    non-NULL assignment_id means "not the initial commit", so an unknown value KEEPS the row.
+    A legacy repo whose first commit touches an assignment file gets an assignment_id
+    (D-043) and is therefore never matched -- the safe direction (KNOWN HOLE, listed as
+    later)."""
+    assert "'" not in INITIAL_COMMIT_PREFIX
+    return (f"(COALESCE(starts_with({alias}.message, '{INITIAL_COMMIT_PREFIX}'), false) "
+            f"AND {alias}.assignment_id IS NULL)")
+
+
+def _not_student_commit_sql(formula_ver, alias):
+    """SQL: `alias` is a commit that is NOT a student action under `formula_ver`
+    (v3: a sync commit; v4: a sync commit or the initial template commit)."""
+    if formula_ver == "v3":
+        return sync_commit_sql(alias)
+    return f"({sync_commit_sql(alias)} OR {initial_commit_sql(alias)})"
+
+
 def _run_scopes(formula_ver, alias="r"):
     """(activity, outcome): SQL conditions on `alias`, a raw_workflow_runs row.
 
@@ -104,7 +135,7 @@ def _run_scopes(formula_ver, alias="r"):
     if formula_ver == "v2":
         return "TRUE", "TRUE"
     sync = (f"NOT EXISTS (SELECT 1 FROM raw_commits sc WHERE sc.sha = {alias}.head_sha "
-            f"AND {sync_commit_sql('sc')})")
+            f"AND {_not_student_commit_sql(formula_ver, 'sc')})")
     ids = ",".join(str(int(i)) for i in TOOLING_FAILURE_RUNS)
     tooling = f"{alias}.run_id <> ALL(ARRAY[{ids}]::bigint[])"
     return sync, f"({sync} AND {tooling})"
@@ -121,7 +152,7 @@ def _commit_scope(formula_ver, alias="c"):
     rather than letting a NULL silently drop the row from a WHERE."""
     if formula_ver == "v2":
         return "TRUE"
-    return f"NOT {sync_commit_sql(alias)}"
+    return f"NOT {_not_student_commit_sql(formula_ver, alias)}"
 
 
 def dirty_students(cur, last_run_iso, formula_ver=FORMULA_VER):
@@ -172,7 +203,13 @@ def _item_difficulty(cur, concept_id):
 
 
 def _mastery(cur, student_id, formula_ver=FORMULA_VER):
-    """V1 — replay classified pass/fails through BKT.
+    """V1 — returns the MasteryEstimator (callers take `.snapshot()`) for v2/v3.
+
+    D-069 (v4): there is no second implementation any more. See `_mastery_v4`, which is a
+    thin call into `Memory.replay_mastery`; this function is kept, unchanged, for v2/v3 so
+    old formula versions stay computable and comparable.
+
+    V1 under v2/v3 — replay classified pass/fails through BKT.
 
     D-063: under v3, tooling failures (a) and sync-triggered runs (b) are not evidence.
 
@@ -212,7 +249,7 @@ def _mastery(cur, student_id, formula_ver=FORMULA_VER):
         for ts, concept_id, conclusion in ci_rows
     ]
 
-    for result in Memory().test_result_history(student_id):
+    for result in Memory().test_result_history(student_id, conn=cur.connection):
         if result["passed"] is None:
             continue
         difficulty = (result["item_difficulty"] if result["item_difficulty"] is not None
@@ -226,6 +263,19 @@ def _mastery(cur, student_id, formula_ver=FORMULA_VER):
     for _, concept_id, correct, difficulty in events:
         est.update(concept_id, correct=correct, item_difficulty=difficulty)
     return est
+
+
+def _mastery_v4(cur, student_id):
+    """V1 for formula v4 (D-069): `(stored-shape vector, estimator)` straight from
+    `Memory.replay_mastery`, the same trace replay that builds `learner_profile.mastery`.
+
+    So `learner_features.mastery` and `learner_profile.mastery` carry the SAME numbers for
+    the same traces, by construction (D-068 option a). The shape is the profile's
+    (p_mastery, p_correct_next, n, confidence, ci90, trend, param_set), not the older
+    `snapshot()` shape. Raw CI runs are not read here: a repo-wide CI conclusion cannot be
+    attributed to one concept (the student2 clean-room test: a red run caused by untouched
+    stubs was charged to py.testing). They still feed V5/V6 in `_error_stats`."""
+    return Memory().replay_mastery(student_id, conn=cur.connection)
 
 
 def _effort(cur, student_id, formula_ver=FORMULA_VER):
@@ -355,7 +405,7 @@ def _error_stats(cur, student_id, est, formula_ver=FORMULA_VER):
     """, (student_id,))
     ci_rows = list(cur.fetchall())
 
-    test_results = [r for r in Memory().test_result_history(student_id)
+    test_results = [r for r in Memory().test_result_history(student_id, conn=cur.connection)
                     if r["passed"] is not None]
 
     runs = [(ts, conclusion) for ts, conclusion, _, _ in ci_rows]
@@ -419,16 +469,16 @@ def _error_stats(cur, student_id, est, formula_ver=FORMULA_VER):
     if formula_ver != "v2":
         # Auditability: a reader of the row can see how many runs were left out, and why.
         cur.execute(f"SELECT count(*) FROM raw_commits c WHERE c.student_id=%s "
-                    f"AND NOT ({_commit_scope(FORMULA_VER)})", (student_id,))
+                    f"AND NOT ({_commit_scope(formula_ver)})", (student_id,))
         excluded_commits = cur.fetchone()[0]     # before _excluded_counts reuses the cursor
-        v6 = v6 | {"excluded_runs": _excluded_counts(cur, student_id),
+        v6 = v6 | {"excluded_runs": _excluded_counts(cur, student_id, formula_ver),
                    "excluded_commits": excluded_commits}
     return v5, v6
 
 
-def _excluded_counts(cur, student_id):
-    """How many of this student's runs v3 leaves out, per rule (kept separate, D-063)."""
-    sync, _ = _run_scopes(FORMULA_VER)
+def _excluded_counts(cur, student_id, formula_ver=FORMULA_VER):
+    """How many of this student's runs v3/v4 leave out, per rule (kept separate, D-063)."""
+    sync, _ = _run_scopes(formula_ver)
     cur.execute(f"""
         SELECT count(*) FILTER (WHERE r.run_id = ANY(%s)),
                count(*) FILTER (WHERE NOT ({sync}))
@@ -452,11 +502,16 @@ def compute_for_student(cur, student_id, formula_ver=FORMULA_VER):
 
     `formula_ver` selects which runs count (D-063): 'v2' = all of them (the behaviour
     before D-063, kept computable so v2 and v3 can be compared), 'v3' = the two exclusion
-    rules. The variable formulas themselves are identical in both."""
-    est = _mastery(cur, student_id, formula_ver)
+    rules, 'v4' (D-069) = v3 plus the initial-commit rule and the single-source V1. The
+    variable formulas themselves are identical in all of them."""
+    if formula_ver in ("v2", "v3"):
+        est = _mastery(cur, student_id, formula_ver)
+        mastery = est.snapshot()
+    else:
+        mastery, est = _mastery_v4(cur, student_id)
     v5, v6 = _error_stats(cur, student_id, est, formula_ver)
     return {
-        "mastery": est.snapshot(),
+        "mastery": mastery,
         "engineering_discipline": _discipline(cur, student_id, formula_ver),
         "effort_regulation": _effort(cur, student_id, formula_ver),
         "pace": _pace(cur, student_id, formula_ver),
@@ -501,7 +556,8 @@ def write_features(cur, student_id, payload, formula_ver=FORMULA_VER):
     return cur.rowcount == 1
 
 
-def run(last_run_iso="1970-01-01T00:00:00Z", only=None):
+def run(last_run_iso="1970-01-01T00:00:00Z", only=None, formula_ver=FORMULA_VER,
+        conn=None):
     """Compute features for every dirty student. Returns the number of students seen.
 
     `only`: restrict to these student_ids. The default (everyone) is what the pipeline
@@ -514,22 +570,27 @@ def run(last_run_iso="1970-01-01T00:00:00Z", only=None):
     D-034 drift; the DAG's update_profiles task did this, but the CLI and any non-Airflow run
     did not). A student whose write was SKIPPED (a row of another formula_ver already sits at
     this watermark) is not synced -- nothing changed for them. Because the sync joins this
-    transaction, a failure or a caller's rollback undoes the row and the pointer together."""
+    transaction, a failure or a caller's rollback undoes the row and the pointer together.
+
+    `conn` (D-071): join the caller's transaction instead of opening and committing one."""
     mem = Memory()
-    with db.connect() as conn, conn.cursor() as cur:
-        students = dirty_students(cur, last_run_iso)
+    with contextlib.ExitStack() as stack:
+        if conn is None:                   # D-071: a caller (run_cycle, tests) may pass its own
+            conn = stack.enter_context(db.connect())
+        cur = stack.enter_context(conn.cursor())
+        students = dirty_students(cur, last_run_iso, formula_ver)
         if only is not None:
             students = [s for s in students if s in set(only)]
         print(f"{len(students)} student(s) with activity since {last_run_iso}")
 
         for sid in students:
-            payload = compute_for_student(cur, sid)
-            if write_features(cur, sid, payload):
+            payload = compute_for_student(cur, sid, formula_ver)
+            if write_features(cur, sid, payload, formula_ver):
                 mem.sync_features_ref(sid, conn=conn)
                 print(f"  {sid}: {len(payload['mastery'])} concept(s) in mastery")
             else:
                 print(f"  {sid}: SKIPPED -- a row of another formula_ver already exists "
-                      f"at this watermark; {FORMULA_VER} never overwrites it")
+                      f"at this watermark; {formula_ver} never overwrites it")
         return len(students)
 
 

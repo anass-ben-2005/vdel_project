@@ -287,8 +287,15 @@ def parse_master(
     return gaps
 
 
-def render_student_file(master_text: str, hide_gap_ids: Iterable[str]) -> str:
-    """Produce the file a student actually receives: pure text transform, zero I/O.
+def render_student_file_with_ranges(
+    master_text: str, hide_gap_ids: Iterable[str]
+) -> tuple[str, list[tuple[int, int]]]:
+    """Produce the file a student actually receives, AND the line range each hidden gap
+    occupies IN THAT FILE: `(rendered_text, [(start, end), ...])`, 1-indexed inclusive, in
+    released-file coordinates (D-073, what scope_check needs). One loop serves both, so the
+    ranges cannot drift from the text. `render_student_file` is the text only.
+
+    The text transform: pure, zero I/O.
 
     Marker lines (`# @gap:`, `# @instruct:` and its plain-comment continuation lines,
     `# @endgap`) are always stripped -- they are authoring metadata, never meant to reach
@@ -331,6 +338,7 @@ def render_student_file(master_text: str, hide_gap_ids: Iterable[str]) -> str:
 
     lines = master_text.splitlines()
     out: list[str] = []
+    ranges: list[tuple[int, int]] = []
 
     for lineno, line in enumerate(lines, start=1):
         if lineno in marker_lines:
@@ -340,6 +348,7 @@ def render_student_file(master_text: str, hide_gap_ids: Iterable[str]) -> str:
         if gap is not None and gap.gap_id in hide:
             if lineno == gap.line_start:
                 indent = re.match(r"[ \t]*", gap.body.splitlines()[0]).group(0)
+                ranges.append((len(out) + 1, len(out) + 2))     # the comment + the raise
                 out.append(f"{indent}# {gap.instruction}")
                 out.append(f"{indent}raise NotImplementedError()")
             continue
@@ -355,4 +364,9 @@ def render_student_file(master_text: str, hide_gap_ids: Iterable[str]) -> str:
     rendered = "\n".join(out)
     if master_text.endswith("\n"):
         rendered += "\n"
-    return rendered
+    return rendered, ranges
+
+
+def render_student_file(master_text: str, hide_gap_ids: Iterable[str]) -> str:
+    """The file a student receives (text only). See `render_student_file_with_ranges`."""
+    return render_student_file_with_ranges(master_text, hide_gap_ids)[0]

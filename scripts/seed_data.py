@@ -187,15 +187,36 @@ def seed_curriculum(
     }
 
 
-def load_roster() -> dict:
-    if not ROSTER.exists():
+def load_roster(path: str | Path | None = None) -> dict:
+    """THE roster loader (D-070): every script reads the roster through this one function.
+
+    `path=None` is `config/roster.yaml`. A script that takes `--roster` passes it here, so
+    a scratch roster in a temp directory can be used without editing the real file or
+    monkeypatching a module constant (the student2 clean-room test had to patch
+    `grade_collected`'s `repo_for` by hand because only collect-side code could be pointed
+    elsewhere)."""
+    roster_path = Path(path) if path is not None else ROSTER
+    if not roster_path.exists():
         sys.exit(
-            f"{ROSTER} not found.\n"
+            f"{roster_path} not found.\n"
             "Copy config/roster.example.yaml to config/roster.yaml and fill in your real\n"
             "GitHub username, repos and start dates. There is no default: released_at\n"
             "starts the Learning Pace clock and a made-up date makes V4 meaningless."
         )
-    return yaml.safe_load(ROSTER.read_text(encoding="utf-8")) or {}
+    return yaml.safe_load(roster_path.read_text(encoding="utf-8")) or {}
+
+
+def roster_repos(roster: dict) -> list[dict]:
+    """The collector's input: one {owner, repo, student_id, assignment_id} per roster row."""
+    return [{"owner": a["owner"], "repo": a["repo"], "student_id": a["student_id"],
+             "assignment_id": a["assignment_id"]} for a in roster.get("assignments", [])]
+
+
+def roster_repo_for(roster: dict) -> dict[tuple[str, str], tuple[str, str]]:
+    """The grader's input: (student_id, assignment_id) -> (owner, repo). Same rows as
+    `roster_repos`, so collecting and grading can never disagree about where a repo is."""
+    return {(r["student_id"], r["assignment_id"]): (r["owner"], r["repo"])
+            for r in roster_repos(roster)}
 
 
 def _released_at_problems(aid: str, released_at) -> list[str]:

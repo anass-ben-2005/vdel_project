@@ -154,6 +154,32 @@ def test_a_second_run_grades_nothing(world):
     assert cur.fetchone()[0] == 10          # 5 + 5, not doubled
 
 
+def test_a_commit_after_the_freeze_is_collected_but_not_graded(world):
+    """D-069 (1d): the attempt froze at SHA_SOLVED. A later push stays in raw_commits but gets
+    no test_results row and no mastery observation; it is counted in the summary instead."""
+    conn, attempt_id, fake_checkout, calls = world
+    gc.run(student=STUDENT, repo_for=REPO_FOR, checkout=fake_checkout, conn=conn)
+    cur = conn.cursor()
+    late = "e" * 40
+    _commit(cur, late, STUDENT, ASSIGNMENT, "2026-08-25 09:00:00+00")
+    cur.execute("SELECT count(*) FROM traces WHERE student_id=%s AND kind='test_result'",
+                (STUDENT,))
+    traces_before = cur.fetchone()[0]
+    n_calls = len(calls)
+
+    again = gc.run(student=STUDENT, repo_for=REPO_FOR, checkout=fake_checkout, conn=conn)
+
+    assert again["pending"] == 0 and again["graded"] == []
+    assert again["post_freeze_commits_skipped"] == 1
+    assert len(calls) == n_calls                          # not even checked out
+    assert late not in {r[0] for r in _graded_rows(conn, attempt_id)}
+    cur.execute("SELECT count(*) FROM traces WHERE student_id=%s AND kind='test_result'",
+                (STUDENT,))
+    assert cur.fetchone()[0] == traces_before
+    cur.execute("SELECT commit_sha FROM attempts WHERE attempt_id=%s", (attempt_id,))
+    assert cur.fetchone()[0] == SHA_SOLVED                # the freeze did not move
+
+
 def test_dry_run_fetches_and_writes_nothing(world):
     conn, attempt_id, fake_checkout, calls = world
 

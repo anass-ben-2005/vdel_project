@@ -314,8 +314,13 @@ def _stored_shape(result: dict) -> dict[str, Any]:
     }
 
 
-def _replay_concept(conn, student_id: str, concept: str) -> dict[str, Any] | None:
-    """Recompute one concept's mastery from the log. Returns None if there is no evidence.
+def _replay_concept_estimator(conn, student_id: str,
+                              concept: str) -> tuple[MasteryEstimator, dict | None]:
+    """Replay one concept's evidence through BKT; return (estimator, last update or None).
+
+    The ONE place the replay loop lives (D-069). `_replay_concept` (the profile) and
+    `Memory.replay_mastery` (features V1, formula v4) both call it, so the two paths cannot
+    disagree by construction -- the disagreement D-068 found.
 
     This is the single implementation of the mastery mathematics (D-007). `update_mastery`
     and `rebuild_mastery_from_traces` both call it, so the M2 DoD -- wipe the profile,
@@ -349,8 +354,12 @@ def _replay_concept(conn, student_id: str, concept: str) -> dict[str, Any] | Non
             continue          # not an assessed outcome -- see OUTCOME
         # Absent difficulty falls back to the estimator's own neutral default rather than
         # guessing. This is a REQUIREMENT ON WHOEVER WIRES THE FAST PATH, not a description
-        # of today: nothing in the repo writes ci_run traces yet, so every such trace is
-        # currently hand-made in tests. That writer must set item_difficulty from the item
+        # of today: no code in the repo writes ci_run traces (the collector writes
+        # raw_workflow_runs rows only; test outcomes arrive as `test_result` traces), so a
+        # ci_run trace is hand-made. The real database holds exactly one (trace 28797,
+        # 2026-08-19, source run 31903540841), written outside the current code -- so "every
+        # such trace is hand-made in tests" is not literally true. A future writer must set
+        # item_difficulty from the item
         # bank (this function) AND assignment_id (apply_recurrence_rule's window) AND
         # error_class (apply_recurrence_rule's counting key) -- three payload fields this
         # module depends on, none of them optional in practice even though the schema
@@ -359,6 +368,15 @@ def _replay_concept(conn, student_id: str, concept: str) -> dict[str, Any] | Non
         difficulty = (payload or {}).get("item_difficulty", 0.5)
         result = est.update(concept, correct, difficulty)
 
+    return est, result
+
+
+def _replay_concept(conn, student_id: str, concept: str) -> dict[str, Any] | None:
+    """Recompute one concept's mastery from the log. Returns None if there is no evidence.
+
+    Thin wrapper over `_replay_concept_estimator`; see its docstring and D-007 (the single
+    implementation of the mastery mathematics, so the M2 DoD holds by construction)."""
+    _, result = _replay_concept_estimator(conn, student_id, concept)
     return _stored_shape(result) if result is not None else None
 
 
@@ -921,7 +939,44 @@ class Memory:
                 )
             return ref
 
+    def features_ref_is_stale(self, student_id: str, *, conn=None) -> bool:
+        """True when `learner_profile.features_ref` differs from what `sync_features_ref`
+        would write. READ-ONLY (D-071): lets a scheduled cycle call the sync only when it
+        would change something, instead of rewriting `updated_at` on every run. A student with
+        no `learner_features` row has nothing to point at, so is never stale."""
+        with _session(conn) as c:
+            ref = _rederive_features_ref(c, student_id)
+            if ref is None:
+                return False
+            with c.cursor() as cur:
+                cur.execute("SELECT features_ref FROM learner_profile WHERE student_id = %s",
+                            (student_id,))
+                row = cur.fetchone()
+            return row is None or row[0] != ref
+
     # ---------- AUDIT: rebuild mastery from traces ----------
+    def replay_mastery(self, student_id: str, *,
+                       conn=None) -> tuple[dict[str, dict[str, Any]], MasteryEstimator]:
+        """The mastery vector as the log implies it, plus the estimator holding the state.
+        READ-ONLY: writes nothing (D-069).
+
+        This is what features V1 is built from (formula v4), so there is exactly one
+        implementation of V1 (D-068 option a). Same evidence, same order, same math as the
+        profile: it calls `_replay_concept_estimator` per concept, exactly as `_replay_concept`
+        does. The estimator is returned because V5 needs the BKT state (history, p_mastery)
+        and must not re-run the replay itself.
+        """
+        with _session(conn) as c:
+            shapes: dict[str, dict[str, Any]] = {}
+            combined = MasteryEstimator()
+            for concept in _concepts_with_evidence(c, student_id):
+                est, result = _replay_concept_estimator(c, student_id, concept)
+                if result is None:
+                    continue
+                shapes[concept] = _stored_shape(result)
+                combined.states[concept] = est.states[concept]
+            return shapes, combined
+
     def rebuild_mastery_from_traces(self, student_id: str, *,
                                     conn=None) -> dict[str, dict[str, Any]]:
         """Recompute the whole mastery vector from the log. The event-sourcing proof.
