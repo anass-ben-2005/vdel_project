@@ -3525,3 +3525,48 @@ Order:       backup -> `backfill_mastery_observations` (dry-run, read) -> `--app
 Tests:       tests/test_mastery_observation.py (17), tests/test_backfill_mastery_observations.py
              (8); tests that asserted per-test mastery were rewritten (test_stage1_d069,
              test_test_runner).
+
+### D-082 -- rebuild_from_traces writes nothing when the rebuilt profile equals the stored one
+Date:        2026-10-11
+Status:      DECIDED and IMPLEMENTED (Anas, brief of 2026-10-11, step 5).
+Authority:   Anas
+Finding:     Running `backfill_mastery_observations --apply` a second time (0 new traces) changed
+             the `learner_profile` table hash. Cause: `_write_whole_profile` ended its
+             `ON CONFLICT DO UPDATE` with `updated_at = now()` unconditionally, so every rebuild
+             rewrote the timestamp of both rows (both read 2026-10-11 03:23:28.878871+00, one
+             transaction). Only the timestamp changed; the five content columns were identical.
+Decision:    The update now carries `WHERE (mastery, weaknesses, reflections, session_digest,
+             features_ref) IS DISTINCT FROM (EXCLUDED...)`: an identical rebuild updates no row,
+             `updated_at` keeps meaning "when the belief last changed", and a profile that
+             disagrees with the log is still repaired (and its `updated_at` moves). The wipe path
+             (TRUNCATE then rebuild) is an INSERT and is unaffected, so Beat 7 is unchanged.
+Tests:       tests/test_backfill_mastery_observations.py: a second apply leaves the row
+             byte-identical (updated_at pinned to a sentinel, since now() is constant inside one
+             transaction); a tampered profile is repaired and its updated_at moves; `prove`
+             stays IDENTICAL.
+Not changed: `update_mastery` still rewrites `updated_at` and appends a `profile_update` trace on
+             every call, by design (D-007: it is the audit record of a recompute). run_cycle does
+             not call it on a cycle with nothing new.
+
+### D-083 -- first real run_cycle (student2), and the intended fate of anas's d818c872b5
+Date:        2026-10-11
+Status:      DECIDED (Anas, 2026-10-11). Evidence of a first live run; no code changed by it.
+Authority:   Anas
+Run:         `run_cycle --roster <scratch> --student student2`, scratch roster of the four student2
+             rows (owner anass-ben-2005, repo vdel-weather-etl-gapfill-student2), not
+             config/roster.yaml. Dry-run first (reads only, baseline identical). Live run:
+             collect +1 commit (4832ec3c32 `load: insert_readings`, weather_etl_load, 2026-10-11
+             03:17:18+00) and +1 CI run (failure, AssertionError, py.testing); grade 1 commit,
+             1/2 passed, frozen=False; features written (v5 row at 03:17:25+00); profile
+             features_ref current. Written: test_results +2, traces +4 (two `test_result`, one
+             `mastery_observation`, one `profile_update`), attempts 84 `out_of_scope_lines`=0.
+             D-079 behaved as designed: g_ld_insert attempted and passing -> ONE observation
+             (sql.select_filter, success, n=1, p=0.7546 at difficulty 0.25); g_ld_select is still
+             a NotImplementedError stub -> no observation; the attempt did not freeze. A second run
+             immediately after wrote nothing: every table hash of `baseline --full` identical to
+             the one after the first run.
+anas / d818c872b5: NOT graded in this task, and no skip flag is added. The behaviour is the intended
+             one: the cycle grades it ONCE; a SyntaxError makes it a `collection_error` row
+             (stored, not a mastery observation, no freeze, D-066/D-069); once it has a
+             `test_results` row it is never picked up again. Anas will run it himself later, after a
+             backup.

@@ -743,6 +743,11 @@ def _write_whole_profile(conn, student_id: str, profile: dict[str, Any]) -> None
     authoritative about the entire row, so a concept or weakness that the log does NOT
     justify must DISAPPEAR. Merging would leave exactly the unjustifiable rows a rebuild
     exists to expose.
+
+    Writes NOTHING when the rebuilt content equals the stored row: `updated_at` records when the
+    belief last CHANGED, and rewriting it on every rebuild made a second backfill `--apply` (or
+    any rebuild) alter the table with no change in content. The comparison is on the five
+    content columns only (jsonb equality, so key order and spacing do not count).
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -757,6 +762,12 @@ def _write_whole_profile(conn, student_id: str, profile: dict[str, Any]) -> None
                 session_digest = EXCLUDED.session_digest,
                 features_ref   = EXCLUDED.features_ref,
                 updated_at     = now()
+            WHERE (learner_profile.mastery, learner_profile.weaknesses,
+                   learner_profile.reflections, learner_profile.session_digest,
+                   learner_profile.features_ref)
+                  IS DISTINCT FROM
+                  (EXCLUDED.mastery, EXCLUDED.weaknesses, EXCLUDED.reflections,
+                   EXCLUDED.session_digest, EXCLUDED.features_ref)
             """,
             (student_id, json.dumps(profile["mastery"]),
              json.dumps(profile["weaknesses"]), json.dumps(profile["reflections"]),

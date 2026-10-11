@@ -200,3 +200,30 @@ def test_the_dry_run_session_is_read_only():
     finally:
         conn.rollback()
         conn.close()
+
+
+def test_a_second_apply_leaves_the_profile_row_untouched_but_a_real_change_updates_it(world):
+    """The rebuild used to rewrite `updated_at` every time, so a second --apply changed the
+    table hash with no change in content. Inside one transaction now() is constant, so the test
+    pins `updated_at` to a sentinel and checks it survives the second apply."""
+    conn, cur, student, _ = world
+    bf.apply_plan(conn, plan_of(world), [student])
+    cur.execute("UPDATE learner_profile SET updated_at = '2000-01-01 00:00:00+00'"
+                " WHERE student_id = %s", (student,))
+    cur.execute("SELECT row(learner_profile.*)::text FROM learner_profile WHERE student_id=%s",
+                (student,))
+    before = cur.fetchone()[0]
+
+    assert bf.apply_plan(conn, plan_of(world), [student]) == 0          # nothing new to write
+    cur.execute("SELECT row(learner_profile.*)::text FROM learner_profile WHERE student_id=%s",
+                (student,))
+    assert cur.fetchone()[0] == before                                  # byte-identical row
+
+    # a profile that DISAGREES with the log is still repaired, and then updated_at moves
+    cur.execute("UPDATE learner_profile SET mastery = '{}'::jsonb WHERE student_id = %s",
+                (student,))
+    Memory().rebuild_from_traces(student, conn=conn)
+    cur.execute("SELECT updated_at > '2000-01-01', mastery <> '{}'::jsonb FROM learner_profile"
+                " WHERE student_id = %s", (student,))
+    assert cur.fetchone() == (True, True)
+    assert prove(conn).identical                                        # Beat 7 unchanged
