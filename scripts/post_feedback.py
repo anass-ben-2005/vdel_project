@@ -4,13 +4,18 @@
 
 For every graded commit it builds a short markdown message from `assessment/diagnose.py` (the
 weakest concept, the recurrence flags) and from that commit's own `test_results` rows (which
-checks failed, with the assertion message; a collection error, a timeout or a tooling problem
-explained in plain words). No LLM, no network, no database write.
+checks failed, by test name and exception type only; a collection error, a timeout or a
+tooling problem explained in plain words). No LLM, no network, no database write.
 
-WHAT IT MUST NEVER SHOW (enforced in code, tested): hidden test CODE. Only test names and
-assertion messages are used, and:
-  - a message is reduced to its first line and capped, so a pytest "where ..." expansion or a
-    traceback with source lines never gets through;
+WHAT IT MUST NEVER SHOW (enforced in code, tested): hidden test CODE, or what a hidden test
+EXPECTS. A failing `assert 32.0 == f(0)` states the expected value, so the stored assertion
+message is NOT shown by default (D-077): a failing check is reported as its test name plus the
+exception type (`AssertionError`, `ConnectionError`, `NotImplementedError`). The message is shown
+only for a test the author has explicitly marked safe, by listing its function name in a
+module-level `FEEDBACK_SAFE_TESTS = ("test_name", ...)` in the hidden test file (read with `ast`,
+the hidden file is never imported). Nothing is marked safe today. Besides that:
+  - a message that IS shown is reduced to its first line and capped, so a pytest "where ..."
+    expansion or a traceback with source lines never gets through;
   - every line of every hidden test file of the project (>= 12 characters once stripped) is
     redacted from any text before it is used, and
   - the finished message is checked a last time (`assert_no_hidden_source`): if any hidden line
@@ -28,6 +33,7 @@ is set; the CLI never passes `enabled=True` without `--post`, and no test calls 
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import re
 import sys
@@ -97,6 +103,52 @@ def clean_message(message: str | None, hidden: frozenset[str]) -> str:
     return first[:MAX_MESSAGE_CHARS] + ("..." if len(first) > MAX_MESSAGE_CHARS else "")
 
 
+_EXC_TYPE = re.compile(r"^((?:\w+\.)*\w*(?:Error|Exception|Exit|Interrupt))\b")
+
+
+def exception_type(message: str | None) -> str | None:
+    """The exception class of a stored failure message, or None when it cannot be told.
+
+    pytest's junit `message` is `Type: text` for most exceptions, a bare `Type` when there is no
+    text (`NotImplementedError`), a dotted name for a library exception
+    (`requests.exceptions.ConnectionError`), and `assert <expr>` for a failed assert (pytest
+    drops the `AssertionError: ` prefix). Only the class name is returned, never the text."""
+    first = next((ln.strip() for ln in (message or "").splitlines() if ln.strip()), "")
+    found = _EXC_TYPE.match(first)
+    if found:
+        return found.group(1).rsplit(".", 1)[-1]
+    if first.startswith("assert"):
+        return "AssertionError"
+    return None
+
+
+def feedback_safe_tests(project_id: str) -> frozenset[str]:
+    """Function names the author marked safe to show an assertion message for: the strings of a
+    module-level `FEEDBACK_SAFE_TESTS = (...)` in any hidden test file of the project. Read with
+    `ast.literal_eval` -- the hidden file is parsed, never imported or executed. Anything that
+    is not a literal collection of strings marks nothing safe."""
+    folder = CURRICULUM_ROOT / project_id / "tests" / "hidden"
+    safe: set[str] = set()
+    if not folder.is_dir():
+        return frozenset()
+    for path in sorted(folder.glob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in tree.body:
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == "FEEDBACK_SAFE_TESTS"):
+                try:
+                    value = ast.literal_eval(node.value)
+                except ValueError:
+                    continue
+                if isinstance(value, (list, tuple, set, frozenset)):
+                    safe.update(v for v in value if isinstance(v, str))
+    return frozenset(safe)
+
+
 def short_test_name(test_name: str) -> str:
     """`tests/hidden/test_extract.py::test_x` -> `test_x (test_extract.py)`: the name only."""
     path, _, name = test_name.rpartition("::")
@@ -134,6 +186,7 @@ def build_feedback(cur, attempt_id: int, commit_sha: str) -> Feedback:
         raise ValueError(f"commit {commit_sha[:10]} has no graded results for attempt "
                          f"{attempt_id}")
     hidden = hidden_source_lines(project_id)
+    safe = feedback_safe_tests(project_id)
     diagnosis = diagnose(cur, attempt_id)
 
     statuses = {r[4] for r in rows}
@@ -166,8 +219,13 @@ def build_feedback(cur, attempt_id: int, commit_sha: str) -> Feedback:
     if failing and status == "ok":
         out += ["", "Checks that failed on this commit:"]
         for test_name, _, message, _, _ in failing:
-            note = clean_message(message, hidden)
-            out.append(f"- `{short_test_name(test_name)}`" + (f": {note}" if note else ""))
+            kind = exception_type(message) or "check failed"
+            line = f"- `{short_test_name(test_name)}`: {kind}"
+            if test_name.rpartition("::")[2] in safe:       # explicitly marked safe, else never
+                note = clean_message(message, hidden)
+                if note and note != kind:
+                    line += f" ({note})"
+            out.append(line)
 
     # History (recurrence, weakest concept) only when THIS commit has real failing checks: a
     # passing commit gets no "keeps failing", and a load error / timeout is not a wrong answer,

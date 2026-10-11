@@ -3389,3 +3389,116 @@ Also corrected in code comments (no behaviour change):
              (memory.py:150) and the docstring says so, keeping the history of when it was written.
 Later:       a test that fails when a design document says "not yet run" about a script whose
              effects are visible in the database (not worth building for v1).
+
+
+### D-076 -- demo Beat 3 grades inside a rolled-back transaction and persists nothing
+Date:        2026-10-11
+Status:      DECIDED and IMPLEMENTED (Anas, brief of 2026-10-11, Part 2a).
+Authority:   Anas
+Problem:     `scripts.demo` Beat 3 called `grade_attempt` on its own connection. A local run
+             (no commit_sha) upserts `test_results` and sets `ran_at = now()` on rows that exist,
+             so every rehearsal changed the real database it was showing (surprise recorded in
+             docs/reading/2026-10-11-overnight-batch-d069-d075.md).
+Decision:    `demo.grade_without_persisting(grade, ...)` opens a connection, passes it as
+             `grade_attempt(conn=...)` (which never commits a joined connection) and rolls back in
+             a `finally`. The tests still execute for real in a subprocess; only the writes are
+             undone. A rolled-back INSERT still consumes sequence values, so trace_id numbers skip;
+             the rows do not exist.
+Evidence:    `baseline --full` before; `python -m scripts.demo --skip-network --skip-llm` twice;
+             `baseline --full` after: `diff` empty, traces 75 / highest 71811, `test_results` 29
+             rows hash a3e48e4f555912983d6af979947c7394 (that hash covers `ran_at`; max(ran_at)
+             still 2026-10-11 02:08:44.39199+00).
+Tests:       tests/test_demo.py: the connection is the caller's, `rollback` runs and `commit` never
+             does, also when grading raises.
+Not covered: Beat 4 (live collection) and Beat 6 (LLM verdict) still write by design; the first is
+             skipped offline, the second by `--skip-llm`.
+
+### D-077 -- feedback v0 shows the test name and exception type, never the assertion text
+Date:        2026-10-11
+Status:      DECIDED and IMPLEMENTED (Anas, brief of 2026-10-11, Part 2b). Amends D-074.
+Authority:   Anas
+Problem:     D-074 showed the first line of the stored assertion message. For a failing
+             `assert 32.0 == f(0)` that line is the expected value, i.e. the answer.
+Decision:    A failing check is shown as the test name plus the exception type (`AssertionError`,
+             `ConnectionError`, `NotImplementedError`; `check failed` when no class can be read).
+             pytest drops the `AssertionError: ` prefix, so a message starting `assert` is read as
+             AssertionError. The message is added, in parentheses and still redacted, ONLY when the
+             test function is listed in a module-level `FEEDBACK_SAFE_TESTS = ("test_x", ...)` of a
+             hidden test file. The list is read with `ast.literal_eval`: the hidden file is never
+             imported, and a non-literal or a syntax error marks nothing safe. NOTHING is marked
+             safe today. The D-074 redaction and `assert_no_hidden_source` stay as a second layer.
+Tests:       tests/test_post_feedback.py: `assert 32.0 == f(0)` (both stored shapes) leaves no
+             `32.0`, `f(0)` or `assert ` in the text; marked vs unmarked; the list is read without
+             executing the file; the real curriculum marks nothing.
+Later:       a tutor-authored hint per gap (Hanafi) instead of an exception name (D-074 Q8).
+
+### D-078 -- Beat 5 prints `low data` when n < 3
+Date:        2026-10-11
+Status:      DECIDED and IMPLEMENTED (Anas, brief of 2026-10-11, Part 2c).
+Authority:   Anas
+Decision:    `demo.mastery_line` puts `low data` right after p_mastery when n < 3. The threshold is
+             `gap_generator._MIN_OBS_FOR_ADAPTIVE` (3), imported, so the demo and the adaptive
+             variant selection cannot disagree about when an estimate is trusted. Invariant 8.
+Tests:       tests/test_demo.py (n=1 and n=2 flagged; n=3 not; placement next to p).
+
+### D-079 -- PROPOSED, NOT APPLIED: one observation per (attempt, concept), first attempted commit
+Date:        2026-10-11
+Status:      PROPOSED. Read-only evaluation only; nothing that feeds the profile was changed.
+             Waiting for Anas's OK. Answers the open question 1 of the overnight report if accepted.
+Rule:        One BKT observation per (attempt, concept): the FIRST pushed, graded (status ok)
+             commit of that attempt in which the concept's gap was attempted (no hidden test of it
+             failed with NotImplementedError). Pass iff every hidden test of that concept passed
+             in that commit. Only the FIRST concept listed on a gap gets the observation. Traces
+             without a commit_sha never count. Ordered by that commit's committed_at.
+Findings:    (1) The `test_result` trace payload is only {conclusion, item_difficulty} plus
+             concept_ids/assignment_id/ts. It has NO attempt_id, commit_sha, gap_id, test name or
+             exception type, so the rule cannot be evaluated from traces as they are written.
+             (2) Those fields exist in `test_results`, which is NOT append-only: rows are upserted
+             and `ran_at` is rewritten, so a replay that joined it would not be reproducible.
+             (3) Of the 28 test_result traces, 19 are recovered by the join (student, assignment,
+             ts = ran_at): 14 with a commit_sha (8 anas, 6 student2) and 5 anas local runs. The
+             pairing of one trace to one test name inside a gap is not recoverable, which the rule
+             does not need (it needs the multiset per commit and concept). 4 anas/extract local-run
+             traces (2026-08-25) cannot be joined because `ran_at` was rewritten, but they are
+             local and never count. 5 `_test_runner` traces belong to no attempt. Student2's 2
+             traces from the collection_error commit 52d4ac3d are in the CURRENT profile (written
+             before D-069) although D-069 says such a commit is not evidence.
+             (4) Computed in memory, anas: py.data_structures 1.000 n=14 -> 0.776 n=1;
+             py.errors_debugging 1.000 n=9 -> 0.776 n=1; py.testing unchanged (0.2154 n=1, the one
+             legacy ci_run trace). student2: both concepts 0.9514 n=6 -> only py.errors_debugging
+             0.2094 n=1 (it failed on its first attempted commit 128da3e9); py.data_structures
+             disappears, because g_ext_retry lists py.errors_debugging first.
+             (5) `select_variant` is adaptive only from n >= 3 per concept. Under the rule every
+             concept sits at n = 1 for a long time, so selection is the seeded uniform fallback
+             until the third attempt. For anas/extract attempt 2 the result is the same variant as
+             today (864fe8bbecf4, both gaps hidden).
+Design:      Do not evaluate the rule at replay time. Write one `mastery_observation` trace per
+             (attempt, concept) when the rule first fires (payload: rule_ver, attempt_id, concept,
+             commit_sha, observed_at = commit time, gap_ids, conclusion, item_difficulty), make it
+             the mastery kind instead of `test_result`, and order the replay by (observed_at,
+             trace_id). `test_result` traces stay as complete evidence for V5/V6. The profile shape
+             gains `obs_rule`; `learner_features.formula_ver` becomes v5. History is backfilled by
+             APPENDING observation traces (no row deleted). Replay stays a pure function of an
+             append-only log, so Beat 7 stays IDENTICAL.
+Not decided: concepts with several primary gaps in one attempt (absent from the real data); whether
+             to keep the legacy ci_run trace; the `first listed concept` convention depends on the
+             array order of `gaps.concept_ids`.
+
+### D-080 -- PROPOSED: isolate student code in a local Docker sandbox for the first real cohort
+Date:        2026-10-11
+Status:      PROPOSED (design note, no code). Needs Anas's choice before D-065's "container
+             REQUIRED before the first real student" is closed.
+Options:     (A) local Docker: network none, non-root, read-only filesystem plus one scratch dir,
+             pids/memory/cpu limits, modelled on eecs-autograder's autograder-sandbox. (B) a GitHub
+             Actions workflow in a private grader repo.
+Recommend:   A. Reasons: the GitHub token and the database never enter the container; the network
+             can really be switched off (not possible on a GitHub-hosted runner, TODO(verify));
+             `grade_attempt` keeps writing the database itself; it can be tested offline with
+             adversarial fixtures. B cannot reach a database that lives on a laptop, so it needs an
+             artifact hand-back and an asynchronous poll.
+Both leave:  result forgery from inside the test process (the student's module is imported by the
+             hidden test), and the student reading the hidden test file during the run. The
+             mitigation is detection (a second signal: differential execution D-036, the Code Agent
+             verdict, out_of_scope_lines) or splitting execution from assertion, not isolation.
+             Later.
+

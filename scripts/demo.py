@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agents import code_agent
+from assessment.gap_generator import _MIN_OBS_FOR_ADAPTIVE as LOW_DATA_BELOW_N
 from assessment.gap_parser import parse_master
 from assessment.test_runner import grade_attempt
 from collectors.collect_github import collect_all
@@ -122,6 +123,27 @@ def beat2_variant_selection() -> BeatResult:
     return BeatResult(True, f"{s1}={v1[:12]}  {s2}={v2[:12]}  (different, same assignment)")
 
 
+def grade_without_persisting(grade, project_id, assignment_id, repo_dir, attempt_id):
+    """Run `grade` (assessment.test_runner.grade_attempt's signature) inside ONE transaction
+    that is always rolled back, and return its result.
+
+    Why: grading a LOCAL run (no commit_sha) upserts `test_results` -- including `ran_at =
+    now()` on rows that already exist -- and appends `test_result`/`profile_update` traces for
+    any test it has not seen. A demo that did that on every rehearsal changed the real database
+    it was supposed to be showing (found by the baseline hash, D-076). `grade_attempt` already
+    takes the caller's connection and never commits a joined one, so rolling back here is
+    enough: the tests still run for real in a subprocess, only the writes are undone. (A
+    rolled-back INSERT still consumes a sequence value, so trace_id numbers skip; the
+    traces table itself is unchanged.)
+    """
+    conn = db._open()
+    try:
+        return grade(project_id, assignment_id, repo_dir, attempt_id, conn=conn)
+    finally:
+        conn.rollback()
+        conn.close()
+
+
 def beat3_hidden_tests() -> BeatResult:
     with db.cursor() as cur:
         cur.execute(
@@ -134,13 +156,15 @@ def beat3_hidden_tests() -> BeatResult:
         return BeatResult(False, "no attempt row for anas/weather_etl_extract")
     attempt_id = row[0]
 
-    result = grade_attempt(PROJECT, "weather_etl_extract", REPO_DIR, attempt_id)
+    result = grade_without_persisting(
+        grade_attempt, PROJECT, "weather_etl_extract", REPO_DIR, attempt_id)
     for o in result.outcomes:
         print(f"    {'PASS' if o.passed else 'FAIL'}  {o.test_name}")
+    print("  (graded inside a transaction that was rolled back: nothing was recorded)")
     return BeatResult(
         passed=result.tests_total > 0,
         evidence=f"{result.tests_passed}/{result.tests_total} passed, real subprocess "
-                 f"(frozen={result.frozen})",
+                 f"(frozen={result.frozen}), nothing persisted",
     )
 
 
@@ -181,12 +205,22 @@ def beat4_attribution(skip_network: bool) -> BeatResult:
     return BeatResult(True, f"{sha} -> {aid} (real per-file attribution, D-043)")
 
 
+def mastery_line(concept: str, m: dict) -> str:
+    """One Beat 5 line. `low data` sits right next to p when n is below the number of
+    observations at which the system itself starts trusting a mastery estimate (the
+    adaptive-selection threshold in gap_generator), so a p that rests on one or two
+    observations is never read as a measurement (invariant 8: 0.9 from n=2 is a rumour).
+    The threshold is imported, not copied, so the two cannot drift apart."""
+    flag = "  low data" if m["n"] < LOW_DATA_BELOW_N else ""
+    return (f"  {concept:24s} p_mastery={m['p_mastery']:.3f}{flag}  n={m['n']}  "
+            f"pass-rate ci90={m.get('ci90')}  trend={m.get('trend')}")
+
+
 def beat5_mastery() -> BeatResult:
     profile = Memory().get_profile(STUDENT)
     mastery = profile["mastery"]
     for concept, m in sorted(mastery.items()):
-        print(f"  {concept:24s} p_mastery={m['p_mastery']:.3f}  n={m['n']}  "
-              f"pass-rate ci90={m.get('ci90')}  trend={m.get('trend')}")
+        print(mastery_line(concept, m))
     # The stored key stays `ci90` (the stored mastery shape is in the design docs); only this
     # label changes. The interval is a Beta posterior on the raw pass rate (variables/
     # mastery.py credible_interval), NOT an interval around p_mastery, so p_mastery can lie

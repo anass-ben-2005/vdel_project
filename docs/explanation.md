@@ -1898,10 +1898,13 @@ from `scope_check` against the released file rebuilt from the master and the att
 (`gap_parser.render_student_file_with_ranges`); fail-open (NULL and a logged warning) on any problem.
 
 **`scripts/post_feedback.py` — feedback v0, dry-run only (D-074).** Builds a short markdown message
-per graded commit from `diagnose` and that commit's `test_results` rows (check names and the first
-line of the assertion message; a collection error, timeout or tooling problem in plain words). Hidden
-test source never appears: messages are cut to one line, every hidden-file line of 12+ characters is
-redacted, and `assert_no_hidden_source` raises before anything is produced. `feedback_posts`
+per graded commit from `diagnose` and that commit's `test_results` rows (a failing check is shown by
+test name and EXCEPTION TYPE only, because an assertion message such as `assert 32.0 == f(0)` states
+the expected value; the message is shown only for a test listed in a module-level
+`FEEDBACK_SAFE_TESTS` of the hidden file, read with `ast`, none today (D-077); a collection error,
+timeout or tooling problem in plain words). Hidden test source never appears: a shown message is cut
+to one line, every hidden-file line of 12+ characters is redacted, and `assert_no_hidden_source`
+raises before anything is produced. `feedback_posts`
 (`sql/07`, not yet applied to the real database) is the "already posted" marker. The real GitHub
 POST (`post_comment`) refuses unless `enabled=True` and `VDEL_ALLOW_FEEDBACK_POST=1`.
 
@@ -1947,6 +1950,13 @@ elsewhere in this document (§7.19's `test_runner.grade_attempt`, §5's collecto
 none of them, so a bug found while running the demo is a bug in the function it called, not
 in this script. Fixed throughout to real data: student `anas`, project `weather_etl`, the
 real repo already pushed to `anass-ben-2005/vdel-weather-etl-gapfill-anas`.
+
+**Beat 3 persists nothing (D-076).** It grades through `grade_without_persisting`, which hands
+`grade_attempt` one connection and always rolls it back: the hidden tests still run for real in a
+subprocess, but no `test_results` row, `ran_at` or trace is written. Before this, each rehearsal
+rewrote `ran_at` on the real database. Proven with `baseline --full` (every table hash, including
+`test_results`) identical before and after two `--skip-network --skip-llm` runs. **Beat 5** prints
+`low data` next to p when n < 3 (the adaptive-selection threshold, imported from `gap_generator`).
 
 Two flags, `--skip-network` and `--skip-llm`, exist because Beats 4 and 6 are the two with
 a real cost (a live GitHub collection needing `GITHUB_TOKEN`; a real billed LLM call) — not

@@ -59,7 +59,7 @@ def result(cur, attempt_id, sha, name, gap, passed, message=None, status="ok"):
                 (attempt_id, sha, name, gap, passed, message, status))
 
 
-def test_a_failing_check_is_named_with_its_assertion_message_only(world):
+def test_a_failing_check_is_named_with_its_exception_type_only(world):
     _, cur, aid = world
     result(cur, aid, SHA1, T_RETRY, "g_ext_retry", False,
            "AssertionError: assert 1 == 3\n + where 1 = len([1])\n  def test_x():\n    foo()")
@@ -67,15 +67,71 @@ def test_a_failing_check_is_named_with_its_assertion_message_only(world):
     fb = pf.build_feedback(cur, aid, SHA1)
     assert (fb.passed, fb.total, fb.status) == (1, 2, "ok")
     assert "**1 of 2** checks passed" in fb.markdown
-    assert "`test_fetch_weather_retries_then_succeeds (test_extract.py)`: assert 1 == 3" \
-        in fb.markdown
-    assert "where" not in fb.markdown and "def test_x" not in fb.markdown   # first line only
+    assert ("- `test_fetch_weather_retries_then_succeeds (test_extract.py)`: AssertionError\n"
+            in fb.markdown)
+    assert "assert 1 == 3" not in fb.markdown                 # the expectation is not shown
+    assert "where" not in fb.markdown and "def test_x" not in fb.markdown
     assert "tests/hidden" not in fb.markdown
 
 
-def test_it_cannot_be_made_to_leak_hidden_test_code(world):
+def test_a_failing_assert_never_shows_the_expected_value(world):
+    """D-077: `assert 32.0 == f(0)` tells the student the answer. Not safe-marked -> only the
+    exception type reaches the text, whichever shape pytest stored the message in."""
+    _, cur, aid = world
+    for sha, message in ((SHA1, "assert 32.0 == f(0)"),
+                         (SHA2, "AssertionError: assert 32.0 == f(0)\n +  where f = to_f")):
+        result(cur, aid, sha, T_RETRY, "g_ext_retry", False, message)
+        text = pf.build_feedback(cur, aid, sha).markdown
+        assert "32.0" not in text and "f(0)" not in text and "assert " not in text
+        assert ("`test_fetch_weather_retries_then_succeeds (test_extract.py)`: AssertionError"
+                in text)
+
+
+def test_other_exception_types_are_named_and_unknown_ones_get_a_neutral_word(world):
+    _, cur, aid = world
+    result(cur, aid, SHA1, T_RETRY, "g_ext_retry", False, "requests.exceptions.ConnectionError")
+    result(cur, aid, SHA1, T_PARSE, "g_ext_parse", False, "Failed: DID NOT RAISE <class 'X'>")
+    text = pf.build_feedback(cur, aid, SHA1).markdown
+    assert "(test_extract.py)`: ConnectionError\n" in text
+    assert "`test_parse_response_missing_key_returns_none (test_extract.py)`: check failed" in text
+    assert "DID NOT RAISE" not in text
+
+
+def test_the_message_is_shown_only_for_a_test_marked_safe(world, monkeypatch):
+    _, cur, aid = world
+    result(cur, aid, SHA1, T_RETRY, "g_ext_retry", False, "assert 1 == 3\n + where 1 = len([1])")
+    result(cur, aid, SHA1, T_PARSE, "g_ext_parse", False, "assert 2 == 5")
+    monkeypatch.setattr(pf, "feedback_safe_tests",
+                        lambda project_id: frozenset({"test_fetch_weather_retries_then_succeeds"}))
+    text = pf.build_feedback(cur, aid, SHA1).markdown
+    # marked: the first line of the message is shown, the pytest "where ..." expansion is not
+    assert ("`test_fetch_weather_retries_then_succeeds (test_extract.py)`: AssertionError "
+            "(assert 1 == 3)" in text)
+    assert "where" not in text
+    assert "assert 2 == 5" not in text                          # not marked: type only
+
+
+def test_the_safe_list_is_read_from_the_hidden_file_without_importing_it(tmp_path, monkeypatch):
+    hidden = tmp_path / "proj" / "tests" / "hidden"
+    hidden.mkdir(parents=True)
+    (hidden / "test_a.py").write_text(
+        'import os\nraise SystemExit("must never run")\n'
+        'FEEDBACK_SAFE_TESTS = ("test_one", "test_two")\n', encoding="utf-8")
+    (hidden / "test_b.py").write_text('FEEDBACK_SAFE_TESTS = compute()\n', encoding="utf-8")
+    (hidden / "test_c.py").write_text('def broken(:\n', encoding="utf-8")
+    monkeypatch.setattr(pf, "CURRICULUM_ROOT", tmp_path)
+    assert pf.feedback_safe_tests("proj") == frozenset({"test_one", "test_two"})
+    assert pf.feedback_safe_tests("no_such_project") == frozenset()
+
+
+def test_nothing_in_the_real_curriculum_is_marked_safe_yet():
+    assert pf.feedback_safe_tests("weather_etl") == frozenset()
+
+
+def test_it_cannot_be_made_to_leak_hidden_test_code(world, monkeypatch):
     """The leak test: the stored failure message contains real hidden source lines, as a pytest
-    traceback would. None of them may reach the output."""
+    traceback would. None of them may reach the output -- by default because no message is shown,
+    and, for a test marked safe, because the message is redacted."""
     _, cur, aid = world
     hidden = pf.hidden_source_lines("weather_etl")
     assert len(hidden) > 20
@@ -86,8 +142,14 @@ def test_it_cannot_be_made_to_leak_hidden_test_code(world):
     fb = pf.build_feedback(cur, aid, SHA1)
     for line in hidden:
         assert line not in fb.markdown, f"hidden line leaked: {line!r}"
-    assert "[removed]" in fb.markdown                         # it was redacted, not just absent
     pf.assert_no_hidden_source(fb.markdown, hidden)
+
+    monkeypatch.setattr(pf, "feedback_safe_tests",
+                        lambda project_id: frozenset({"test_fetch_weather_retries_then_succeeds"}))
+    marked = pf.build_feedback(cur, aid, SHA1)
+    for line in hidden:
+        assert line not in marked.markdown, f"hidden line leaked: {line!r}"
+    assert "[removed]" in marked.markdown                     # redacted, not just absent
 
 
 def test_the_final_guard_raises_if_a_hidden_line_gets_through():

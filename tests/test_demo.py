@@ -10,7 +10,10 @@ sequencing were both only ever exercised together, live.
 """
 from __future__ import annotations
 
-from scripts.demo import BeatResult, _run_beat
+import pytest
+
+from scripts import demo
+from scripts.demo import BeatResult, _run_beat, grade_without_persisting, mastery_line
 
 
 def test_run_beat_returns_the_stubbed_result_on_success():
@@ -68,3 +71,54 @@ def test_two_beats_run_in_sequence_both_report_even_if_the_first_fails():
     assert first.passed is False
     assert second.passed is True
     assert second.evidence == "beat B is fine"
+
+
+class _FakeConn:
+    def __init__(self):
+        self.calls = []
+
+    def commit(self):
+        self.calls.append("commit")
+
+    def rollback(self):
+        self.calls.append("rollback")
+
+    def close(self):
+        self.calls.append("close")
+
+
+def test_beat3_grading_is_rolled_back_and_never_committed(monkeypatch):
+    """D-076: Beat 3 hands grade_attempt a connection and rolls it back, whatever happens.
+    (The end-to-end proof is the baseline --full hash taken before and after two real runs.)"""
+    conn = _FakeConn()
+    monkeypatch.setattr(demo.db, "_open", lambda: conn)
+    seen = {}
+
+    def fake_grade(project, assignment, repo_dir, attempt_id, *, conn=None):
+        seen["conn"] = conn
+        return "result"
+
+    assert grade_without_persisting(fake_grade, "p", "a", "dir", 7) == "result"
+    assert seen["conn"] is conn                       # the caller's transaction is joined
+    assert conn.calls == ["rollback", "close"]        # and "commit" never appears
+
+
+def test_beat3_grading_is_rolled_back_even_when_grading_raises(monkeypatch):
+    conn = _FakeConn()
+    monkeypatch.setattr(demo.db, "_open", lambda: conn)
+
+    def boom(*a, **k):
+        raise RuntimeError("grading failed")
+
+    with pytest.raises(RuntimeError):
+        grade_without_persisting(boom, "p", "a", "dir", 7)
+    assert conn.calls == ["rollback", "close"]
+
+
+def test_beat5_marks_low_data_below_three_observations():
+    base = {"p_mastery": 0.776, "ci90": [0.2, 0.9], "trend": "up"}
+    assert "low data" in mastery_line("py.x", {**base, "n": 1})
+    assert "low data" in mastery_line("py.x", {**base, "n": 2})
+    assert "low data" not in mastery_line("py.x", {**base, "n": 3})
+    # the flag sits right next to p, not at the end of the line
+    assert "p_mastery=0.776  low data  n=1" in mastery_line("py.x", {**base, "n": 1})
