@@ -3441,64 +3441,87 @@ Decision:    `demo.mastery_line` puts `low data` right after p_mastery when n < 
              variant selection cannot disagree about when an estimate is trusted. Invariant 8.
 Tests:       tests/test_demo.py (n=1 and n=2 flagged; n=3 not; placement next to p).
 
-### D-079 -- PROPOSED, NOT APPLIED: one observation per (attempt, concept), first attempted commit
+### D-079 -- one mastery observation per (attempt, GAP), the first attempted pushed commit (formula v5)
 Date:        2026-10-11
-Status:      PROPOSED. Read-only evaluation only; nothing that feeds the profile was changed.
-             Waiting for Anas's OK. Answers the open question 1 of the overnight report if accepted.
-Rule:        One BKT observation per (attempt, concept): the FIRST pushed, graded (status ok)
-             commit of that attempt in which the concept's gap was attempted (no hidden test of it
-             failed with NotImplementedError). Pass iff every hidden test of that concept passed
-             in that commit. Only the FIRST concept listed on a gap gets the observation. Traces
-             without a commit_sha never count. Ordered by that commit's committed_at.
-Findings:    (1) The `test_result` trace payload is only {conclusion, item_difficulty} plus
-             concept_ids/assignment_id/ts. It has NO attempt_id, commit_sha, gap_id, test name or
-             exception type, so the rule cannot be evaluated from traces as they are written.
-             (2) Those fields exist in `test_results`, which is NOT append-only: rows are upserted
-             and `ran_at` is rewritten, so a replay that joined it would not be reproducible.
-             (3) Of the 28 test_result traces, 19 are recovered by the join (student, assignment,
-             ts = ran_at): 14 with a commit_sha (8 anas, 6 student2) and 5 anas local runs. The
-             pairing of one trace to one test name inside a gap is not recoverable, which the rule
-             does not need (it needs the multiset per commit and concept). 4 anas/extract local-run
-             traces (2026-08-25) cannot be joined because `ran_at` was rewritten, but they are
-             local and never count. 5 `_test_runner` traces belong to no attempt. Student2's 2
-             traces from the collection_error commit 52d4ac3d are in the CURRENT profile (written
-             before D-069) although D-069 says such a commit is not evidence.
-             (4) Computed in memory, anas: py.data_structures 1.000 n=14 -> 0.776 n=1;
-             py.errors_debugging 1.000 n=9 -> 0.776 n=1; py.testing unchanged (0.2154 n=1, the one
-             legacy ci_run trace). student2: both concepts 0.9514 n=6 -> only py.errors_debugging
-             0.2094 n=1 (it failed on its first attempted commit 128da3e9); py.data_structures
-             disappears, because g_ext_retry lists py.errors_debugging first.
-             (5) `select_variant` is adaptive only from n >= 3 per concept. Under the rule every
-             concept sits at n = 1 for a long time, so selection is the seeded uniform fallback
-             until the third attempt. For anas/extract attempt 2 the result is the same variant as
-             today (864fe8bbecf4, both gaps hidden).
-Design:      Do not evaluate the rule at replay time. Write one `mastery_observation` trace per
-             (attempt, concept) when the rule first fires (payload: rule_ver, attempt_id, concept,
-             commit_sha, observed_at = commit time, gap_ids, conclusion, item_difficulty), make it
-             the mastery kind instead of `test_result`, and order the replay by (observed_at,
-             trace_id). `test_result` traces stay as complete evidence for V5/V6. The profile shape
-             gains `obs_rule`; `learner_features.formula_ver` becomes v5. History is backfilled by
-             APPENDING observation traces (no row deleted). Replay stays a pure function of an
-             append-only log, so Beat 7 stays IDENTICAL.
-Not decided: concepts with several primary gaps in one attempt (absent from the real data); whether
-             to keep the legacy ci_run trace; the `first listed concept` convention depends on the
-             array order of `gaps.concept_ids`.
+Status:      DECIDED (Anas, 2026-10-11) and IMPLEMENTED in code and tests (vdel_test). NOT applied
+             to the real database: `scripts/backfill_mastery_observations.py --apply` is Anas's to
+             run after a backup. Answers open question 1 of the overnight report.
+Authority:   Anas
+Change from the proposal: the item is the GAP, not the concept. A gap is the item of classical
+             BKT; this also removes the "several gaps of one concept in one attempt" ambiguity.
+             The observation is attributed to the FIRST concept in `gaps.concept_ids`; the other
+             concepts are informational (kept in the payload, they receive nothing). On today's
+             data the result equals the per-concept one (n=1 per concept).
+Rule:        For each (attempt, hidden gap): the first pushed graded commit of the attempt in which
+             the gap was ATTEMPTED -- non-null commit_sha, `test_results.status = 'ok'`
+             (collection_error, timeout and tooling ignored, as D-069), and no hidden test of that
+             gap failed with NotImplementedError. Success iff every hidden test of the gap passed in
+             that commit. A local run (no commit_sha) never counts. `assessment.test_runner.
+             gap_observation` is the one definition; grading and the backfill both call it.
+Trace:       New kind `mastery_observation`, payload rule_ver (`first_attempted_commit_v1`),
+             attempt_id, gap_id, commit_sha, concept, concepts, conclusion (= the "outcome"),
+             item_difficulty, observed_at (the commit's time). Written once per (attempt, gap) by
+             `Memory.record_mastery_observation`, which returns None and writes nothing when one
+             exists: grading a commit twice, or a later commit, adds nothing. Invariant 2: only
+             through memory.py.
+Replay:      MASTERY_TRACE_KINDS = {ci_run, mastery_observation}; `test_result` moved to
+             NON_MASTERY_KINDS (evidence for V5/V6, still logged, payload now also carries
+             attempt_id, commit_sha, gap_id, test_name). Ordered by (COALESCE(observed_at, ts),
+             trace_id). The stored mastery shape gains `obs_rule`; `compute_features.FORMULA_VER`
+             is "v5". `rebuild_from_traces` stays deterministic: the rule is applied when the trace
+             is WRITTEN, never at replay, so replay is a pure function of the append-only log
+             (Beat 7 IDENTICAL, tested; `test_results` is mutable and is never joined at replay).
+Legacy:      The `ci_run` trace 28797 (anas, py.testing, 2026-08-19) is kept unchanged: "legacy,
+             never written again". It keeps feeding py.testing (n=1).
+Backfill:    `scripts/backfill_mastery_observations.py`, dry-run by default. On the real database
+             it plans 3 traces (anas: g_ext_retry -> py.errors_debugging success at 5759078602;
+             g_ext_parse -> py.data_structures success at 2d087f5c17; student2: g_ext_retry ->
+             py.errors_debugging FAILURE at 128da3e9c9), skipping `_test_runner`. Predicted
+             profiles: anas py.data_structures 0.776 n=1, py.errors_debugging 0.776 n=1,
+             py.testing 0.2154 n=1; student2 py.errors_debugging 0.2094 n=1 and
+             py.data_structures gone (the gap lists py.errors_debugging first). Until `--apply`,
+             replaying the real log gives only py.testing for anas, so Beat 7 against the real
+             database would report DIFFERENT: apply first, then demo.
+Honest note (adaptivity): `select_variant` is adaptive only from n >= 3 observations per concept.
+             With one observation per gap a concept reaches n = 3 only after several attempts, so
+             until then the selection is the seeded uniform fallback and the same variant is
+             repeated (anas/extract attempt 2 gets variant 864fe8bbecf4 again). This is expected,
+             not a bug; it is what "a 0.9 from n=2 is a rumour" (invariant 8) costs.
+Later:       an earlier commit collected AFTER a later one was already graded (the "first" would be
+             decided wrongly; `grade_collected --latest-only` has the same weakness); a gap whose
+             concepts should be split or re-tagged (Q2); a student2-style two-concept gap where
+             the second concept never gets evidence; features v5 rows for anas/student2 appear
+             only on new activity (watermark collides with the v4 rows, D-069).
 
-### D-080 -- PROPOSED: isolate student code in a local Docker sandbox for the first real cohort
+### D-080 -- DECIDED: option A, a local Docker sandbox for grading (not implemented in this task)
 Date:        2026-10-11
-Status:      PROPOSED (design note, no code). Needs Anas's choice before D-065's "container
-             REQUIRED before the first real student" is closed.
-Options:     (A) local Docker: network none, non-root, read-only filesystem plus one scratch dir,
-             pids/memory/cpu limits, modelled on eecs-autograder's autograder-sandbox. (B) a GitHub
-             Actions workflow in a private grader repo.
-Recommend:   A. Reasons: the GitHub token and the database never enter the container; the network
-             can really be switched off (not possible on a GitHub-hosted runner, TODO(verify));
-             `grade_attempt` keeps writing the database itself; it can be tested offline with
-             adversarial fixtures. B cannot reach a database that lives on a laptop, so it needs an
-             artifact hand-back and an asynchronous poll.
+Status:      DECIDED (Anas, 2026-10-11). NOT IMPLEMENTED: it is the next task. D-065's "a container
+             is REQUIRED before the first real student" stays open until it is built.
+Authority:   Anas
+Decision:    Student code will run in a local Docker container: network none, non-root user,
+             read-only filesystem plus one scratch directory, pids / memory / cpu limits,
+             `--cap-drop ALL`, modelled on eecs-autograder's autograder-sandbox. Checkout and all
+             database writes stay on the host; the GitHub token and the database never enter the
+             container. In `grade_attempt`, `_run_pytest` becomes a `docker run` over a read-only
+             copy of the repo; the JUnit file is read back by the host.
+Why not B:   a GitHub Actions grader cannot reach a database on a laptop (artifact hand-back,
+             polling), needs a token in a job next to student code or a three-job split, cannot
+             switch the network off on a hosted runner (TODO(verify)), and cannot be tested
+             offline. A is estimated at 1-2 days, B at 3-5 (estimates, not measurements).
 Both leave:  result forgery from inside the test process (the student's module is imported by the
-             hidden test), and the student reading the hidden test file during the run. The
-             mitigation is detection (a second signal: differential execution D-036, the Code Agent
-             verdict, out_of_scope_lines) or splitting execution from assertion, not isolation.
-             Later.
+             hidden test) and the student reading the hidden test file during the run. The
+             mitigation is detection (a second signal: differential execution D-036, the Code
+             Agent verdict, out_of_scope_lines) or splitting execution from assertion. Later.
 
+### D-081 -- the D-079 rollout order, and what it changes in the demo
+Date:        2026-10-11
+Status:      DECIDED (procedure). Written because the order matters and a wrong order looks like a
+             bug.
+Order:       backup -> `backfill_mastery_observations` (dry-run, read) -> `--apply --backup PATH`
+             -> `prove_event_sourcing` -> `scripts.demo` -> `baseline --full`. The code change is
+             live as soon as it is merged: a replay of the real log without the backfill yields
+             the legacy CI trace only, while the stored profile is still the old per-test one.
+             That mismatch is exactly what Beat 7 reports until the backfill is applied.
+Tests:       tests/test_mastery_observation.py (17), tests/test_backfill_mastery_observations.py
+             (8); tests that asserted per-test mastery were rewritten (test_stage1_d069,
+             test_test_runner).

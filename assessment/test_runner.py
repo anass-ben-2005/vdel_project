@@ -52,16 +52,21 @@ NOT a failure and is never mastery evidence. Neither crashes the grader or is re
 gap_id was left NULL with no attribution mechanism; that was true before D-046 and is not
 true now. `_gap_id_from_case` below is the real mechanism.
 
-MASTERY WIRING (D-045/D-046, EXECUTION.md Stage C1): every commit's test outcomes are
-also logged as `test_result` traces through `memory.Memory` -- never raw SQL to `traces`
-(invariant 2) -- so V1 (BKT), V5 (Error Response) and V6 (Error Frequency) can read the
-full pre-freeze failure history, not just whatever survives to the frozen commit. Traced
-ONLY for outcomes carrying a real `gap_id` (untagged tests have no concept to attribute
-evidence to -- see `_gap_id_from_case`), ONLY for gaps this attempt actually HID (D-054:
-a pre-solved gap's tests pass whatever the student did, so they are not evidence of
-anything), and ONLY for genuinely NEW `test_results` rows
-(`_write_test_results`'s `xmax = 0` check) -- re-grading an already-recorded commit must
-not silently inflate `n`, the observation count invariant 8 makes load-bearing.
+MASTERY WIRING (D-045/D-046, D-079). Every commit's test outcomes are logged as `test_result`
+traces through `memory.Memory` -- never raw SQL to `traces` (invariant 2) -- as EVIDENCE for V5
+(Error Response) and V6 (Error Frequency): traced ONLY for outcomes carrying a real `gap_id`, ONLY
+for gaps this attempt actually HID (D-054: a pre-solved gap's tests pass whatever the student did),
+ONLY for genuinely NEW `test_results` rows (`xmax = 0`), and never for a `collection_error` /
+`timeout` (D-069).
+
+They are NOT mastery evidence any more (D-079, formula v5). The BKT item is the GAP, observed once
+per attempt: the FIRST pushed commit (non-null commit_sha, status ok) in which the gap was
+attempted, i.e. none of its hidden tests failed with NotImplementedError. All of the gap's hidden
+tests passed -> success, otherwise failure. That is written as ONE `mastery_observation` trace per
+(attempt, gap) by `Memory.record_mastery_observation` (idempotent: a re-grade or a later commit
+writes nothing), attributed to the gap's FIRST concept, timed at the commit. A local run
+(commit_sha None) is never a mastery observation. "First" is decided at write time, so commits
+must be graded oldest first, which `scripts/grade_collected.py` does.
 """
 
 from __future__ import annotations
@@ -654,73 +659,100 @@ def _hidden_gap_ids(cur, attempt_id: int) -> frozenset[str]:
     return frozenset(row[0]) if row else frozenset()
 
 
-def _log_mastery_traces(mem: Memory, conn, student_id: str, assignment_id: str,
-                         commit_sha: str | None, outcomes: list[TestOutcome],
-                         new_test_names: set[str], gap_meta: dict,
-                         hidden_gap_ids: frozenset[str]) -> None:
-    """One `test_result` trace per genuinely-new, gap-tagged outcome (EXECUTION.md Stage
-    C1, memory.py's MASTERY_TRACE_KINDS docstring), THEN one `update_mastery` per
-    concept touched -- through `memory.Memory` only, no raw SQL to `traces` or
-    `learner_profile` here (invariant 2). Both steps, not just the first: logging a
-    trace alone leaves the evidence sitting in the log unread until some later batch
-    job replays it, and "a real mastery update, live" means `learner_profile.mastery`
-    changes NOW, in this same transaction -- the same two-step fast-path shape
-    `agents/code_agent.py::grade` already uses after logging its own verdict trace
-    (`log_trace` then `for concept in concepts: mem.update_mastery(...)`).
+_NOT_IMPLEMENTED = re.compile(r"^(?:\w+\.)*NotImplementedError\b")
 
-    Two filters on WHICH traces get logged, both load-bearing, neither optional:
-      - `new_test_names` (from `_write_test_results`'s `xmax = 0` check): re-grading an
-        already-recorded commit must not log a second observation for the same evidence
-        -- that would silently inflate `n`, which invariant 8 makes load-bearing.
-      - `o.gap_id is not None`: an untagged test has no concept to attribute evidence
-        to. Silently attributing it to nothing would be worse than not logging it.
-      - `o.gap_id in hidden_gap_ids`: a test on a gap this attempt did NOT hide exercises
-        code the student was handed already solved, so it passes whatever the student
-        does. Counting it as a success would credit mastery for work never done -- found
-        live: a student who submitted the untouched render ended at p_mastery 0.938,
-        n=4 on py.data_structures, two of those four observations from the pre-solved
-        gap (D-054). Such outcomes are still stored in `test_results` (they feed the
-        100%-pass freeze check); they just are not BKT evidence.
 
-    `conclusion` uses the exact two-value vocabulary `ci_run` already established
-    (`memory.OUTCOME`'s keys) -- one vocabulary for "did this pass", not a second one
-    that could drift from the first.
+def _raised_not_implemented(outcome: TestOutcome) -> bool:
+    """A failing test whose stored message is a NotImplementedError: the student's stub."""
+    return (not outcome.passed and bool(outcome.message)
+            and _NOT_IMPLEMENTED.match(outcome.message.strip()) is not None)
 
-    `update_mastery` is called once per DISTINCT concept touched this call, not once
-    per trace -- calling it twice for the same concept in one pass would be wasted work
-    (it is idempotent, per its own docstring, so not WRONG, just redundant).
-    """
-    # concept -> the trace_id of the MOST RECENT outcome that touched it this call, so
-    # each update_mastery below cites the specific evidence that most directly prompted
-    # it, not an arbitrary "whichever trace happened to be logged last overall" -- this
-    # only affects the causal-forest link (parent_trace_id), never the computed numbers
-    # (update_mastery replays the whole log regardless of which trace_id it is given).
-    concept_to_trace_id: dict[str, int] = {}
+
+def gap_observation(tests: list[TestOutcome]) -> bool | None:
+    """The D-079 rule for ONE gap in ONE commit: None when the gap was not attempted (one of
+    its hidden tests failed with NotImplementedError), otherwise True when every hidden test
+    of the gap passed and False when not. The one definition: the grading path and
+    scripts/backfill_mastery_observations.py both call it, so a backfill cannot disagree with
+    what grading would have written."""
+    if any(_raised_not_implemented(t) for t in tests):
+        return None
+    return all(t.passed for t in tests)
+
+
+def _log_test_result_traces(mem: Memory, conn, student_id: str, assignment_id: str,
+                            attempt_id: int, commit_sha: str | None,
+                            outcomes: list[TestOutcome], new_test_names: set[str],
+                            gap_meta: dict, hidden_gap_ids: frozenset[str]) -> None:
+    """One `test_result` trace per genuinely-new, gap-tagged outcome of a HIDDEN gap: evidence
+    for V5/V6 (D-079: no longer mastery). Through `memory.Memory` only (invariant 2).
+
+    Filters, all load-bearing: `new_test_names` (re-grading a recorded commit must not log a
+    second trace), `gap_id is not None` (an untagged test has no concept), `gap_id in
+    hidden_gap_ids` (D-054: a pre-solved gap passes whatever the student does), and
+    `status == "ok"` (D-069: a collection error or timeout is not evidence). The payload keeps
+    the old two keys and adds attempt_id, commit_sha, gap_id and test_name, so the trace can be
+    audited without a join to the mutable `test_results` table."""
     for o in outcomes:
         if (o.test_name not in new_test_names or o.gap_id is None
-                or o.gap_id not in hidden_gap_ids):
-            continue
-        if o.status != "ok":
-            # D-069: a collection_error / timeout is stored (test_results.status, the freeze
-            # check, effort/pace) but is NOT a mastery observation. The student's code did
-            # not run, so it says nothing about the concept; D-066 had charged it as a
-            # failure (a syntax slip cost as much as a wrong retry loop).
+                or o.gap_id not in hidden_gap_ids or o.status != "ok"):
             continue
         meta = gap_meta.get(o.gap_id)
         if meta is None:
             continue   # gap_id didn't resolve against `gaps` -- nothing to attribute
         concept_ids, difficulty = meta
-        trace_id = mem.log_trace(
+        mem.log_trace(
             student_id, "system", "test_result",
             {"conclusion": "success" if o.passed else "failure",
-             "item_difficulty": difficulty},
+             "item_difficulty": difficulty, "attempt_id": attempt_id,
+             "commit_sha": commit_sha, "gap_id": o.gap_id, "test_name": o.test_name},
             assignment_id=assignment_id, concept_ids=concept_ids, conn=conn,
         )
-        for concept in concept_ids:
-            concept_to_trace_id[concept] = trace_id
 
-    for concept, trace_id in concept_to_trace_id.items():
-        mem.update_mastery(student_id, concept, parent_trace_id=trace_id, conn=conn)
+
+def _log_mastery_observations(mem: Memory, conn, cur, student_id: str, assignment_id: str,
+                              attempt_id: int, commit_sha: str | None,
+                              outcomes: list[TestOutcome], gap_meta: dict,
+                              hidden_gap_ids: frozenset[str]) -> list[int]:
+    """D-079: the BKT observations this commit produces, then one `update_mastery` per concept
+    touched. Returns the new trace ids.
+
+    For each HIDDEN gap with outcomes in this commit: it was ATTEMPTED unless one of its hidden
+    tests failed with NotImplementedError; if attempted, the observation is `success` when every
+    hidden test of the gap passed. `Memory.record_mastery_observation` writes it only if the
+    (attempt, gap) has none yet, so this is the first attempted pushed commit by construction
+    and a re-grade is a no-op. Nothing is written for a local run, a status other than ok, or a
+    commit with no `raw_commits` row (its time is the observation's time; skipped with a
+    warning rather than invented)."""
+    if commit_sha is None:
+        return []
+    cur.execute("SELECT committed_at FROM raw_commits WHERE sha = %s", (commit_sha,))
+    row = cur.fetchone()
+    by_gap: dict[str, list[TestOutcome]] = {}
+    for o in outcomes:
+        if o.status == "ok" and o.gap_id in hidden_gap_ids and o.gap_id in gap_meta:
+            by_gap.setdefault(o.gap_id, []).append(o)
+    if not by_gap:
+        return []
+    if row is None:
+        log.warning("no raw_commits row for %s: no mastery observation written", commit_sha[:10])
+        return []
+    committed_at = row[0]
+
+    written: list[int] = []
+    for gap_id in sorted(by_gap):
+        passed = gap_observation(by_gap[gap_id])
+        if passed is None:
+            continue                      # the student has not attempted this gap yet
+        concept_ids, difficulty = gap_meta[gap_id]
+        trace_id = mem.record_mastery_observation(
+            student_id, attempt_id=attempt_id, assignment_id=assignment_id, gap_id=gap_id,
+            concept_ids=concept_ids, passed=passed,
+            item_difficulty=difficulty, commit_sha=commit_sha, observed_at=committed_at,
+            conn=conn)
+        if trace_id is not None:
+            written.append(trace_id)
+            mem.update_mastery(student_id, concept_ids[0], parent_trace_id=trace_id, conn=conn)
+    return written
 
 
 def _out_of_scope_lines(cur, project_id: str, file_path: str, repo_dir: Path,
@@ -853,9 +885,11 @@ def grade_attempt(
 
         new_test_names = _write_test_results(cur, attempt_id, commit_sha, to_record)
         gap_meta = _gap_metadata(cur, {o.gap_id for o in outcomes if o.gap_id is not None})
-        _log_mastery_traces(mem, c, student_id, assignment_id, commit_sha,
-                            outcomes, new_test_names, gap_meta,
-                            _hidden_gap_ids(cur, attempt_id))
+        hidden_gap_ids = _hidden_gap_ids(cur, attempt_id)
+        _log_test_result_traces(mem, c, student_id, assignment_id, attempt_id, commit_sha,
+                                outcomes, new_test_names, gap_meta, hidden_gap_ids)
+        _log_mastery_observations(mem, c, cur, student_id, assignment_id, attempt_id,
+                                  commit_sha, outcomes, gap_meta, hidden_gap_ids)
         frozen = _maybe_freeze(cur, attempt_id, commit_sha, tests_passed, tests_total)
         # D-073. One column per attempt: it holds the latest graded commit's value until the
         # attempt freezes, and the frozen commit's value afterwards (the WHERE keeps a later

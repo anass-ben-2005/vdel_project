@@ -174,7 +174,7 @@ def test_v2_is_the_unfiltered_behaviour(cur, tooling):
 def test_the_real_tooling_list_is_four_distinct_documented_runs():
     assert len(cf.TOOLING_FAILURE_RUNS) == 4
     assert all(isinstance(k, int) and v for k, v in cf.TOOLING_FAILURE_RUNS.items())
-    assert cf.FORMULA_VER == "v4" and cf.SYNC_COMMIT_PREFIX == "ci: sync template"
+    assert cf.FORMULA_VER == "v5" and cf.SYNC_COMMIT_PREFIX == "ci: sync template"
 
 
 # --- v3 rows never overwrite v2 rows -----------------------------------------------------------

@@ -107,6 +107,7 @@ ACTORS = frozenset({
 
 KINDS = frozenset({
     "commit", "ci_run", "error_event", "verdict", "grade", "test_result",
+    "mastery_observation",
     "intervention", "session_summary", "profile_update", "reflection_run",
 })
 
@@ -147,11 +148,36 @@ KINDS = frozenset({
 # `concept_ids` on the trace itself (not payload) is the gap's `concept_ids` from `gaps` --
 # a trace tagged with two concepts contributes to both, the same containment semantics
 # `_replay_concept`'s `concept_ids @> ARRAY[concept]` already gives `ci_run`.
-MASTERY_TRACE_KINDS = frozenset({"ci_run", "test_result"})
+#
+# D-079 (formula v5): `test_result` NO LONGER feeds mastery. One test is not one BKT item: a
+# gap with two tests counted twice, and a never-attempted stub counted as a failure. The item
+# of classical BKT is the GAP, observed once on the first attempt, so mastery now replays
+# `mastery_observation` traces -- one per (attempt, gap), written by
+# `Memory.record_mastery_observation` the first time the rule fires. `test_result` traces stay
+# in the log as evidence for V5/V6 (`test_result_history`).
+#
+# Payload contract for `mastery_observation` (the replay reads `conclusion`/`item_difficulty`
+# exactly as for `ci_run`; "outcome" in the D-079 text IS `conclusion`):
+#   rule_ver         OBS_RULE_VER, the rule that decided this observation
+#   attempt_id, gap_id, commit_sha     what was observed, and in which pushed commit
+#   concept          the FIRST concept of the gap; the trace's concept_ids is [concept]
+#   concepts         every concept the gap lists (informational, they get no observation)
+#   conclusion       "success" | "failure"  (all hidden tests of the gap passed, or not)
+#   item_difficulty  gaps.difficulty
+#   observed_at      ISO time of the COMMIT; replay orders by it, not by the trace's ts
+MASTERY_TRACE_KINDS = frozenset({"ci_run", "mastery_observation"})
+
+# Names the observation rule that produced the numbers, stored in every mastery shape next
+# to `param_set` (the BKT parameters). A different rule is a different formula, not a rewrite.
+OBS_RULE_VER = "first_attempted_commit_v1"
 
 # Every other kind, with the reason it is not evidence. Prose, because the reason is the
 # point -- an unexplained exclusion is indistinguishable from an oversight.
 NON_MASTERY_KINDS = {
+    "test_result": "one hidden-test outcome per commit: evidence for V5/V6, not a BKT item. "
+                   "Mastery is observed once per (attempt, gap) as `mastery_observation` "
+                   "(D-079); replaying every test would count a gap's tests separately and "
+                   "score unattempted stubs as failures",
     "commit": "activity, not an assessed attempt -- carries no pass/fail signal",
     "error_event": "no payload contract defines an outcome yet; ci_run is the canonical "
                    "carrier of pass/fail. Revisit when something actually writes one",
@@ -311,6 +337,7 @@ def _stored_shape(result: dict) -> dict[str, Any]:
         "ci90": result["ci90"],
         "trend": result["trend"],
         "param_set": PARAM_SET,
+        "obs_rule": OBS_RULE_VER,
     }
 
 
@@ -329,9 +356,12 @@ def _replay_concept_estimator(conn, student_id: str,
     from the profile but not the Beta posterior (`a`, `b`) or `history`, which froze
     confidence at 0.286 regardless of n and made the two paths disagree.
 
-    Ordered by (ts, trace_id): ts alone is not a total order, and BKT is order-dependent,
-    so two traces sharing a timestamp would otherwise replay in whatever order the planner
-    chose and the rebuild would not be reproducible.
+    Ordered by (observed_at, trace_id), where `observed_at` is the payload's own event time
+    (a `mastery_observation` is observed when the COMMIT was made, D-079) and falls back to
+    the trace's `ts` for kinds without one (`ci_run`). It is not a total order on its own, and
+    BKT is order-dependent, so `trace_id` breaks ties: without it two traces sharing a
+    timestamp would replay in whatever order the planner chose and the rebuild would not be
+    reproducible.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -340,12 +370,22 @@ def _replay_concept_estimator(conn, student_id: str,
             WHERE student_id = %s
               AND kind = ANY(%s)
               AND concept_ids @> ARRAY[%s]::text[]
-            ORDER BY ts, trace_id
+            ORDER BY COALESCE((payload->>'observed_at')::timestamptz, ts), trace_id
             """,
             (student_id, sorted(MASTERY_TRACE_KINDS), concept),
         )
         payloads = [row[0] for row in cur.fetchall()]
 
+    return _fold_payloads(concept, payloads)
+
+
+def _fold_payloads(concept: str,
+                   payloads: list[dict]) -> tuple[MasteryEstimator, dict | None]:
+    """Fold already-ordered mastery payloads for one concept through BKT. Pure: no database.
+
+    The one implementation of the loop; `_replay_concept_estimator` feeds it the log and
+    `Memory.replay_mastery_with` feeds it the log plus hypothetical observations, so a
+    what-if (the D-079 backfill's dry-run) is the same mathematics as the real replay."""
     est = MasteryEstimator()
     result = None
     for payload in payloads:
@@ -894,6 +934,58 @@ class Memory:
             )
         return shape
 
+    # ---------- WRITE: one mastery observation per (attempt, gap) ----------
+    def has_mastery_observation(self, student_id: str, attempt_id: int, gap_id: str, *,
+                                conn=None) -> bool:
+        """Is there already a `mastery_observation` for this (attempt, gap)? Read-only."""
+        with _session(conn) as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM traces WHERE student_id = %s AND kind = 'mastery_observation'"
+                " AND payload->>'attempt_id' = %s AND payload->>'gap_id' = %s",
+                (student_id, str(attempt_id), gap_id))
+            return cur.fetchone() is not None
+
+    def record_mastery_observation(self, student_id: str, *, attempt_id: int,
+                                   assignment_id: str, gap_id: str,
+                                   concept_ids: list[str], passed: bool,
+                                   item_difficulty: float, commit_sha: str,
+                                   observed_at: datetime,
+                                   conn=None) -> int | None:
+        """Append the BKT observation for one (attempt, gap), unless one already exists.
+
+        D-079. The caller has already decided that THIS commit is the first one in which the
+        gap was attempted (assessment/test_runner.py owns that rule); this method owns the two
+        things that must hold whoever calls it: the observation is written ONCE per
+        (attempt, gap) -- a re-grade of the same commit, or a later commit, returns None and
+        writes nothing -- and it goes through the door (invariant 2).
+
+        The observation is attributed to `concept_ids[0]` only; the other concepts are kept in
+        the payload as information. `observed_at` must be timezone-aware: it is the commit's
+        time, and replay orders by it. Returns the new trace_id, or None when one existed.
+        Does NOT recompute the profile; call `update_mastery(concept)` afterwards.
+        """
+        if not concept_ids:
+            raise ValueError("a mastery observation needs at least one concept")
+        if observed_at.tzinfo is None:
+            raise ValueError("observed_at must be timezone-aware")
+        with _session(conn) as c:
+            if self.has_mastery_observation(student_id, attempt_id, gap_id, conn=c):
+                return None
+            trace_id, _ts = _insert_trace(
+                c, student_id=student_id, actor="system", kind="mastery_observation",
+                payload={
+                    "rule_ver": OBS_RULE_VER, "attempt_id": attempt_id, "gap_id": gap_id,
+                    "commit_sha": commit_sha, "concept": concept_ids[0],
+                    "concepts": list(concept_ids),
+                    "conclusion": "success" if passed else "failure",
+                    "item_difficulty": item_difficulty,
+                    "observed_at": observed_at.isoformat(),
+                },
+                assignment_id=assignment_id, concept_ids=[concept_ids[0]],
+                parent_trace_id=None, session_id=None,
+            )
+            return trace_id
+
     # ---------- FAST PATH: sync the features_ref pointer ----------
     def sync_features_ref(self, student_id: str, *, conn=None) -> datetime | None:
         """Point `learner_profile.features_ref` at the student's latest `learner_features`
@@ -976,6 +1068,44 @@ class Memory:
                 shapes[concept] = _stored_shape(result)
                 combined.states[concept] = est.states[concept]
             return shapes, combined
+
+    def replay_mastery_with(self, student_id: str, extra: list[dict], *,
+                            conn=None) -> dict[str, dict[str, Any]]:
+        """What-if replay: the mastery vector the log WOULD imply if `extra` were appended.
+        READ-ONLY: writes nothing, not even inside a rolled-back transaction.
+
+        `extra` is a list of `mastery_observation`-shaped payloads (`concept`, `conclusion`,
+        `item_difficulty`, `observed_at` ISO string). They are ordered exactly like stored
+        evidence -- by (observed_at, trace_id), each extra after every stored trace with the
+        same time -- and folded with the same function, so the result equals what a real
+        append followed by `replay_mastery` would give. Used by the backfill's dry-run to show
+        the resulting profile before anything is written."""
+        by_concept: dict[str, list[dict]] = {}
+        for payload in extra:
+            by_concept.setdefault(payload["concept"], []).append(payload)
+        with _session(conn) as c:
+            concepts = set(_concepts_with_evidence(c, student_id)) | set(by_concept)
+            shapes: dict[str, dict[str, Any]] = {}
+            for concept in sorted(concepts):
+                with c.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT COALESCE((payload->>'observed_at')::timestamptz, ts), trace_id,
+                               payload
+                        FROM traces
+                        WHERE student_id = %s AND kind = ANY(%s)
+                          AND concept_ids @> ARRAY[%s]::text[]
+                        """,
+                        (student_id, sorted(MASTERY_TRACE_KINDS), concept))
+                    rows = [(t, tid, pl) for t, tid, pl in cur.fetchall()]
+                top = max((tid for _, tid, _ in rows), default=0)
+                for i, pl in enumerate(by_concept.get(concept, []), start=1):
+                    rows.append((datetime.fromisoformat(pl["observed_at"]), top + i, pl))
+                rows.sort(key=lambda r: (r[0], r[1]))
+                _, result = _fold_payloads(concept, [pl for _, _, pl in rows])
+                if result is not None:
+                    shapes[concept] = _stored_shape(result)
+            return shapes
 
     def rebuild_mastery_from_traces(self, student_id: str, *,
                                     conn=None) -> dict[str, dict[str, Any]]:

@@ -69,7 +69,13 @@ NEUTRAL_DIFFICULTY = 0.5
 #   (d) V1 is no longer computed here: it is `Memory.replay_mastery`, the same trace replay
 #       the profile uses (one implementation, D-068 option a). Raw CI runs feed NO
 #       concept-level mastery any more; they still feed V5 and V6.
-FORMULA_VER = "v4"
+#
+# D-079 (v5). The scoping rules are v4's; what changed is what V1 replays: one
+# `mastery_observation` per (attempt, GAP) instead of one `test_result` per test (see
+# memory.MASTERY_TRACE_KINDS). Because V1 is `Memory.replay_mastery`, a "v4" computation made
+# today already uses the new observations: the old per-test V1 is not reproducible from the log
+# any more (v2/v3 still are, they read test_result_history). Stored v4 rows are left as they are.
+FORMULA_VER = "v5"
 SYNC_COMMIT_PREFIX = "ci: sync template"
 INITIAL_COMMIT_PREFIX = "Initial commit:"
 TOOLING_FAILURE_RUNS = {
@@ -228,7 +234,7 @@ def _mastery(cur, student_id, formula_ver=FORMULA_VER):
     'unclassified' is excluded for raw_workflow_runs (error_classifier.py, invariant
     10). test_result traces carry no such sentinel -- a test with no gap_id was already
     excluded at the point test_runner.py decided whether to log a trace at all
-    (`_log_mastery_traces`'s own filter), so every test_result trace that exists already
+    (`_log_test_result_traces`'s own filter), so every test_result trace that exists already
     carries a real, resolved concept.
 
     A trace tagged with SEVERAL concept_ids contributes to EACH of them -- the same
@@ -502,8 +508,9 @@ def compute_for_student(cur, student_id, formula_ver=FORMULA_VER):
 
     `formula_ver` selects which runs count (D-063): 'v2' = all of them (the behaviour
     before D-063, kept computable so v2 and v3 can be compared), 'v3' = the two exclusion
-    rules, 'v4' (D-069) = v3 plus the initial-commit rule and the single-source V1. The
-    variable formulas themselves are identical in all of them."""
+    rules, 'v4' (D-069) = v3 plus the initial-commit rule and the single-source V1, 'v5'
+    (D-079) = v4 with V1 observed once per (attempt, gap). The variable formulas themselves
+    are identical in all of them."""
     if formula_ver in ("v2", "v3"):
         est = _mastery(cur, student_id, formula_ver)
         mastery = est.snapshot()

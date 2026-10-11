@@ -283,10 +283,14 @@ def test_pre_solved_gap_tests_are_stored_but_add_no_mastery_evidence(
     """The bug: g_ext_parse was NOT hidden, so its two tests pass whatever the student
     does -- yet they were logged as py.data_structures successes (n=4, p=0.938 for a
     student who did nothing). Now: all four outcomes still land in test_results (they
-    count toward the 100%-pass freeze), but only g_ext_retry's two become traces, so
-    py.data_structures sits at n=2, not 4."""
+    count toward the 100%-pass freeze), only g_ext_retry's two become test_result traces,
+    and (D-079) a student who did nothing -- g_ext_retry is still a NotImplementedError
+    stub -- produces NO mastery observation at all, not a failure."""
     conn = txn
     attempt_id = _make_attempt(conn, "weather_etl_extract", ["g_ext_retry"])
+    conn.cursor().execute(
+        "INSERT INTO raw_commits (sha, student_id, assignment_id, committed_at)"
+        " VALUES ('_test_runner_v2_sha_extract', %s, 'weather_etl_extract', now())", (STUDENT,))
 
     result = tr.grade_attempt(
         "weather_etl", "weather_etl_extract", untouched_extract_repo, attempt_id,
@@ -302,19 +306,16 @@ def test_pre_solved_gap_tests_are_stored_but_add_no_mastery_evidence(
     assert dict(cur.fetchall()) == {"g_ext_parse": 2, "g_ext_retry": 2}   # still stored
 
     cur.execute(
-        "SELECT concept_ids FROM traces WHERE student_id=%s AND kind='test_result'",
-        (STUDENT,),
-    )
-    traced = [sorted(row[0]) for row in cur.fetchall()]
-    # exactly g_ext_retry's two outcomes (it carries BOTH concepts); none from g_ext_parse,
-    # whose only concept is py.data_structures.
-    assert traced == [["py.data_structures", "py.errors_debugging"]] * 2
+        "SELECT concept_ids, payload->>'gap_id' FROM traces"
+        " WHERE student_id=%s AND kind='test_result'", (STUDENT,))
+    traced = [(sorted(row[0]), row[1]) for row in cur.fetchall()]
+    # exactly g_ext_retry's two outcomes (it carries BOTH concepts); none from g_ext_parse
+    assert traced == [(["py.data_structures", "py.errors_debugging"], "g_ext_retry")] * 2
 
-    mastery = Memory().get_profile(STUDENT, conn=conn)["mastery"]
-    assert mastery["py.data_structures"]["n"] == 2
-    assert mastery["py.errors_debugging"]["n"] == 2
-    # a student who did nothing must not look competent: before the fix this was 0.938
-    assert mastery["py.data_structures"]["p_mastery"] < 0.5
+    cur.execute("SELECT count(*) FROM traces WHERE student_id=%s"
+                " AND kind='mastery_observation'", (STUDENT,))
+    assert cur.fetchone()[0] == 0                       # a stub is not an attempt
+    assert Memory().get_profile(STUDENT, conn=conn)["mastery"] == {}
 
 
 def test_a_concept_with_no_hidden_gap_gets_no_mastery_entry_at_all(
@@ -322,7 +323,7 @@ def test_a_concept_with_no_hidden_gap_gets_no_mastery_entry_at_all(
 ):
     """Hide only g_tf_timestamp (py.errors_debugging). The solved repo passes all five
     tests, but g_tf_clean / g_tf_convert (py.data_structures) were handed over solved, so
-    their tests are not evidence: three traces, and py.data_structures never appears."""
+    their tests are not evidence: three test_result traces, and no mastery at all (local run)."""
     conn = txn
     attempt_id = _make_attempt(conn, "weather_etl_transform", ["g_tf_timestamp"])
 
@@ -341,5 +342,6 @@ def test_a_concept_with_no_hidden_gap_gets_no_mastery_entry_at_all(
         "SELECT count(*) FROM traces WHERE student_id=%s AND kind='test_result'",
         (STUDENT,),
     )
-    assert cur.fetchone()[0] == 3
-    assert set(Memory().get_profile(STUDENT, conn=conn)["mastery"]) == {"py.errors_debugging"}
+    assert cur.fetchone()[0] == 3                       # evidence for V5/V6 is still logged
+    # D-079: a local run (no commit_sha) is never a mastery observation
+    assert Memory().get_profile(STUDENT, conn=conn)["mastery"] == {}

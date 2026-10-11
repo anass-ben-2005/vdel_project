@@ -9,6 +9,7 @@
 Every test runs in one transaction that is rolled back (traces are append-only).
 """
 import os
+from datetime import UTC, datetime
 
 import pytest
 
@@ -110,10 +111,16 @@ def test_1a_publish_repo_still_writes_the_prefix():
 # --- 1b ----------------------------------------------------------------------------------------
 
 def _log(mem, conn, passed, ts_offset):
-    return mem.log_trace(S, "system", "test_result",
-                         {"conclusion": "success" if passed else "failure",
-                          "item_difficulty": 0.35},
-                         assignment_id=ASG, concept_ids=[CONCEPT], conn=conn)
+    """One graded outcome, as D-079 writes it: the `test_result` evidence (V5/V6, v3) AND the
+    `mastery_observation` that v4/v5 replay, for a distinct gap each call."""
+    mem.log_trace(S, "system", "test_result",
+                  {"conclusion": "success" if passed else "failure", "item_difficulty": 0.35},
+                  assignment_id=ASG, concept_ids=[CONCEPT], conn=conn)
+    _log.n = getattr(_log, "n", 0) + 1
+    return mem.record_mastery_observation(
+        S, attempt_id=1, assignment_id=ASG, gap_id=f"g_obs_{_log.n}", concept_ids=[CONCEPT],
+        passed=passed, item_difficulty=0.35, commit_sha=f"sha{_log.n}",
+        observed_at=datetime(2026, 9, 1, 10, _log.n, tzinfo=UTC), conn=conn)
 
 
 def test_1b_features_v1_is_the_profiles_trace_replay_and_ci_runs_feed_no_concept(conn):
@@ -126,7 +133,7 @@ def test_1b_features_v1_is_the_profiles_trace_replay_and_ci_runs_feed_no_concept
     profile = mem.get_profile(S, conn=conn)["mastery"]
     v4 = cf.compute_for_student(cur, S, "v4")["mastery"]
     assert v4 == profile                                      # identical, n included
-    assert v4[CONCEPT]["n"] == 3                              # the two failed CI runs added none
+    assert v4[CONCEPT]["n"] == 3                              # CI runs add none; n = observations
     # v3 (the CI-driven path) disagrees by construction -- that is D-068
     assert cf.compute_for_student(cur, S, "v3")["mastery"][CONCEPT]["n"] == 5
 

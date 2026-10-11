@@ -892,6 +892,12 @@ is ever modified:**
    v2 and v3 stay computable and their rows stay readable; a v4 write at a watermark where a
    v2/v3 row already sits is skipped, never overwritten.
 
+   **`formula_ver` v5 (D-079, the default now)** keeps v4's scoping and changes what V1 replays:
+   one `mastery_observation` per (attempt, GAP) instead of one `test_result` per test (§7.10). The
+   stored V1 shape gains `obs_rule`. Because V1 is `Memory.replay_mastery`, a "v4" computation made
+   today also uses the new observations; stored v4 rows are left as they are. A v5 row for a
+   student is written only on new activity (the watermark collides with the v4 row).
+
 **What each helper does, briefly** (all read-only SQL against the raw tables, feeding
 the pure formula functions from `variables/`):
 
@@ -1012,7 +1018,8 @@ Two properties fall out of taking the evidence from the log, and both are tested
   restricted to one concept, the same function rather than a parallel implementation. This
   is what makes the M2 DoD hold by construction instead of because two code paths agree.
 
-**`MASTERY_TRACE_KINDS`** names what counts as evidence (`ci_run` today). It is paired with
+**`MASTERY_TRACE_KINDS`** names what counts as evidence (`ci_run` and, since D-079,
+`mastery_observation`; `test_result` is evidence for V5/V6 only). It is paired with
 `NON_MASTERY_KINDS`, a dict of every *other* kind and the prose reason it is excluded, and
 a test asserts the two together cover `KINDS` exactly. So a kind cannot be added without a
 decision being made about whether it moves mastery. `verdict` currently sits in the
@@ -1266,8 +1273,20 @@ correctness to the neutral anchor too, reusing `memory.OUTCOME`'s existing judge
 those say something about CI infrastructure rather than about a person. A conclusion of
 `None` raises instead, because that is a caller who forgot the one fact Echo grades on.
 
+**`mastery_observation` and the order of replay (D-079).** One trace per (attempt, gap):
+payload `rule_ver` (`first_attempted_commit_v1`), `attempt_id`, `gap_id`, `commit_sha`, `concept`
+(the gap's first concept; `concepts` lists all), `conclusion`, `item_difficulty`, `observed_at`
+(the commit's time). `_replay_concept_estimator` orders by `COALESCE(observed_at, ts), trace_id`,
+so the replay is by commit time, not by when the trace was written, and `trace_id` still makes it
+total. The BKT loop is `_fold_payloads`, shared by the real replay and by `replay_mastery_with`,
+a read-only what-if used by the backfill's dry-run. Every mastery shape carries `obs_rule`.
+`scripts/backfill_mastery_observations.py` writes the observations the stored history implies
+(dry-run by default; `--apply` needs `--backup PATH` to an existing file, one transaction, then
+`rebuild_from_traces` per student). Until it is applied to the real database the stored profile
+is the old per-test one and a replay of the log is not equal to it.
+
 **What actually moves mastery — the part worth understanding (D-017).** Echo's scores feed
-nothing. `MASTERY_TRACE_KINDS` is `{"ci_run", "test_result"}`, and `NON_MASTERY_KINDS["verdict"]` says
+nothing. `MASTERY_TRACE_KINDS` is `{"ci_run", "mastery_observation"}` (D-079), and `NON_MASTERY_KINDS["verdict"]` says
 plainly that the rubric→BKT mapping has not been decided. So Echo logs its `verdict` as a
 *child* of the `ci_run` it judges and then calls `update_mastery`, which replays that
 `ci_run`. **Mastery moves because of the CI event, not because of the agent's opinion.** Three
@@ -1683,7 +1702,7 @@ judge that fabricated a quote destroys the evidence that it did. The payload car
 verdict can be traced back to everything that produced it.
 
 **The open decision this file deliberately does not resolve.** §7.10's `MASTERY_TRACE_KINDS`
-is `frozenset({"ci_run", "test_result"})`, and `verdict` sits in `NON_MASTERY_KINDS` with a reason written in
+is `frozenset({"ci_run", "mastery_observation"})` (it was `test_result` before D-079), and `verdict` sits in `NON_MASTERY_KINDS` with a reason written in
 anticipation of this milestone: *"M4. An agent verdict IS mastery evidence, but its payload is
 a per-criterion 0/2/4 rubric rather than a pass/fail, so the mapping from rubric score to BKT
 outcome is a decision that has not been made. Adding it here without that mapping would
@@ -1772,8 +1791,16 @@ read from `attempts.variant_id` → `variants.gap_ids`; tests on handed-over, pr
 still stored in `test_results` and still count toward the freeze, but are not mastery evidence)
 also becomes a `test_result` trace through
 `memory.Memory` (D-048, §7.10) — never raw SQL to `traces` (invariant 2) — which is what
-lets V1/V5/V6 read a student's full failure history, not only the commit that eventually
-passed. Proven live: `EXECUTION.md` Beat 3 (`12 failed, 3 passed` against an unsolved
+lets V5/V6 read a student's full failure history, not only the commit that eventually
+passed (the payload now also carries `attempt_id`, `commit_sha`, `gap_id`, `test_name`).
+**Mastery is a separate, smaller thing (D-079):** per hidden gap, the FIRST pushed commit
+(non-null `commit_sha`, `status` ok) in which the gap was *attempted* — none of its hidden tests
+failed with `NotImplementedError`, decided by `gap_observation` — yields ONE `mastery_observation`
+trace (success iff all the gap's hidden tests passed), written through
+`Memory.record_mastery_observation`, which writes nothing if the (attempt, gap) already has one.
+It is attributed to the gap's first concept, timed at the commit, and followed by `update_mastery`.
+A local run, a `collection_error`/`timeout`, a commit missing from `raw_commits`, or a stub is
+never an observation. Commits must be graded oldest first (`grade_collected` does). Proven live: `EXECUTION.md` Beat 3 (`12 failed, 3 passed` against an unsolved
 render, then `4/4 passed` once `anas` actually solved `extract.py` for real — same function,
 two real outcomes, no code changed in between).
 
@@ -2220,7 +2247,7 @@ know where the designed seams are for when it's time:
 | `update_mastery` (fast path), the recurrence rule, `rebuild_from_traces` | M2 pieces 2–4 | `memory/memory.py` exists with `log_trace`/`get_profile`/`snapshot_profile`; every method already takes an optional `conn` so the fast path can write profile+trace atomically. DAG's `update_profiles` task now calls `sync_features_ref` (D-034) — the rest of this row is historical, predating those pieces' construction |
 | A Code Agent verdict against a *real* model | Needs `ANTHROPIC_API_KEY` | `agents/code_agent.py` (§7.18) is built and calls the gateway, but every test fakes the one `llm.judge()` call — nothing has run against a live provider |
 | The M4 stability table (BUILD_PLAN 4.5) | Needs a key, and ground truth for the accuracy half | 3 runs × 5 submissions is unmeasured; `benchmark/ground_truth.json` (§7.14) is still unwritten |
-| A verdict moving mastery | Open decision, not a missing feature | `MASTERY_TRACE_KINDS` is `{"ci_run", "test_result"}`; the rubric→BKT mapping is a stop-and-ask (§7.18) |
+| A verdict moving mastery | Open decision, not a missing feature | `MASTERY_TRACE_KINDS` is `{"ci_run", "mastery_observation"}`; the rubric→BKT mapping is a stop-and-ask (§7.18) |
 | `_discipline()`'s `cleanliness` wired to real lint counts | M5 | `agents/tools.py` (§7.16) now produces the ruff/sqlfluff findings this needs, but `compute_features.py` does not yet consume them |
 | Tiered LLM error classification | Optimization 6 in the source doc, deferred | `error_classifier.py`'s rule table is v1-only |
 | V7 Help-Seeking | Needs the coach's interaction log (M7) | `learner_features.help_seeking` is nullable, always `NULL` currently |
