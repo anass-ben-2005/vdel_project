@@ -1,0 +1,60 @@
+{
+  "assignment_id": "weather_etl_load",
+  "attempt_id": 3,
+  "attempt_no": 1,
+  "checks": [
+    {
+      "exception_type": null,
+      "gap_id": "g_ld_insert",
+      "passed": false,
+      "test_name": "tests/hidden/test_load.py::test_insert_readings_returns_count"
+    },
+    {
+      "exception_type": null,
+      "gap_id": "g_ld_select",
+      "passed": false,
+      "test_name": "tests/hidden/test_load.py::test_readings_since_filters_correctly"
+    }
+  ],
+  "commit_sha": "d818c872b5d092019e3f63b4b45ed25d53212dc8",
+  "diagnosis": {
+    "attempts_per_stage": {
+      "weather_etl_extract": 2,
+      "weather_etl_load": 1,
+      "weather_etl_quality": 0,
+      "weather_etl_transform": 0
+    },
+    "failing_tests": [
+      {
+        "gap_id": "g_ld_insert",
+        "test_name": "tests/hidden/test_load.py::test_insert_readings_returns_count"
+      },
+      {
+        "gap_id": "g_ld_select",
+        "test_name": "tests/hidden/test_load.py::test_readings_since_filters_correctly"
+      }
+    ],
+    "recurrence_flags": {
+      "g_ld_insert": false,
+      "g_ld_select": false
+    },
+    "weakest_concept": "sql.select_filter"
+  },
+  "fixture_version": 1,
+  "gap_concepts": {
+    "g_ld_insert": [
+      "sql.select_filter"
+    ],
+    "g_ld_select": [
+      "sql.select_filter"
+    ]
+  },
+  "mastery": {},
+  "origin": "real",
+  "origin_note": "exported read-only from the project database by scripts/agents_export_fixtures.py; exception types only, no messages; mastery is the student's profile AT EXPORT TIME, not at the commit",
+  "passed": 0,
+  "project_id": "weather_etl",
+  "status": "collection_error",
+  "student_id": "anas",
+  "total": 2
+}

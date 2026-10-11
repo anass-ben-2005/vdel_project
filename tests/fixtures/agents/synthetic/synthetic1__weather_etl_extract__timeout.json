@@ -1,0 +1,29 @@
+{
+  "assignment_id": "weather_etl_extract",
+  "attempt_id": 9002,
+  "attempt_no": 1,
+  "checks": [
+    {"exception_type": null, "gap_id": "g_ext_retry", "passed": false,
+     "test_name": "tests/hidden/test_extract.py::test_fetch_weather_retries_then_succeeds"},
+    {"exception_type": null, "gap_id": "g_ext_retry", "passed": false,
+     "test_name": "tests/hidden/test_extract.py::test_fetch_weather_raises_after_max_attempts"}
+  ],
+  "commit_sha": "9999999999999999999999999999999999999992",
+  "diagnosis": {
+    "attempts_per_stage": {"weather_etl_extract": 1, "weather_etl_load": 0,
+                           "weather_etl_quality": 0, "weather_etl_transform": 0},
+    "failing_tests": [],
+    "recurrence_flags": {},
+    "weakest_concept": null
+  },
+  "fixture_version": 1,
+  "gap_concepts": {"g_ext_retry": ["py.errors_debugging", "py.data_structures"]},
+  "mastery": {},
+  "origin": "synthetic",
+  "origin_note": "no real commit has status 'timeout' yet; this reproduces the situation (the checks did not finish). Matches code/extract_infinite_loop.py.",
+  "passed": 0,
+  "project_id": "weather_etl",
+  "status": "timeout",
+  "student_id": "synthetic1",
+  "total": 2
+}

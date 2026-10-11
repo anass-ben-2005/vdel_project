@@ -1,0 +1,72 @@
+{
+  "assignment_id": "weather_etl_extract",
+  "attempt_id": 1,
+  "attempt_no": 1,
+  "checks": [
+    {
+      "exception_type": null,
+      "gap_id": "g_ext_retry",
+      "passed": true,
+      "test_name": "tests/hidden/test_extract.py::test_fetch_weather_raises_after_max_attempts"
+    },
+    {
+      "exception_type": null,
+      "gap_id": "g_ext_retry",
+      "passed": true,
+      "test_name": "tests/hidden/test_extract.py::test_fetch_weather_retries_then_succeeds"
+    },
+    {
+      "exception_type": null,
+      "gap_id": "g_ext_parse",
+      "passed": true,
+      "test_name": "tests/hidden/test_extract.py::test_parse_response_missing_current_key_entirely"
+    },
+    {
+      "exception_type": null,
+      "gap_id": "g_ext_parse",
+      "passed": true,
+      "test_name": "tests/hidden/test_extract.py::test_parse_response_missing_key_returns_none"
+    }
+  ],
+  "commit_sha": "2d087f5c179b070136d7f7a0682734c56b2332c7",
+  "diagnosis": {
+    "attempts_per_stage": {
+      "weather_etl_extract": 2,
+      "weather_etl_load": 1,
+      "weather_etl_quality": 0,
+      "weather_etl_transform": 0
+    },
+    "failing_tests": [],
+    "recurrence_flags": {
+      "g_ext_parse": false
+    },
+    "weakest_concept": "py.data_structures"
+  },
+  "fixture_version": 1,
+  "gap_concepts": {
+    "g_ext_parse": [
+      "py.data_structures"
+    ],
+    "g_ext_retry": [
+      "py.errors_debugging",
+      "py.data_structures"
+    ]
+  },
+  "mastery": {
+    "py.data_structures": {
+      "n": 1,
+      "p_mastery": 0.776
+    },
+    "py.errors_debugging": {
+      "n": 1,
+      "p_mastery": 0.776
+    }
+  },
+  "origin": "real",
+  "origin_note": "exported read-only from the project database by scripts/agents_export_fixtures.py; exception types only, no messages; mastery is the student's profile AT EXPORT TIME, not at the commit",
+  "passed": 4,
+  "project_id": "weather_etl",
+  "status": "ok",
+  "student_id": "anas",
+  "total": 4
+}

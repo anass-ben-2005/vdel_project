@@ -1,0 +1,12 @@
+{
+  "origin": "synthetic",
+  "origin_note": "FAKE resources for tests only (ids start with EXAMPLE-). The resources table has 0 rows in the real database; no real resource or URL is invented here.",
+  "candidates": [
+    {"resource_id": "EXAMPLE-R1", "title": "EXAMPLE: Handling exceptions", "kind": "doc_page",
+     "level": "beginner", "concept_ids": ["py.errors_debugging"], "locator": "EXAMPLE section 1",
+     "url": "https://example.invalid/errors"},
+    {"resource_id": "EXAMPLE-R2", "title": "EXAMPLE: Working with dictionaries", "kind": "book_section",
+     "level": "beginner", "concept_ids": ["py.data_structures"], "locator": "EXAMPLE chapter 2",
+     "url": "https://example.invalid/dicts"}
+  ]
+}

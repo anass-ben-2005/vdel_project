@@ -1,0 +1,31 @@
+{
+  "assignment_id": "weather_etl_extract",
+  "attempt_id": 9003,
+  "attempt_no": 1,
+  "checks": [
+    {"exception_type": "AssertionError", "gap_id": "g_ext_parse", "passed": false,
+     "test_name": "tests/hidden/test_extract.py::test_parse_response_missing_key_returns_none"},
+    {"exception_type": null, "gap_id": "g_ext_retry", "passed": true,
+     "test_name": "tests/hidden/test_extract.py::test_fetch_weather_retries_then_succeeds"}
+  ],
+  "commit_sha": "9999999999999999999999999999999999999993",
+  "diagnosis": {
+    "attempts_per_stage": {"weather_etl_extract": 1, "weather_etl_load": 0,
+                           "weather_etl_quality": 0, "weather_etl_transform": 0},
+    "failing_tests": [
+      {"gap_id": "g_ext_parse", "test_name": "tests/hidden/test_extract.py::test_parse_response_missing_key_returns_none"}
+    ],
+    "recurrence_flags": {"g_ext_parse": false},
+    "weakest_concept": "py.data_structures"
+  },
+  "fixture_version": 1,
+  "gap_concepts": {"g_ext_parse": ["py.data_structures"], "g_ext_retry": ["py.errors_debugging"]},
+  "mastery": {},
+  "origin": "synthetic",
+  "origin_note": "first attempt, a student with no mastery data at all (empty slice): the agent must not claim anything about mastery.",
+  "passed": 1,
+  "project_id": "weather_etl",
+  "status": "ok",
+  "student_id": "synthetic2",
+  "total": 2
+}
