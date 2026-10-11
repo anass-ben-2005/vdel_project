@@ -25,6 +25,7 @@ ORDER = [
     "03_feature_tables.sql",
     "05_memory_tables.sql",
     "06_assessment_tables.sql",
+    "07_feedback_tables.sql",       # D-074: references attempts (06) and raw_commits (02)
     "04_indexes.sql",
 ]
 
