@@ -613,6 +613,94 @@ All checks passed!
 
 ---
 
+## M1 — Telemetry + Features (Stage D3 — classifier match rate, queried directly; DAG clause reconfirmed)
+
+Status:  PARTIAL — one clause now closed with a direct query, not a script's printed
+         summary; the DAG clause is unchanged and stays open
+Date:    2026-09-02
+Commit:  `83a8b6a`
+
+### DoD as written
+> ...the classifier match rate is recorded. (`BUILD_PLAN.md`, M1 DoD)
+> The DAG runs green end to end. (`BUILD_PLAN.md`, M1 DoD)
+
+### Command run — classifier match rate
+```sql
+SELECT
+  COUNT(*) AS total_classified,
+  COUNT(*) FILTER (WHERE concept_id <> 'unclassified') AS matched,
+  ROUND(COUNT(*) FILTER (WHERE concept_id <> 'unclassified')::numeric / COUNT(*), 3)
+    AS match_rate
+FROM raw_workflow_runs
+WHERE error_class IS NOT NULL;
+```
+Run via `docker exec vdel-postgres psql -U vdel -d vdel -c "..."`. Chosen over re-running
+`python -m scripts.collect`: that script's printed `match_rate` is computed only over
+`_STATS.classifications`, an in-memory list populated solely by runs classified *during
+that one process's run* (`collectors/collect_github.py:85-86`) — because inserts are
+`ON CONFLICT (run_id) DO NOTHING`, a re-run without new failed CI runs would print
+`classified=0, match_rate=0.0`, which is real but scoped to that pass, not "the" rate.
+This query instead reads every row in the live table with `error_class IS NOT NULL` —
+i.e. every run that has ever actually been run through `classify_error()`, cumulative,
+not one collection pass's delta.
+
+### Output
+```
+ total_classified | matched | match_rate
+------------------+---------+------------
+               21 |       9 |      0.429
+(1 row)
+```
+Cross-checked with two follow-up queries, same session:
+```sql
+SELECT concept_id, COUNT(*) FROM raw_workflow_runs
+  WHERE error_class IS NOT NULL GROUP BY concept_id ORDER BY COUNT(*) DESC;
+     concept_id     | count
+--------------------+-------
+ unclassified       |    12
+ py.testing         |     7
+ py.data_structures |     2
+(3 rows)
+
+SELECT conclusion, COUNT(*) FROM raw_workflow_runs GROUP BY conclusion;
+ conclusion | count
+------------+-------
+ failure    |    21
+ success    |    25
+(2 rows)
+```
+21 failures, all 21 classified (0 left `error_class IS NULL` among failures); 7+2=9 matched
+a real concept, 12 fell to `unclassified`; 9/21 = 0.42857 → `0.429`, confirming the headline
+number by hand, not just trusting the aggregate query.
+
+### Assessment
+- **"The classifier match rate is recorded":** **met** — `0.429` (9/21), queried directly
+  against the live table on 2026-09-02, not carried over from the 2026-08-25 entry's memory
+  of the number. It happens to equal that entry's `python -m scripts.collect` output exactly,
+  which is a genuine finding, not a coincidence dressed up: no new CI failures have landed
+  in `raw_workflow_runs` since 2026-08-25 (still 21 failures, still the same 12/7/2 split),
+  so the cumulative table-wide rate and that day's single-pass delta are, for now, the same
+  number measured two different ways. They will diverge the first time a new failed run is
+  collected after this entry.
+- **"The DAG runs green end to end":** **unchanged, still not met.** Re-ran
+  `python -c "import airflow"` today — still `ModuleNotFoundError: No module named
+  'airflow'`. Nothing has changed since the 2026-08-25 M1 entry above: same environment,
+  same missing dependency, same three task bodies already proven individually in that
+  entry. Per instruction, not re-litigated here — see that entry's own Assessment and
+  Known gaps for the full reasoning; this is a pointer, not a new argument.
+
+### Known gaps
+- Same open items as the 2026-08-25 M1 entry: the "one row per repo" wording question
+  (Open question #6) and the DAG install-or-relax-the-DoD decision (Open question #7,
+  `HANDOFF.md`) are both still Anas's/Dr. Ezzatul's call, not resolved by this query.
+- The match-rate number itself is a **finding worth naming, not fixing**: 12/21 (57%) of
+  real classified CI failures this cohort has produced still fall to `unclassified` under
+  the current ~10-rule table. `error_classifier.py`'s own docstring says extend the rule
+  table "from observed logs, not from imagination" — these 12 unclassified logs are exactly
+  that raw material, sitting in `raw_workflow_runs`, not yet looked at for new rules.
+
+---
+
 ## M3 — LLM Gateway + Benchmark
 
 Status:  NOT DONE (the benchmark half — the gateway half is separately proven live, see the
@@ -751,6 +839,166 @@ ruff check .  ->  All checks passed!
 - Two real bugs were caught and fixed live during this work, both now closed (see D-050):
   a `ForeignKeyViolation` from an unverified schema assumption, and a single-call exception
   that used to kill the entire sweep. Neither is an open gap; named here only for completeness.
+
+---
+
+## M2 — Memory + Echo Agent (Stage D2 — formal dated rehearsal, all seven beats, live)
+
+Status:  DONE — all seven beats passed, exit code 0, unmodified
+Date:    2026-08-31
+Commit:  `83a8b6a` — "docs: track VDEL_TEN_PROJECT_CURRICULUM.md" (HEAD at run time;
+         working tree confirmed clean before and unchanged by the run)
+
+### DoD as written
+> D2 | Run live... ending Beat 7 `IDENTICAL`. Not yet rehearsed in front of anyone.
+(`EXECUTION.md` Stage D, D2 — pre-run status)
+
+### Preconditions checked before running
+```
+docker ps --filter "name=vdel-postgres" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+  vdel-postgres   Up 6 days (healthy)   0.0.0.0:5433->5432/tcp, [::]:5433->5432/tcp
+
+git status
+  On branch main
+  Your branch is up to date with 'origin/main'.
+  nothing to commit, working tree clean
+```
+
+### Command run
+```
+python -m scripts.demo
+```
+Full live run — real GitHub collection, real billed LLM call. No flags, unmodified.
+
+### Output
+```
+C:\Users\ASUS\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.2.3) or chardet (7.4.3)/charset_normalizer (3.4.0) doesn't match a supported version!
+  warnings.warn(
+VDEL -- the seven demo beats (EXECUTION.md section 1)
+student=anas  project=weather_etl
+
+-- Beat 1 ---------------------- the curriculum format is real, not a mock-up
+  curriculum\master\weather_etl\weather_etl\transform.py  (3 @gap marker(s))
+    g_tf_clean       lines 8-8  ['py.data_structures']
+      Return only records where record.get("temp") is not None.
+    g_tf_convert     lines 16-16  ['py.data_structures']
+      Apply the standard C-to-F formula.
+    g_tf_timestamp   lines 25-30  ['py.errors_debugging']
+      Try to parse raw_ts as ISO format. If it is None or unparsable, use the current UTC time instead. Never let this raise.
+  PASS -- 3 real @gap marker(s) parsed from transform.py
+
+-- Beat 2 ----------------- two students, different variants, same assignment
+  anas       weather_etl_extract  variant_id=864fe8bbecf4e9c4fb562d5690de88bbf66a627c
+  student2   weather_etl_extract  variant_id=c4c18c3e10e96fefe286f993de1cf93b1c2d6c77
+  PASS -- anas=864fe8bbecf4  student2=c4c18c3e10e9  (different, same assignment)
+
+-- Beat 3  hidden tests run for real; correctness is executed, not asserted (inv. 13)
+    PASS  renders.anas_attempt1.tests.hidden.test_extract::test_fetch_weather_retries_then_succeeds
+    PASS  renders.anas_attempt1.tests.hidden.test_extract::test_fetch_weather_raises_after_max_attempts
+    PASS  renders.anas_attempt1.tests.hidden.test_extract::test_parse_response_missing_key_returns_none
+    PASS  renders.anas_attempt1.tests.hidden.test_extract::test_parse_response_missing_current_key_entirely
+  PASS -- 4/4 passed, real subprocess (frozen=False)
+
+-- Beat 4 ----------- results land per-assignment, attributed by file (D-043)
+  collector: api_calls=27 detail_calls=0 commits=0 runs=46 commits_without_open_attempt=0 classified=21 match_rate=0.429
+    d818c872b5  assignment_id=weather_etl_load       2026-08-25 01:51:59+00:00
+    2d087f5c17  assignment_id=weather_etl_extract    2026-08-25 01:46:01+00:00
+    5759078602  assignment_id=weather_etl_extract    2026-08-25 01:41:59+00:00
+  PASS -- d818c872b5 -> weather_etl_load (real per-file attribution, D-043)
+
+-- Beat 5 ---------- mastery moves -- BKT, with n, with a confidence interval
+  py.data_structures       p_mastery=0.999  n=6  ci90=[0.341, 0.896]  trend=up
+  py.errors_debugging      p_mastery=1.000  n=5  ci90=[0.694, 1.0]  trend=up
+  py.testing               p_mastery=0.215  n=1  ci90=[0.002, 0.771]  trend=down
+  PASS -- 3 concept(s) tracked, e.g. py.data_structures: p_mastery=0.999 n=6
+
+-- Beat 6  the Code Agent grades; every score carries a string-matched quote (inv. 6)
+Direct use of automatic function calling (AFC) in Models.generate_content is not recommended. Instead, we recommend to use AFC in Chat.send_message. Similarly, direct use of AFC in Models.generate_content_stream is not recommended. Instead, we recommend to use AFC in Chat.send_message_stream.
+llm: google/gemini-3.7-flash failed (transient) after 30.0s -- _ProviderCallTimeout
+llm: fallback served the call -- provider=google model=gemini-3.5-flash-lite (primary was google/gemini-3.7-flash)
+  trace_id=62511
+  correctness=0 approach=0 readability=2 idiomatic=2
+  confidence=high  evidence_failures=[]
+    [correctness] "{'quote': '    raise NotImplementedError()', 'why': 'The implementation raises NotImplementedError for clean_readings and to_fahrenheit, causing it to crash and produce wrong output.'}"
+    [approach] "{'quote': '    raise NotImplementedError()', 'why': 'The core functions are left unimplemented with NotImplementedError, meaning the logic is completely missing.'}"
+    [readability] "{'quote': '    raise NotImplementedError()', 'why': 'The functions are structurally readable and well-documented with docstrings, but the actual logic is stubbed out.'}"
+    [idiomatic] "{'quote': '    try:\n        ts = datetime.fromisoformat(raw_ts) if raw_ts else datetime.now(timezone.utc)', 'why': 'The timestamp enrichment function uses standard Python and datetime handling appropriately, though overall the submission is incomplete.'}"
+  PASS -- trace_id=62511, correctness=0, 4 evidence quote(s), 0 evidence failure(s)
+
+-- Beat 7 ---------------- wipe learner_profile -> replay traces -> identical
+
+VDEL - event-sourcing proof   (BUILD_PLAN 2.6)
+traces are truth; learner_profile is derived belief
+
+  traces in the log            : 36
+  profiles snapshotted         : 1
+
+  1. SNAPSHOT   read learner_profile as stored
+  2. WIPE       TRUNCATE learner_profile -> 0 rows remain
+  3. REPLAY     rebuild_from_traces() for every student
+  4. COMPARE    deep-diff, field by field
+
+  anas
+      mastery         identical  (3 concept(s))
+      weaknesses      identical  (0 entry(ies))
+      reflections     identical  (0 entry(ies))
+      session_digest  identical  (0 entry(ies))
+      features_ref    identical  (set)
+      -> identical
+
+  _test_runner: no prior profile; the rebuild created one.
+      Not a mismatch -- the fast path has not run for this student yet.
+  student2: no prior profile; the rebuild created one.
+      Not a mismatch -- the fast path has not run for this student yet.
+
+IDENTICAL
+
+  Every number above was deleted and recomputed from traces alone.
+  The profile is a faithful projection of the log, not a blob to trust.
+
+  traces after                 : 36  (unchanged)
+  PASS -- IDENTICAL, 36 traces unchanged
+
+-- Summary ----------------------------------------------------------
+  Beat 1  PASS  3 real @gap marker(s) parsed from transform.py
+  Beat 2  PASS  anas=864fe8bbecf4  student2=c4c18c3e10e9  (different, same assignment)
+  Beat 3  PASS  4/4 passed, real subprocess (frozen=False)
+  Beat 4  PASS  d818c872b5 -> weather_etl_load (real per-file attribution, D-043)
+  Beat 5  PASS  3 concept(s) tracked, e.g. py.data_structures: p_mastery=0.999 n=6
+  Beat 6  PASS  trace_id=62511, correctness=0, 4 evidence quote(s), 0 evidence failure(s)
+  Beat 7  PASS  IDENTICAL, 36 traces unchanged
+
+DEMO COMPLETE -- all seven beats passed
+EXIT_CODE=0
+```
+
+### Assessment
+- **All seven beats: PASS**, exit code 0, single unmodified run, no retries needed.
+- **Beat 6's fallback path fired live and is not a defect**: the primary model
+  (`google/gemini-3.7-flash`) hit `_ProviderCallTimeout` at the D-051 30s cutoff, and the
+  two-layer fallback chain (D-049) served the call from `gemini-3.5-flash-lite` instead —
+  exactly the designed behaviour, not a rehearsal failure. Worth narrating during an actual
+  defence demo rather than treated as something to hide.
+- **Beat 6's verdict itself is a real, evidence-backed grading of a genuinely broken
+  submission**: `correctness=0`, four quotes, all string-matched (`evidence_failures=[]`),
+  every quote pointing at the actual `NotImplementedError` stubs in the student's real file.
+- **"Ending Beat 7 IDENTICAL":** met — `36 traces`, unchanged before/after, `anas`'s full
+  profile (`mastery`/`weaknesses`/`reflections`/`session_digest`/`features_ref`) replayed
+  identically from traces alone.
+- **"Not yet rehearsed in front of anyone":** this run happened with Anas present and
+  directing it as a named, dated rehearsal step (not an incidental dev run) — closer to
+  the bar D2 names than the two 2026-08-25 runs were, but whether this counts as satisfying
+  "rehearsed in front of \[an audience]" for the actual defence is Anas's call to make, not
+  this entry's. Recorded as fact; not upgraded to a claim about defence-readiness.
+
+### Known gaps
+- Same pre-existing, already-logged items as the 2026-08-25 M2 entry: `student2` and
+  `_test_runner` both appear in the "no prior profile" list for the same already-understood
+  reasons (real second demo student; test-suite trace pollution, not cleaned up — Open
+  question #8).
+- Not a new gap, but worth noting for the next rehearsal: `traces in the log` is now `36`,
+  up from `27` at the 2026-08-25 D1/D2 runs — expected growth from this session's and
+  prior sessions' real activity, not a discrepancy.
 
 ---
 
