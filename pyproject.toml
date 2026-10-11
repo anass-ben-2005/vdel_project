@@ -45,7 +45,7 @@ line-length = 100
 # and `variants` row pins that value (invariant 15). Restyling a master to satisfy a linter
 # silently invalidates the line ranges of every gap already seeded from it. The content is
 # deliberately frozen, not merely unlinted.
-extend-exclude = ["benchmark/submissions", "curriculum"]
+extend-exclude = ["benchmark/submissions", "curriculum", "tests/fixtures/agents/code"]
 
 # Selected explicitly, not left to ruff's defaults. Defaults vary by ruff version and a
 # developer's global config bleeds into a bare `ruff check .`, so CI on a clean machine
@@ -86,6 +86,9 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "DTZ", "BLE", "RUF", "TID"
 # module docstring), so this is not a second hole in invariant 3, only test tooling that
 # needs the name it is replacing.
 "tests/test_llm.py" = ["TID251"]
+# Same reason: the OpenAI tests swap the SDK's HTTP client (httpx.MockTransport) so the real SDK
+# parses mocked responses; no network, no key. Needs the `openai` name to replace its class.
+"tests/test_llm_openai.py" = ["TID251"]
 
 # Verbatim transcriptions from VDEL_Modules_1_2_Build.md. These files are held
 # character-for-character against the source document so that a diff between the two is
