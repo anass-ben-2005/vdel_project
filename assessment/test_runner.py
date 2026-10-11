@@ -38,6 +38,16 @@ network, read-only filesystem, non-root user, resource limits, and the JUnit/jud
 is REQUIRED before the first real student. Until then this is for a known curriculum run by
 the person who owns the machine.
 
+CONTAINER MODE (D-092). `VDEL_GRADING_SANDBOX=docker` runs the same pytest inside a container
+(`docker/grader.Dockerfile`): `--network none`, a read-only root filesystem with a tmpfs scratch,
+`--pids-limit`, `--memory`, `--cpus`, `--cap-drop ALL`, `--security-opt no-new-privileges`, a
+non-root user, the sanitised repo copy mounted read-only and the JUnit report written to a SEPARATE
+mount, the container removed afterwards. Unset (the default) or `subprocess` keeps the behaviour
+above, byte for byte. If docker was asked for and cannot run, the grader raises: it never falls back
+to the weaker mode. What the container does NOT protect: the student's module is still imported by
+the hidden test INSIDE the container, so it can patch pytest or overwrite the JUnit report it can
+reach (forgery from inside the test process), and it can read the hidden test file it is run with.
+
 D-069 (addendum to D-066 and D-065): a `collection_error` or a `timeout` row is stored with its
 status but writes NO `test_result` mastery trace, and a pytest timeout is recorded once instead
 of raising out of the grader.
@@ -72,6 +82,7 @@ must be graded oldest first, which `scripts/grade_collected.py` does.
 from __future__ import annotations
 
 import ast
+import contextlib
 import logging
 import os
 import re
@@ -124,6 +135,16 @@ def _session(conn):
 # hang the runner indefinitely -- the ONLY resource control there is, and it bounds the
 # direct child only (see the module docstring's SANDBOX section for what is not covered).
 _TIMEOUT_S = 120
+
+# D-092. Container mode. Values are choices, not measurements: a fork bomb must hit the process
+# limit long before it hurts the PC, and four small ETL modules need far less than 512 MB.
+SANDBOX_ENV_VAR = "VDEL_GRADING_SANDBOX"          # "docker" -> container; unset -> subprocess
+IMAGE_ENV_VAR = "VDEL_GRADING_IMAGE"
+DEFAULT_GRADING_IMAGE = "vdel-grader:1"
+DOCKER_PIDS_LIMIT = "128"
+DOCKER_MEMORY = "512m"
+DOCKER_CPUS = "1"
+DOCKER_SCRATCH = "/scratch"
 
 # D-085: evaluation statuses for which `attempts.out_of_scope_lines` is not computed.
 NOT_MEASURED_STATUSES = frozenset({"collection_error", "timeout"})
@@ -336,6 +357,112 @@ def _run_pytest(repo_dir: Path, test_rel_path: str, junit_path: Path,
     )
 
 
+class SandboxKilled(Exception):
+    """The container was killed by its own limits (memory, or an external kill) before pytest wrote
+    a report. Treated like a timeout: stored once, never mastery evidence, no freeze."""
+
+
+def sandbox_mode() -> str:
+    """'subprocess' (default) or 'docker', from VDEL_GRADING_SANDBOX. Anything else raises: an
+    unknown value must not quietly select the weaker mode."""
+    value = os.environ.get(SANDBOX_ENV_VAR, "").strip().lower()
+    if value in ("", "subprocess"):
+        return "subprocess"
+    if value == "docker":
+        return "docker"
+    raise TestRunnerError(
+        f"{SANDBOX_ENV_VAR}={value!r} is not understood: use 'docker', or leave it unset")
+
+
+def docker_run_argv(work: Path, results: Path, test_rel_path: str, junit_name: str,
+                    ini_name: str, *, image: str, container: str) -> list[str]:
+    """The `docker run` command line for one grading run. Pure, so a test can check every flag.
+
+    Mounts: the sanitised repo copy READ-ONLY at /work, the results directory (the trusted pytest
+    ini in, the JUnit report out) at /results -- a different mount from the code. `--pull never`
+    forbids a registry pull (the image is built by hand); `--network none` leaves only loopback."""
+    for path in (work, results):
+        if "," in str(path):
+            raise TestRunnerError(f"cannot mount a path containing a comma: {path}")
+    return [
+        "docker", "run", "--rm", "--name", container, "--pull", "never",
+        "--network", "none",
+        "--read-only",
+        "--tmpfs", f"{DOCKER_SCRATCH}:rw,noexec,nosuid,size=64m,mode=1777",
+        "--tmpfs", "/tmp:rw,noexec,nosuid,size=16m,mode=1777",   # inside the container
+        "--pids-limit", DOCKER_PIDS_LIMIT,
+        "--memory", DOCKER_MEMORY, "--memory-swap", DOCKER_MEMORY,
+        "--cpus", DOCKER_CPUS,
+        "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges",
+        "--user", "10001:10001",
+        "--mount", f"type=bind,source={work},target=/work,readonly",
+        "--mount", f"type=bind,source={results},target=/results",
+        "-w", "/work",
+        "-e", f"HOME={DOCKER_SCRATCH}", "-e", f"TMPDIR={DOCKER_SCRATCH}",
+        "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "PYTHONIOENCODING=utf-8",
+        "-e", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+        image,
+        "python", "-P", "-m", "pytest", test_rel_path,
+        "-c", f"/results/{ini_name}", "--rootdir", "/work",
+        f"--junitxml=/results/{junit_name}", "-q", "--tb=short", "-p", "no:cacheprovider",
+    ]
+
+
+def _run_pytest_docker(work: Path, test_rel_path: str, junit_path: Path) -> None:
+    """The container twin of `_run_pytest`: same pytest, same arguments, same report location
+    contract (the JUnit file ends up at `junit_path`). Raises `subprocess.TimeoutExpired` on the
+    wall-clock limit (after killing the container), `SandboxKilled` on an OOM or external kill,
+    and `TestRunnerError` when docker itself cannot run the image -- never a silent fallback."""
+    results = junit_path.parent
+    ini_name = "pytest-trusted.ini"
+    (results / ini_name).write_text("[pytest]\n", encoding="utf-8")
+    with contextlib.suppress(OSError):
+        os.chmod(results, 0o777)       # the container user must be able to write the report (POSIX)
+    image = os.environ.get(IMAGE_ENV_VAR, DEFAULT_GRADING_IMAGE)
+    container = f"vdel-grade-{secrets.token_hex(8)}"
+    argv = docker_run_argv(work, results, test_rel_path, junit_path.name, ini_name,
+                           image=image, container=container)
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(["docker", "kill", container], capture_output=True, text=True,
+                           timeout=30)
+        raise
+    except FileNotFoundError as exc:
+        raise TestRunnerError(f"docker is not installed or not on PATH ({exc})") from None
+    finally:
+        # --rm removes a container that exited; this removes one that was killed or hung. Best
+        # effort: a failure here must never hide the error that brought us here.
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(["docker", "rm", "-f", container], capture_output=True, text=True,
+                           timeout=30)
+    if done.returncode in (125, 126, 127):
+        raise TestRunnerError(
+            f"docker could not run the grading container (exit {done.returncode}): "
+            f"{done.stderr.strip()[:300]} -- build the image: docker build -f "
+            f"docker/grader.Dockerfile -t {image} docker")
+    if done.returncode == 137 and not junit_path.exists():
+        raise SandboxKilled("the grading container was killed (memory limit or external kill)")
+
+
+def _localise_container_paths(text: str, work: Path) -> str:
+    """A traceback written inside the container names `/work/...`; the classifier resolves frames
+    against the HOST copy of the repo, so `/work/` becomes that directory. Without this a student's
+    SyntaxError in container mode matched no frame and was classified `tooling` ("our fault", never
+    charged) instead of `collection_error` -- found by grading the same repo in both modes."""
+    return text.replace("/work/", work.as_posix().rstrip("/") + "/")
+
+
+def _run_tests(work: Path, test_rel_path: str, junit_path: Path) -> None:
+    """Run the hidden tests in the mode `VDEL_GRADING_SANDBOX` selects (default: subprocess)."""
+    if sandbox_mode() == "docker":
+        _run_pytest_docker(work, test_rel_path, junit_path)
+    else:
+        _run_pytest(work, test_rel_path, junit_path)
+
+
 def _expected_gap_tests(test_src: Path, test_rel_path: str) -> list[tuple[str, str]]:
     """`(test_name, gap_id)` for every `@pytest.mark.gap("g_...")` test in a hidden test
     file, read STATICALLY (ast; nothing is imported or run). Used only when the file could
@@ -453,14 +580,15 @@ def evaluate(project_id: str, file_path: str, repo_dir: str | Path) -> Evaluatio
         results.mkdir()
         junit_path = results / f"junit-{secrets.token_hex(16)}.xml"
         try:
-            _run_pytest(work, test_rel_path, junit_path)
-        except subprocess.TimeoutExpired:
+            _run_tests(work, test_rel_path, junit_path)
+        except (subprocess.TimeoutExpired, SandboxKilled) as exc:
             # D-069: a hung or endless student module. Recorded ONCE (each @gap test of the
             # file failed, status "timeout"): the commit then has test_results rows, so
             # grade_collected does not pick it up again next cycle. Before this the exception
             # escaped, nothing was written, and the same commit hung the grader every cycle.
             expected = _expected_gap_tests(test_src, test_rel_path)
-            detail = f"hidden tests did not finish within {_TIMEOUT_S}s"
+            detail = (str(exc) if isinstance(exc, SandboxKilled)
+                      else f"hidden tests did not finish within {_TIMEOUT_S}s")
             if not expected:
                 return Evaluation((), "tooling", f"{detail} (but no @gap test found)")
             return Evaluation(
@@ -474,6 +602,8 @@ def evaluate(project_id: str, file_path: str, repo_dir: str | Path) -> Evaluatio
                 "complete (see module docstring: this is distinct from tests failing)"
             )
         errors = _collection_errors(ET.parse(junit_path).getroot())
+        if errors and sandbox_mode() == "docker":
+            errors = [_localise_container_paths(e, work) for e in errors]
         if not errors:
             return Evaluation(tuple(_parse_junit(junit_path)), "ok", None)
 

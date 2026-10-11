@@ -1,0 +1,29 @@
+# Python packages inside the grading container (D-092): ONLY what the hidden tests and the
+# curriculum master code import. Nothing of this repository (no psycopg2, no PyYAML, no LLM SDK, no
+# GitHub library) is installed there, so the student's code cannot reach any of it.
+#
+# Pinned to the versions installed on the grading PC on 2026-10-11, where the whole suite passed.
+# TODO(verify): that every pin installs on the image's Python 3.11 (the first `docker build` shows
+# it; a pin that does not install fails the build loudly, it cannot be silently different).
+
+# pytest and its dependencies (the hidden tests, weather_etl and sales_analyzer)
+pytest==9.1.1
+pluggy==1.6.0
+iniconfig==2.3.0
+packaging==24.1
+Pygments==2.20.0
+
+# weather_etl: weather_etl/extract.py imports requests
+requests==2.32.3
+urllib3==2.2.3
+idna==3.19
+certifi==2024.8.30
+charset-normalizer==3.4.0
+
+# sales_analyzer: curriculum/master/sales_analyzer/requirements.txt pins pandas 2.2.3
+pandas==2.2.3
+numpy==2.1.2
+python-dateutil==2.9.0.post0
+pytz==2024.2
+tzdata==2024.2
+six==1.16.0
