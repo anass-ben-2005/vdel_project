@@ -1,0 +1,3 @@
+resource_id,concept_ids,kind,title,locator,url,level
+EXAMPLE-001,py.errors_debugging,doc_page,EXAMPLE - replace this row with a real page about exceptions,EXAMPLE section,https://example.invalid/replace-me-1,beginner
+EXAMPLE-002,py.data_structures|py.testing,book_section,EXAMPLE - replace this row with a real book section,EXAMPLE chapter,https://example.invalid/replace-me-2,intermediate
