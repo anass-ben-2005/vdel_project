@@ -867,7 +867,13 @@ class Memory:
         Returns one dict per trace, in (ts, trace_id) order -- the same ordering
         `_replay_concept` uses, for the same reason (ts alone is not a total order):
             {"ts": datetime, "assignment_id": str | None, "concept_ids": list[str],
-             "passed": bool | None, "item_difficulty": float | None}
+             "passed": bool | None, "item_difficulty": float | None,
+             "attempted": bool | None, "attempt_id": int | None, "commit_sha": str | None,
+             "gap_id": str | None}
+        The last four come from the payload and are None on traces written before D-079 /
+        D-084. `attempted` is False when the gap was an unattempted stub in that commit
+        (D-084): such a trace is evidence that the gap was NOT attempted, not that the student
+        got it wrong, and V5/V6 leave it out.
         `passed` is `None` for a payload whose `conclusion` is outside `OUTCOME`'s two
         keys (should not happen for `test_result`, which always writes one of them, but
         this function does not assume its own writer never regresses) rather than
@@ -895,6 +901,10 @@ class Memory:
                 "concept_ids": list(concept_ids or []),
                 "passed": OUTCOME.get((payload or {}).get("conclusion")),
                 "item_difficulty": (payload or {}).get("item_difficulty"),
+                "attempted": (payload or {}).get("attempted"),
+                "attempt_id": (payload or {}).get("attempt_id"),
+                "commit_sha": (payload or {}).get("commit_sha"),
+                "gap_id": (payload or {}).get("gap_id"),
             }
             for ts, aid, concept_ids, payload in rows
         ]

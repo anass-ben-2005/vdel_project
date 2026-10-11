@@ -892,11 +892,19 @@ is ever modified:**
    v2 and v3 stay computable and their rows stay readable; a v4 write at a watermark where a
    v2/v3 row already sits is skipped, never overwritten.
 
-   **`formula_ver` v5 (D-079, the default now)** keeps v4's scoping and changes what V1 replays:
+   **`formula_ver` v5 (D-079)** keeps v4's scoping and changes what V1 replays:
    one `mastery_observation` per (attempt, GAP) instead of one `test_result` per test (§7.10). The
    stored V1 shape gains `obs_rule`. Because V1 is `Memory.replay_mastery`, a "v4" computation made
    today also uses the new observations; stored v4 rows are left as they are. A v5 row for a
    student is written only on new activity (the watermark collides with the v4 row).
+
+   **Unattempted stubs in V5/V6 (D-084, formula v6, the default now).** Computed under a formula version >= "v6"
+   (`_excludes_unattempted`), `_error_stats` drops the `test_result` outcomes of a gap that was a
+   NotImplementedError stub in that commit (`gap_observation`, the D-079 definition): from the
+   trace's own `attempted` flag, or, for a trace that names its commit but not the flag, from that
+   commit's `test_results`. A trace that names nothing is kept. v2..v5 are unchanged and
+   `FORMULA_VER` is "v6" (D-084); anas's V5/V6 stay legacy data with a known bias, because his
+   traces predate the identity fields.
 
 **What each helper does, briefly** (all read-only SQL against the raw tables, feeding
 the pure formula functions from `variables/`):

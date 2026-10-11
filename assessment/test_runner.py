@@ -691,7 +691,17 @@ def _log_test_result_traces(mem: Memory, conn, student_id: str, assignment_id: s
     hidden_gap_ids` (D-054: a pre-solved gap passes whatever the student does), and
     `status == "ok"` (D-069: a collection error or timeout is not evidence). The payload keeps
     the old two keys and adds attempt_id, commit_sha, gap_id and test_name, so the trace can be
-    audited without a join to the mutable `test_results` table."""
+    audited without a join to the mutable `test_results` table.
+
+    D-084: the payload also says whether the gap was ATTEMPTED in this commit
+    (`attempted`, from `gap_observation`, the same definition D-079 uses). A test of a gap that
+    is still a NotImplementedError stub is stored as before, but is evidence that the student
+    has not tried yet, so V5/V6 do not count it as a failure."""
+    by_gap: dict[str, list[TestOutcome]] = {}
+    for o in outcomes:
+        if o.status == "ok" and o.gap_id in hidden_gap_ids:
+            by_gap.setdefault(o.gap_id, []).append(o)
+    unattempted = {g for g, tests in by_gap.items() if gap_observation(tests) is None}
     for o in outcomes:
         if (o.test_name not in new_test_names or o.gap_id is None
                 or o.gap_id not in hidden_gap_ids or o.status != "ok"):
@@ -704,7 +714,8 @@ def _log_test_result_traces(mem: Memory, conn, student_id: str, assignment_id: s
             student_id, "system", "test_result",
             {"conclusion": "success" if o.passed else "failure",
              "item_difficulty": difficulty, "attempt_id": attempt_id,
-             "commit_sha": commit_sha, "gap_id": o.gap_id, "test_name": o.test_name},
+             "commit_sha": commit_sha, "gap_id": o.gap_id, "test_name": o.test_name,
+             "attempted": o.gap_id not in unattempted},
             assignment_id=assignment_id, concept_ids=concept_ids, conn=conn,
         )
 

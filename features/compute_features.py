@@ -25,6 +25,7 @@ from statistics import median
 
 from psycopg2.extras import Json
 
+from assessment.test_runner import TestOutcome, gap_observation
 from memory.memory import Memory
 from system import db
 from variables.error_frequency import error_frequency
@@ -75,7 +76,18 @@ NEUTRAL_DIFFICULTY = 0.5
 # memory.MASTERY_TRACE_KINDS). Because V1 is `Memory.replay_mastery`, a "v4" computation made
 # today already uses the new observations: the old per-test V1 is not reproducible from the log
 # any more (v2/v3 still are, they read test_result_history). Stored v4 rows are left as they are.
-FORMULA_VER = "v5"
+#
+# D-084 (v6). The scoping and V1 are v5's; V5/V6 additionally leave out the outcomes of an
+# unattempted stub gap (`UNATTEMPTED_EXCLUDED_FROM` below). Stored v2..v5 rows are not touched
+# and those versions stay computable.
+FORMULA_VER = "v6"
+
+# D-084. From this formula version on, V5/V6 leave out a hidden-test outcome of a gap that was
+# an unattempted NotImplementedError stub in that commit (`gap_observation`, the D-079
+# definition). Versions up to v5 count it as a failure, exactly as their stored rows did, so
+# they stay reproducible. FORMULA_VER became "v6" for exactly this reason: the v5 rows already
+# stored would be recomputed differently.
+UNATTEMPTED_EXCLUDED_FROM = "v6"
 SYNC_COMMIT_PREFIX = "ci: sync template"
 INITIAL_COMMIT_PREFIX = "Initial commit:"
 TOOLING_FAILURE_RUNS = {
@@ -379,6 +391,37 @@ def _pace(cur, student_id, formula_ver=FORMULA_VER):
     return out
 
 
+def _excludes_unattempted(formula_ver):
+    """True for formula versions that leave unattempted stubs out of V5/V6 (D-084)."""
+    return formula_ver not in ("v2", "v3", "v4", "v5")
+
+
+def _drop_unattempted(cur, results):
+    """`results` (test_result_history entries) without those of an unattempted gap (D-084).
+
+    A trace written from D-084 on says so itself (`attempted`). An older trace that still
+    names its (attempt, commit, gap) is resolved from that commit's stored `test_results`
+    with the same `gap_observation`; a trace that names nothing (written before D-079)
+    cannot be resolved and is KEPT -- the safe direction, it is never dropped by guess."""
+    cache: dict[tuple, bool] = {}
+    kept = []
+    for r in results:
+        if r["attempted"] is False:
+            continue
+        if r["attempted"] is None and None not in (r["attempt_id"], r["commit_sha"], r["gap_id"]):
+            key = (r["attempt_id"], r["commit_sha"], r["gap_id"])
+            if key not in cache:
+                cur.execute(
+                    "SELECT test_name, passed, message, status FROM test_results"
+                    " WHERE attempt_id = %s AND commit_sha = %s AND gap_id = %s", key)
+                rows = [TestOutcome(n, p, m, r["gap_id"], st) for n, p, m, st in cur.fetchall()]
+                cache[key] = bool(rows) and gap_observation(rows) is None
+            if cache[key]:
+                continue
+        kept.append(r)
+    return kept
+
+
 def _error_stats(cur, student_id, est, formula_ver=FORMULA_VER):
     """V5 and V6 — both read the sequential run history, so they share one pass.
 
@@ -413,6 +456,8 @@ def _error_stats(cur, student_id, est, formula_ver=FORMULA_VER):
 
     test_results = [r for r in Memory().test_result_history(student_id, conn=cur.connection)
                     if r["passed"] is not None]
+    if _excludes_unattempted(formula_ver):
+        test_results = _drop_unattempted(cur, test_results)
 
     runs = [(ts, conclusion) for ts, conclusion, _, _ in ci_rows]
     runs += [(r["ts"], "success" if r["passed"] else "failure") for r in test_results]

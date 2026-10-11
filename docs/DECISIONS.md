@@ -3570,3 +3570,58 @@ anas / d818c872b5: NOT graded in this task, and no skip flag is added. The behav
              (stored, not a mastery observation, no freeze, D-066/D-069); once it has a
              `test_results` row it is never picked up again. Anas will run it himself later, after a
              backup.
+
+### D-084 -- an unattempted stub is not a failure in V5/V6 (formula v6)
+Date:        2026-10-11
+Status:      DECIDED and IMPLEMENTED (Anas, 2026-10-11). `FORMULA_VER` is "v6" (bumped on Anas's
+             "Bump to v6"). No `learner_features` row was written or changed by the bump; v2..v5
+             stay computable.
+Authority:   Anas
+Problem:     D-079 stopped an unattempted gap from counting as a mastery failure, but the
+             `test_result` traces that feed V5 (error response) and V6 (error frequency) still
+             counted it. Found on the first live `run_cycle` (D-083): student2's NotImplementedError
+             stub `g_ld_select` put `sql.select_filter: 1` in `by_concept` and, being the latest
+             event with no later pass, left one error unresolved in V5.
+Decision:    From formula version "v6" on, a hidden-test outcome of a gap that was an unattempted
+             stub in that commit is left out of V5/V6 (total_runs, failures, fail_ratio, by_concept,
+             time-to-fix, opportunities). It stays stored: in `test_results`, and as a
+             `test_result` trace, as evidence that the gap was not attempted.
+             Definition: the single `assessment.test_runner.gap_observation` (D-079): a gap is
+             unattempted in a commit when ANY of its hidden tests failed with NotImplementedError,
+             and then ALL of that gap's tests in that commit are left out (a test that passes for
+             free beside a stub is not evidence either). Not re-implemented anywhere.
+New traces:  `test_result` payload gains `attempted` (False for a stub gap), next to the identity
+             fields D-079 added. `Memory.test_result_history` returns attempted, attempt_id,
+             commit_sha, gap_id (None on older traces).
+Older traces: no row is rewritten. A trace with identity but no `attempted` (the two student2
+             traces of 2026-10-11) is resolved at computation time from that commit's
+             `test_results` rows with the same `gap_observation`. A trace that names nothing
+             (everything written before D-079, i.e. all of anas's) cannot be resolved and is KEPT:
+             never dropped by guess.
+Versions:    v2..v5 still count a stub, so their stored rows stay reproducible
+             (`UNATTEMPTED_EXCLUDED_FROM = "v6"`, `_excludes_unattempted`). The v5 row already stored
+             for student2 (03:17:25) WOULD be recomputed differently, which is why this is a new
+             version. Existing `learner_features` rows are not touched. A v6 row for a student
+             appears only on new activity (the watermark collides with the v5 row), as for every
+             earlier bump.
+anas:        His V5/V6 remain LEGACY DATA with a known bias: his traces predate the identity fields
+             (attempt_id, commit_sha, gap_id), so the stub failures among them (transform, extract
+             parse) cannot be recognised and are still counted as failures. New students are not
+             affected: their traces carry the identity and the `attempted` flag. Recovering anas's
+             by joining `test_results` on `ts = ran_at` was REJECTED as fragile: `ran_at` is
+             rewritten by upserts (the demo did it for months), so the join would silently pair
+             the wrong rows.
+Measured, in memory on the real database (read-only), v5 -> v6:
+             student2  V6 fail_ratio 0.667 -> 0.636; by_concept loses `sql.select_filter: 1`
+                       (py.testing 3, py.errors_debugging 4, py.data_structures 3 unchanged);
+                       V6 score 0.167 -> 0.182; V5 score 0.936 -> 0.999, resolution_ratio
+                       0.875 -> 1.0 (the stub was the one unresolved error).
+             anas      unchanged (fail_ratio 0.356; unclassified 8, py.data_structures 6,
+                       py.testing 7): his traces predate the identity fields, so the stub
+                       failures among them (transform, extract parse) cannot be recognised and
+                       stay counted. Legacy data, not a rule failure.
+Tests:       tests/test_unattempted_not_a_failure.py (7): stub not counted, real AssertionError
+             still counted, NotImplementedError in one commit then passing, an older trace
+             resolved from test_results, an unnamed trace kept, v2..v5 unchanged, the flag is
+             gap-level.
+
