@@ -3097,3 +3097,295 @@ Cost:        Both lists (commits, runs) are still read in full every cycle: 2 ca
 Defence:     "The collector no longer pays to re-read answers it already has, and a log that
              could not be fetched is retried a bounded number of times and then explained
              on the row, not forgotten."
+
+### D-068 -- OPEN: two V1 mastery pipelines disagree; which is the single source of truth?
+Date:        2026-10-10
+Status:      OPEN (needs Anas)
+Context:     The P1 diagnostic found V1 computed twice. The profile (memory.py, replay of
+             `ci_run` + `test_result` traces) drives variant selection, the Code Agent prompt and
+             Beat 5. The features path (compute_features._mastery) replays raw_workflow_runs
+             rows that have a concept plus the same test_result traces, and nothing reads it.
+             anas: profile n=14/9/1, features v3 n=16/9/7. Successful CI runs never get a concept,
+             so the features path sees CI failures only.
+Invariant:   "traces are truth; learner_profile is derived" -- only the profile follows it.
+Options:     (a) features V1 becomes a call into the trace replay (one implementation);
+             (b) CI runs become `ci_run` traces first (needs a concept for successful runs);
+             (c) leave both and publish only the profile's number.
+Cost:        Until decided, any quoted "V1" must name its source; the features number is biased
+             low by construction. See docs/reading/2026-10-10-diagnostic-p1-p9-grader-collector.md.
+
+### D-069 -- formula v4: initial commit excluded, one V1, collection_error/timeout are not evidence, no grading after the freeze
+Date:        2026-10-10 (overnight batch, Stage 1)
+Status:      DECIDED (by Anas, in the batch brief) and IMPLEMENTED for FUTURE data. Addenda to
+             D-066 (1c) and D-068 (1b) below; nothing above is rewritten.
+Authority:   Anas. Items marked "choice" were left open and settled by the most conservative
+             option (the one that changes least and fails open).
+Context:     The student2 clean-room test (a student with no history) showed five numbers that
+             came from the framework, not from legacy data: the template commit and its red CI
+             run were counted; one repo-wide red CI run was charged to py.testing although
+             extract passed 4/4; features V1 and the profile's V1 disagreed (n=16/9/7 vs
+             14/9/1 for anas, 6/7/3 vs 6/6/- for student2); a syntax error cost as much as a
+             wrong retry loop; and a hung pytest would have been retried every cycle.
+Decision:    1a. A commit whose message starts with "Initial commit:" AND assignment_id IS NULL
+                 is not a student action (`initial_commit_sql`, same fail-open test as the sync
+                 rule: NULL message or a non-NULL assignment_id keeps the row). Excluded from V3
+                 commit gaps, V6 changed_loc, the effort baseline, the watermark and the active
+                 list. publish_repo already writes "Initial commit: ..." (checked, a test pins it).
+                 choice: the CI RUN whose head_sha is that commit is excluded too, from
+                 everything that reads raw_workflow_runs, exactly like a sync-triggered run. The
+                 brief named commits only; the run is the same non-action, and its failure
+                 (stubs) is certain by construction. Alternative: exclude the commit only.
+             1b. V1 in learner_features = `Memory.replay_mastery` (new, read-only): the same
+                 `_replay_concept_estimator` loop `_replay_concept` uses, so there is ONE
+                 implementation (D-068 option a). CI runs feed NO concept-level mastery; they
+                 still feed V5/V6 (by_concept, fail_ratio, time-to-fix). New formula_ver "v4";
+                 the stored V1 shape is the profile's (p_mastery, p_correct_next, n,
+                 confidence, ci90, trend, param_set). v2/v3 stay computable and readable
+                 (`compute_for_student(cur, sid, "v3")`, `run(formula_ver=...)`); the
+                 (student_id, computed_at) key is unchanged. Consequence kept visible: a v4 row
+                 at a watermark where a v2/v3 row already exists is SKIPPED, never overwritten
+                 (write_features' existing guard). That is why anas and student2 get no v4 row
+                 until they produce new activity.
+             1c. A `collection_error` row is stored in test_results with its status, counts for
+                 the freeze check, effort and pace, but writes NO `test_result` trace (so no
+                 mastery update). choice: `timeout` is treated the same way. Alternative: charge
+                 both as failures (the D-066 behaviour). Tests that assumed the old behaviour
+                 were rewritten (test_grading_sandbox).
+             1d. `grade_collected.find_pending` skips commits of a FROZEN attempt that are newer
+                 than the commit it froze on. They stay in raw_commits; they get no test_results
+                 row and no observation; the summary reports `post_freeze_commits_skipped`.
+             1e. A pytest TimeoutExpired is caught in `evaluate`: every @gap test of the hidden
+                 file is recorded once as failed with status "timeout". The commit then has
+                 test_results rows, so it is not picked up again. sql/06 widens the status CHECK
+                 (additive: 'ok','collection_error','tooling','timeout').
+Addendum D-066: a collection_error no longer writes a mastery trace (see 1c). The test
+             `test_a_collection_error_is_stored_with_its_status_but_writes_no_mastery_trace`
+             replaces the one that asserted n=2.
+Addendum D-068: RESOLVED by option (a) for formula v4. The two pipelines can still differ for
+             old v2/v3 rows, which stay as computed.
+Tests:       tests/test_stage1_d069.py (1a x4, 1b x2), test_grade_collected (1d),
+             test_grading_sandbox (1c, 1e); test_pipeline_integration pins v3 for the two
+             tests that document CI-driven V1. 654 passed, 1 skipped, 1 xfailed.
+To apply by hand (real DB, NOT applied): re-run `python -m scripts.init_db` (idempotent) so
+             sql/06 replaces test_results_status_check with the 4-value version. Until then a
+             real `timeout` row would be rejected by the CHECK (the grade for that commit fails
+             and is retried; nothing is lost).
+Later:       an initial commit that touches an assignment file (legacy single-assignment repo)
+             is not recognised (safe direction); a guard inside grade_attempt itself against
+             grading a frozen attempt's later commit (today only find_pending); a stored
+             "touches only template files" flag instead of the message prefix; a timeout for
+             a student module that kills the interpreter (open question 4); V5's
+             current_mastery for a concept that only CI saw now defaults to 1.0.
+
+### D-070 -- one roster loader with a path argument; `--roster` on collect and grade_collected
+Date:        2026-10-10 (overnight batch, Stage 2)
+Status:      DECIDED (Anas, batch brief) and IMPLEMENTED.
+Authority:   Anas
+Context:     collect read the roster; grade_collected read it too but through a code path that
+             could not be redirected, so the student2 clean-room test had to call `run()` with a
+             hand-built `repo_for` map and an in-memory roster. Two scripts, two ways to find a
+             student's repo, no way to use a scratch roster without touching config/roster.yaml.
+Decision:    `scripts/seed_data.py::load_roster(path=None)` is the only function that reads a
+             roster (default config/roster.yaml). `roster_repos(roster)` gives the collector's
+             rows and `roster_repo_for(roster)` the grader's map, from the same rows, so the two
+             cannot disagree. `scripts/collect.py` and `scripts/grade_collected.py` take
+             `--roster PATH`. The other callers (dags, demo, sync_template, backfill_head_sha)
+             call `load_roster()` unchanged; their tests monkeypatch it with a no-argument
+             lambda, so it was deliberately not threaded through them.
+Tests:       tests/test_roster_loader.py (5), scratch roster in a temp dir, no DB, no network.
+Later:       a `--roster` option on sync_template / backfill_head_sha / demo; validating a
+             scratch roster against the `students` table before collecting.
+
+### D-071 -- scripts/run_cycle.py: one idempotent command for the whole student-side pipeline
+Date:        2026-10-10 (overnight batch, Stage 3)
+Status:      DECIDED (Anas, batch brief) and IMPLEMENTED.
+Authority:   Anas
+Context:     The pipeline was four manual commands (collect, grade_collected, compute_features,
+             the profile sync) plus an Airflow DAG that cannot run here (no airflow install,
+             STATUS M1). Nothing prevented two runs overlapping or a bad student from stopping
+             the rest.
+Decision:    `python -m scripts.run_cycle [--student X] [--roster P] [--dry-run]
+             [--skip-network] [--with-llm]`. Per student, in order: collect (collect_all),
+             grade (grade_collected.run), features (compute_features.run(only=[sid]), only when
+             the student's watermark has no learner_features row, whatever its formula_ver),
+             profile (Memory.sync_features_ref, only when `Memory.features_ref_is_stale`).
+             Reuses those functions; reimplements none. New small hooks: `conn=` on
+             compute_features.run, `Memory.features_ref_is_stale` (read-only).
+             - Overlap: `pg_try_advisory_lock(640201071)` on a dedicated connection; a second
+               cycle exits at once, code 3. Closing the connection releases it (also on a crash).
+             - DB down: the first connection attempt fails fast, code 2, plain message.
+             - Isolation: every stage of every student is its own unit of work (own connection
+               and commit in production, a SAVEPOINT in tests); an exception is recorded and the
+               next stage / student still runs; exit code 1 if any student failed.
+             - `--dry-run`: no network (collect only says what it WOULD do), no write. Proven on
+               the real DB: baseline identical before/after.
+             - `--skip-network` skips collect AND grade (grading fetches the commit from GitHub).
+             - `--with-llm`: a stub that prints "NOT WIRED". choice: the Code Agent needs a
+               rendered checkout and a billed call per attempt, more than a pipeline stage.
+               Alternative: call code_agent.grade for each newly frozen attempt.
+             choice: "new activity" for features = the watermark has no row. A v2/v3 row at the
+               same watermark counts as computed (write_features never overwrites another
+               version), so anas is not retried every cycle. Alternative: always call run().
+Tests:       tests/test_run_cycle.py (9): a second cycle writes nothing (row counts AND content
+             hashes of raw_commits, attempts, test_results, traces, learner_features,
+             learner_profile), per-student isolation, --student, lock refusal and release,
+             dry-run writes nothing and never calls the GitHub layer, --skip-network, --with-llm,
+             DB-down message. Fake GitHub layer; no network.
+Real DB:     `python -m scripts.run_cycle --dry-run` today: anas -> WOULD collect 6 roster rows,
+             WOULD grade 1 commit (d818c872b5, weather_etl_load; NOT graded), features up to
+             date, profile current. With a scratch roster for student2: nothing to grade, up to
+             date. Writes: none (baseline.py identical).
+Later:       a `--loop`/scheduler (cron, Windows Task Scheduler, Airflow once installed); the LLM
+             stage; per-stage timeouts; a lock timeout/age report; rate-limit awareness of the
+             GitHub token; running the cycle's grade stage inside a container (D-065).
+
+### D-072 -- next-attempt rule: scripts/next_attempt.py (allowed only after a freeze, or --force)
+Date:        2026-10-10 (overnight batch, Stage 4)
+Status:      DECIDED (Anas, batch brief) and IMPLEMENTED. Nothing was written to the real DB.
+Authority:   Anas
+Decision:    `python -m scripts.next_attempt --student X --assignment Y [--force] [--dry-run]
+             [--out-dir D]`. The current attempt is the highest attempt_no for (student,
+             assignment). FROZEN (submitted_at set) -> the next one may start. OPEN -> REFUSED
+             with the reason (exit 1) unless the instructor passes --force. No attempt at all
+             -> exit 2 (the first attempt belongs to render/publish). When allowed it picks the
+             variant with `select_variant` from the student's CURRENT profile mastery,
+             renders it with `render_student_repo(..., only_assignment=Y)` (new optional
+             parameter, default behaviour unchanged) into a scratch dir (kept; its path is
+             printed), and records the variant and attempt rows in one transaction. It never
+             pushes anything.
+             `--dry-run` runs the same code inside a SAVEPOINT it rolls back: the printed variant
+             and file list are real, no row is left behind, and the scratch dir is removed.
+             choice (stale open attempt): --force leaves the old attempt EXACTLY as it was
+             (submitted_at NULL, commit_sha NULL). It is superseded by number, not closed.
+             Reason: closing needs a column that does not exist (a schema change) and the rails
+             say never to change an existing row. Known consequence, written in the script's
+             docstring: `grade_collected._target_attempts` lets an OPEN attempt beat a FROZEN
+             one regardless of number, so a stale open attempt 1 would keep receiving commits
+             that belong to a frozen attempt 2. Alternative (proposed, not built): additive
+             nullable `attempts.closed_at` + `closed_reason` ('superseded'|'abandoned'),
+             written here at --force time and honoured by `_target_attempts`.
+Tests:       tests/test_next_attempt.py (6): refusal writes nothing; a frozen attempt allows #2
+             and records only THIS assignment (no row for the other stage), hidden tests never in
+             the render; --force starts over and the old row is byte-identical; dry-run
+             records nothing and is deterministic; the new attempt is itself open; no-attempt
+             refusal. Real DB, dry-run only: student2/extract and anas/extract are frozen -> #2
+             allowed; student2/load and anas/load open -> refused. Baseline identical.
+Finding:     for `weather_etl_extract` the next variant is `864fe8bbecf4` hiding g_ext_parse AND
+             g_ext_retry, the SAME bundle as attempt 1: with only two gaps and "a concept group
+             is hidden whole" (D-042), a second attempt cannot differ. Attempt 2 is a repeat, not
+             a new problem. Not fixed; a question for Anas (report).
+             Also: the scratch render holds only the one stage's file, but copies ALL visible
+             tests, so the visible tests of the other stages would fail to import if this tree
+             were pushed as is. Publishing a next attempt is not wired (no GitHub in this batch).
+Later:       closed_at/closed_reason (above); publish wiring (new repo per attempt > 1, needs
+             --repo-name); a per-concept cap so an attempt is not an exact repeat; checking that
+             the student's CI/roster rows point at the new repo.
+
+### D-073 -- scope_check wired into grading: attempts.out_of_scope_lines (V9), fail-open
+Date:        2026-10-10 (overnight batch, Stage 5)
+Status:      DECIDED (Anas, batch brief) and IMPLEMENTED. No schema change (the column already
+             exists in sql/06, nullable). Nothing was written to the real DB.
+Authority:   Anas
+Decision:    `grade_attempt` now computes, for every graded commit, the number of changed lines
+             of the submitted assignment file that lie OUTSIDE the gaps this attempt hid, and
+             stores it in `attempts.out_of_scope_lines`. The released file is REBUILT from the
+             master and the attempt's variant (`render_student_file_with_ranges`, new: the same
+             loop as `render_student_file`, which now calls it, so the text and the hidden-region
+             line numbers cannot drift) and diffed with `scope_check` (unchanged). Gap-scoped
+             only (invariant 14): pre-solved gaps are not gap regions.
+             FAIL-OPEN: a missing file, an unparseable master, or a master_version mismatch
+             (invariant 15: the variant pins a different master than the project's) logs a
+             warning and leaves the column as it was; grading is never blocked and no number is
+             invented. The computation runs under a SAVEPOINT so a SQL error cannot poison the
+             grading transaction.
+             choice: one column per attempt, many graded commits. It holds the latest graded
+             commit's value until the attempt freezes and the FROZEN commit's value afterwards
+             (`WHERE submitted_at IS NULL OR commit_sha IS NOT DISTINCT FROM <this commit>`).
+             Alternative: a per-commit table (a schema change) so V9 can be computed over the
+             whole history.
+Tests:       tests/test_scope_wiring.py (7): ranges are in released-file coordinates; a solved
+             file edited only inside the gaps -> 0 and the attempt freezes; an edit outside -> 1;
+             fail-open on a missing file (and the warning is logged) and on a master_version
+             mismatch; a later commit cannot overwrite the frozen value; before the freeze the
+             latest commit wins (1 then 2).
+Real data (read-only, computed in memory, nothing stored; anas's commits come from the local
+             clone renders/anas_attempt1, no network):
+               anas extract 5759078 -> 0 (in-gap changed lines 8)
+               anas extract 2d087f5 -> 0 (in-gap changed lines 16)
+               anas load    d818c87 -> 0 (in-gap changed lines 1; still ungraded on purpose)
+             student2's three extract commits (128da3e, 52d4ac3, ecee294): BLOCKED -- their
+             content exists only on GitHub (no local clone) and this batch makes no network
+             calls. The cycle will fill the column the next time it grades them (they are
+             already graded, so a re-grade is needed: see the report).
+Later:       a per-commit store; backfilling the column for already-graded commits (a script
+             that re-reads each graded commit); V9 as a rate (changed lines outside / total
+             changed lines) rather than a count; treating a formatter-only change separately.
+
+### D-074 -- feedback v0 without an LLM: scripts/post_feedback.py (dry-run only)
+Date:        2026-10-10 (overnight batch, Stage 6)
+Status:      DECIDED (Anas, batch brief) and IMPLEMENTED as DRY-RUN ONLY. Nothing was posted,
+             nothing was written to the real DB, no network.
+Authority:   Anas
+Decision:    For each graded commit, `build_feedback` writes a short markdown message from
+             `assessment/diagnose.py` (weakest concept, recurrence flags) and the commit's own
+             `test_results` rows: "N of M checks passed", the failing checks by NAME with the
+             first line of the assertion message, and plain-words notes for a collection error
+             ("your file could not be loaded ... not counted as a wrong answer"), a timeout and
+             a tooling problem ("a problem on our side, it does not count against you").
+             HIDDEN CODE NEVER SHOWS, enforced three ways: a message is cut to its first line
+             and 200 characters; every line (>= 12 chars, stripped) of every hidden test file
+             of the project is redacted from any text; and the finished message goes through
+             `assert_no_hidden_source`, which raises `HiddenSourceLeak` (nothing is produced)
+             if one is still there. The test `test_it_cannot_be_made_to_leak_hidden_test_code`
+             feeds a failure message made of real hidden source lines and checks none survive.
+             choice: history lines ("keeps failing across several pushes", "concept to practise
+             next") appear only when THIS commit has real failing checks and status ok. Found on
+             the first dry-run: a passing commit said "keeps failing". Alternative: always show.
+             Idempotence: `feedback_posts (attempt_id, commit_sha, channel)` is the "already
+             posted" marker, in NEW `sql/07_feedback_tables.sql` (additive, `init_db` ORDER now
+             lists it). Written, NOT applied to the real DB; a missing table is read as "no
+             marker yet". Nothing writes it in v1.
+             Posting: `post_comment` (the real GitHub commit-comment POST) raises
+             `FeedbackPostingNotEnabled` unless `enabled=True` AND `VDEL_ALLOW_FEEDBACK_POST=1`.
+             The CLI `--post` hits the same gate and, even when open, says the loop is not wired.
+             No test calls the posting path with both set; the test module patches
+             `requests.post` to fail if anything reaches it.
+Tests:       tests/test_post_feedback.py (10).
+To apply by hand (real DB, NOT applied): `python -m scripts.init_db` creates feedback_posts.
+Findings:    (1) `diagnose` is attempt-wide, not "as of this commit": the dry-run text for
+             student2's FIRST commit already says `g_ext_retry` keeps failing, because a later
+             commit failed too. Fine for feedback posted right after grading, wrong for a
+             backlog. (2) The assertion message kept is the pytest message line, e.g.
+             `requests.exceptions.ConnectionError` or `NotImplementedError`: informative about
+             the failing check, but it names an exception, not what to do.
+Later:       as-of-commit diagnosis; a hint per gap authored by the tutor (Hanafi) instead of an
+             exception name; the posting loop and the marker write; rate limits; one comment
+             per commit vs one per push.
+
+### D-075 -- addenda to D-062 and D-063 (docs-only corrections found by the P4 diagnostic)
+Date:        2026-10-10 (overnight batch, Stage 7)
+Status:      DECIDED. Documentation only: no code behaviour changed. D-062 and D-063 are NOT
+             rewritten; this entry corrects them.
+Authority:   Anas (batch brief)
+Addendum D-062: its Status line says "NOT yet run against real GitHub -- the first real dry-run
+             ... is Anas's to run". It HAS been run, and applied: `raw_commits` holds two
+             `ci: sync template (D-060)` commits (1318730c3e at 2026-10-10 03:20:22 UTC and
+             f724b45592 at 03:20:23 UTC), which only `sync_template --apply` can have produced.
+             `docs/explanation.md` carried the same stale sentence; fixed there.
+Addendum D-063: (1) the same explanation.md paragraph said `backfill_head_sha.py` was "not yet run
+             against GitHub"; D-063 itself already records the backfill as applied by Anas
+             (48/48 runs then; 52/52 now, 0 NULL), so only explanation.md was stale. Fixed.
+             (2) rule (b) says "raw_commits.message is stored in full". It is not: the collector
+             stores `c["commit"]["message"][:500]` (collectors/collect_github.py:248). The rule is
+             unaffected, because it tests only the PREFIX `ci: sync template`, which is inside the
+             first 500 characters; the longest message in the real database is 73 characters. The
+             claim should read "stored up to 500 characters, enough for the prefix test".
+Also corrected in code comments (no behaviour change):
+             memory/memory.py (the replay comment) said nothing writes `ci_run` traces and every
+             such trace is hand-made in tests. No code writes them (the collector writes
+             raw_workflow_runs rows), but the real database holds one (trace 28797, 2026-08-19,
+             source run 31903540841), so the comment now says that. agents/echo_agent.py's
+             docstring said `MASTERY_TRACE_KINDS` is `{"ci_run"}`; it is `{"ci_run", "test_result"}`
+             (memory.py:150) and the docstring says so, keeping the history of when it was written.
+Later:       a test that fails when a design document says "not yet run" about a script whose
+             effects are visible in the database (not worth building for v1).

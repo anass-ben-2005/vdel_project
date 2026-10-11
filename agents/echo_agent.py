@@ -27,7 +27,9 @@ third place D-007's consequence propagates -- after `update_mastery` itself and
 this file does.
 
 **Option A -- Echo does not invent the rubric -> BKT mapping.**
-`memory.MASTERY_TRACE_KINDS` is `{"ci_run"}`, and `NON_MASTERY_KINDS["verdict"]` states in
+`memory.MASTERY_TRACE_KINDS` was `{"ci_run"}` when this was written (it is now
+`{"ci_run", "test_result"}`, memory.py:150; `verdict` is still outside it), and
+`NON_MASTERY_KINDS["verdict"]` states in
 prose that the mapping from a 0/2/4 rubric score to a BKT pass/fail "is a decision that has
 not been made". So Echo logs its `verdict` as a CHILD of the `ci_run` it judges and then
 calls `update_mastery`, which replays the `ci_run`. Mastery therefore moves because of the

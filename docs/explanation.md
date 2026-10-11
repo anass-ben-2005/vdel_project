@@ -878,6 +878,20 @@ is ever modified:**
    restricts a run to given students — tests must use it so they never write feature rows
    for real students.
 
+   **`formula_ver` v4 (D-069, the default now) changes two things, for future rows only.**
+   (c) The initial template commit (`message` starts `Initial commit:` **and** `assignment_id IS
+   NULL`, same fail-open test as the sync rule: `initial_commit_sql()`) and the CI run whose
+   `head_sha` is that commit are not student actions: out of V3, V6's `changed_loc`, the effort
+   baseline, the watermark, the active list and the V5/V6 run history. (d) **V1 is no longer
+   computed in this file**: `_mastery_v4` calls `Memory.replay_mastery`, the same
+   `_replay_concept_estimator` loop the profile uses, so `learner_features.mastery` and
+   `learner_profile.mastery` carry the same numbers for the same traces (this closes D-068);
+   raw CI runs feed no concept-level mastery any more, but still feed V5/V6. The stored V1
+   shape is the profile's (`p_mastery, p_correct_next, n, confidence, ci90, trend, param_set`).
+   `run(..., formula_ver=, conn=)`: `conn` joins a caller's transaction (used by `run_cycle`).
+   v2 and v3 stay computable and their rows stay readable; a v4 write at a watermark where a
+   v2/v3 row already sits is skipped, never overwritten.
+
 **What each helper does, briefly** (all read-only SQL against the raw tables, feeding
 the pure formula functions from `variables/`):
 
@@ -1807,7 +1821,9 @@ for every changing file, re-reads the remote first, and writes nothing if any SH
 write is `PUT /contents` with that SHA (GitHub's own 409 is a second guard). The repo must be in
 `config/roster.yaml` (`--allow-unlisted` overrides; `--student` checks the roster's owner). The
 token comes from the environment as in `scripts.collect` and is replaced by `***` in all output.
-Status: tested with a mocked HTTP layer (33 tests); **not yet run against real GitHub**. Limit:
+Status: tested with a mocked HTTP layer (33 tests) **and run against real GitHub on 2026-10-10**
+(evidence in the real database: two `ci: sync template (D-060)` commits, 03:20:22 and 03:20:23 UTC, are
+in `raw_commits`; corrected by D-075 -- this paragraph used to say it had not been run). Limit:
 `PUT /contents` is one commit per file, so a partial failure is possible and is reported.
 
 **`tests/conftest.py` — the test suite never touches the real database (D-064).**
@@ -1836,7 +1852,8 @@ even fetched. Dry-run (GET only) is the default; `--apply` writes. It prints cou
 scope / already set / would fill / not found / errors) and how many filled runs point at
 a sync commit (the runs rule (b) will exclude). Token handling and `***` redaction are
 shared with `sync_template.py`. Status: tested (8 tests, HTTP mocked, real DB rolled
-back); **not yet run against GitHub** — run it yourself, dry-run first.
+back) **and run against GitHub** (all 52 stored runs now have a `head_sha`, none NULL; corrected by
+D-075 -- this paragraph used to say it had not been run). Dry-run first is still the default.
 
 **`scripts/grade_collected.py` — grades what the collector collected (D-056).**
 For each attempt, finds the commits in `raw_commits` attributed to it that have no
@@ -1848,6 +1865,45 @@ graded" is read from `test_results`. Commits the collector could not attribute t
 assignment (`assignment_id IS NULL`) are counted, never graded. Proven live on `anas`'s two real
 `weather_etl_extract` pushes: `5759078602` 2/4 (not frozen), `2d087f5c17` 4/4 (attempt frozen on
 that sha); a second run graded nothing.
+
+**`scripts/run_cycle.py` — the whole pipeline as one idempotent command (D-071).**
+`python -m scripts.run_cycle [--student X] [--roster P] [--dry-run] [--skip-network] [--with-llm]`.
+Per student, each stage its own unit of work: collect (`collect_all`), grade (`grade_collected.run`),
+features (`compute_features.run(only=[sid], conn=)`, only when the student's watermark has no
+`learner_features` row), profile (`Memory.sync_features_ref`, only when `Memory.features_ref_is_stale`).
+A Postgres advisory lock (key 640201071) stops two cycles overlapping (exit 3); an unreachable
+database exits at once (2); a failing student is recorded and the others still run (exit 1 if any
+failed). `--dry-run` reads only and calls no network; `--skip-network` skips collect and grade;
+`--with-llm` only reports "NOT WIRED". `tests/test_run_cycle.py` uses a fake GitHub layer.
+
+**One roster loader (D-070).** `scripts/seed_data.py::load_roster(path=None)` is the only function
+that reads a roster; `roster_repos(roster)` feeds the collector and `roster_repo_for(roster)` the
+grader from the same rows. `scripts/collect.py` and `scripts/grade_collected.py` take `--roster`.
+
+**`scripts/next_attempt.py` — the next-attempt rule (D-072).** Allowed only when the current attempt
+(highest `attempt_no`) is frozen, or with `--force`; otherwise it refuses and writes nothing. It picks
+the variant with `select_variant` from the profile's mastery, renders it with
+`render_student_repo(..., only_assignment=Y)` into a scratch directory, and records the variant and
+attempt rows; `--dry-run` does all of that in a rolled-back savepoint. A forced-over open attempt is
+left exactly as it was (superseded by number, not closed; see the script's docstring for the
+consequence in `grade_collected`). For `weather_etl_extract` the next variant is the same bundle as
+attempt 1 (two gaps, one concept group each hidden whole).
+
+**Grading changes (D-069, D-073).** A `collection_error` or `timeout` row (`test_results.status`) is
+stored but writes no `test_result` trace, so it is not a mastery observation; a pytest
+`TimeoutExpired` is caught and recorded once (every `@gap` test of the file failed, status
+`timeout`); `grade_collected` skips commits newer than the one an attempt froze on
+(`post_freeze_commits_skipped`). After each graded commit, `attempts.out_of_scope_lines` is set
+from `scope_check` against the released file rebuilt from the master and the attempt's hidden gaps
+(`gap_parser.render_student_file_with_ranges`); fail-open (NULL and a logged warning) on any problem.
+
+**`scripts/post_feedback.py` — feedback v0, dry-run only (D-074).** Builds a short markdown message
+per graded commit from `diagnose` and that commit's `test_results` rows (check names and the first
+line of the assertion message; a collection error, timeout or tooling problem in plain words). Hidden
+test source never appears: messages are cut to one line, every hidden-file line of 12+ characters is
+redacted, and `assert_no_hidden_source` raises before anything is produced. `feedback_posts`
+(`sql/07`, not yet applied to the real database) is the "already posted" marker. The real GitHub
+POST (`post_comment`) refuses unless `enabled=True` and `VDEL_ALLOW_FEEDBACK_POST=1`.
 
 **`scripts/render_student_repo.py` — materialises one attempt as a real file tree.**
 Calls `gap_generator.select_variant` and `gap_parser.render_student_file` to produce a real
