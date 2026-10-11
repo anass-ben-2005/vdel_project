@@ -100,6 +100,20 @@ def _target_attempts(cur, student: str | None,
     return {k: (v[0], v[1], v[2], v[4]) for k, v in chosen.items()}
 
 
+def _started_at(cur, attempt_id: int):
+    """`attempts.started_at` (D-090), or None when the attempt has none or the column does not
+    exist yet (fail-open: a database without sql/10 behaves exactly as before)."""
+    cur.execute("SAVEPOINT started_at_probe")
+    try:
+        cur.execute("SELECT started_at FROM attempts WHERE attempt_id = %s", (attempt_id,))
+        row = cur.fetchone()
+        cur.execute("RELEASE SAVEPOINT started_at_probe")
+        return row[0] if row else None
+    except Exception:  # noqa: BLE001
+        cur.execute("ROLLBACK TO SAVEPOINT started_at_probe")
+        return None
+
+
 def find_pending(
     cur, repo_for: dict, *, student: str | None = None,
     assignment: str | None = None, latest_only: bool = False,
@@ -120,6 +134,11 @@ def find_pending(
             (student_id, assignment_id, attempt_id),
         )
         rows = cur.fetchall()
+        started_at = _started_at(cur, attempt_id)
+        if started_at is not None:
+            # D-090: commits older than the attempt belong to an earlier attempt (they live in
+            # an earlier repo); offering them here would fail to fetch them every cycle.
+            rows = [r for r in rows if r[1] >= started_at]
         if frozen_at is not None:
             # D-069: the attempt is frozen at the commit that passed. A later push is
             # collected (raw_commits keeps it) but is not graded as evidence: the attempt's
@@ -200,6 +219,21 @@ def _remove_tree(path: Path) -> None:
 
 # --- the loop -----------------------------------------------------------------------------
 
+def _record_lint(conn, p, repo_dir: Path, status: str) -> None:
+    """D-088: store the gap-scoped lint counts V2 needs, from the checkout grading already has.
+    Static analysis only, fail-open (`lint_scope.record` never raises); in production
+    (`conn is None`) it commits on its own short connection, after `grade_attempt` committed."""
+    from assessment import lint_scope
+    kwargs = {"project_id": p.project_id, "assignment_id": p.assignment_id,
+              "attempt_id": p.attempt_id, "commit_sha": p.sha, "repo_dir": repo_dir,
+              "status": status}
+    if conn is None:
+        with db.cursor() as cur:
+            lint_scope.record(cur, **kwargs)
+    else:
+        lint_scope.record(conn.cursor(), **kwargs)
+
+
 def run(
     *, student: str | None = None, assignment: str | None = None,
     dry_run: bool = False, latest_only: bool = False, repo_for: dict,
@@ -242,6 +276,7 @@ def run(
             print(f"  GRADED    {label}: {result.tests_passed}/{result.tests_total} passed"
                   f" frozen={result.frozen}")
             status = getattr(result, "status", "ok")        # D-066
+            _record_lint(conn, p, repo_dir, status)          # D-088, fail-open
             if status != "ok":
                 print(f"    {status.upper()}: {getattr(result, 'detail', None)}")
             if result.tests_total == 0 and status == "ok":

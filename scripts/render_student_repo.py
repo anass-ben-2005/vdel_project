@@ -150,9 +150,25 @@ def _upsert_attempt(cur, student_id: str, project_id: str, assignment_id: str,
         " VALUES (%s, %s, %s, %s, %s, %s)"
         " ON CONFLICT (student_id, assignment_id, attempt_no) DO UPDATE SET"
         "   variant_id = EXCLUDED.variant_id, gap_seed = EXCLUDED.gap_seed"
-        " WHERE attempts.submitted_at IS NULL",
+        " WHERE attempts.submitted_at IS NULL"
+        " RETURNING attempt_id, (xmax = 0)",
         (student_id, project_id, assignment_id, attempt_no, variant_id, gap_seed),
     )
+    row = cur.fetchone()
+    if row is not None and row[1]:
+        _stamp_started_at(cur, row[0])
+
+
+def _stamp_started_at(cur, attempt_id: int) -> None:
+    """D-090: record when a NEW attempt was created. Only for a row this call INSERTED (a
+    re-render of an existing attempt must not move it). Fail-open: a database that has not
+    applied sql/10 yet simply keeps the column absent (SAVEPOINT, so the render continues)."""
+    cur.execute("SAVEPOINT stamp_started_at")
+    try:
+        cur.execute("UPDATE attempts SET started_at = now() WHERE attempt_id = %s", (attempt_id,))
+        cur.execute("RELEASE SAVEPOINT stamp_started_at")
+    except Exception:  # noqa: BLE001 -- e.g. the column does not exist yet
+        cur.execute("ROLLBACK TO SAVEPOINT stamp_started_at")
 
 
 # D-060. Two things the first published repo showed (CI run failed with `ruff: command not

@@ -1,0 +1,13 @@
+-- 10_attempt_started_at.sql -- D-090. ADDITIVE and idempotent. The test conftest applies it to
+-- vdel_test through init_db. NOT applied to the real database by the batch: apply by hand with
+-- `python -m scripts.init_db`.
+--
+-- When an attempt was created (rendered). Needed once an assignment has more than one attempt:
+-- attempt N+1 lives in a NEW repo, but raw_commits keeps attempt N's commits under the same
+-- (student, assignment). Without a start time the grader would offer attempt N's old commits as
+-- "pending" for attempt N+1 and fail to fetch them from the new repo on every cycle. With it,
+-- only commits made at or after the attempt's start are candidates.
+--
+-- NULL for every attempt that exists today (no filter: nothing changes for them). Set by
+-- render_student_repo only when it INSERTS an attempt, never on a re-render.
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;

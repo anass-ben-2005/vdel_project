@@ -142,4 +142,4 @@ def test_a_trace_that_names_nothing_cannot_be_resolved_and_is_kept(world):
 def test_older_formula_versions_are_unchanged():
     assert [cf._excludes_unattempted(v) for v in ("v2", "v3", "v4", "v5", "v6")] == \
         [False, False, False, False, True]
-    assert cf.FORMULA_VER == "v6" and cf.UNATTEMPTED_EXCLUDED_FROM == "v6"
+    assert cf.UNATTEMPTED_EXCLUDED_FROM == "v6" and cf.FORMULA_VER >= "v6"

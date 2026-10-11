@@ -156,6 +156,29 @@ def scope_check(
     )
 
 
+def in_gap_submitted_ranges(
+    released_text: str, submitted_text: str, gap_ranges: Iterable[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """The lines of the SUBMITTED file the student wrote inside the gaps, as 1-indexed
+    inclusive `(start, end)` ranges -- the coordinate system `filter_lint_findings` needs
+    when the findings come from linting the submitted file (D-088).
+
+    `gap_ranges` are in the RELEASED file's coordinates; a gap replaced by a different number of
+    lines shifts everything after it, so the ranges cannot be reused on the submitted file.
+    Same diff, same block classification (`_opcode_is_in_gap`, including its conservative
+    treatment of mixed blocks) as `scope_check`: a block that counts as in-gap there is the
+    set of lines returned here. A pure deletion has no submitted line and returns nothing."""
+    released_lines = released_text.splitlines()
+    submitted_lines = submitted_text.splitlines()
+    gaps_0idx = _to_half_open_zero_indexed(gap_ranges)
+    matcher = difflib.SequenceMatcher(a=released_lines, b=submitted_lines, autojunk=False)
+    return [
+        (j1 + 1, j2)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes()
+        if tag in ("insert", "replace") and _opcode_is_in_gap(i1, i2, gaps_0idx)
+    ]
+
+
 def filter_lint_findings(
     findings: Iterable[Mapping], gap_ranges: Iterable[tuple[int, int]]
 ) -> list[Mapping]:

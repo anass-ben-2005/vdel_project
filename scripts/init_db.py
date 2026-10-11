@@ -26,6 +26,9 @@ ORDER = [
     "05_memory_tables.sql",
     "06_assessment_tables.sql",
     "07_feedback_tables.sql",       # D-074: references attempts (06) and raw_commits (02)
+    "08_lint_columns.sql",          # D-088: additive columns on attempts (06)
+    "09_feedback_issues.sql",       # D-089: references attempts (06)
+    "10_attempt_started_at.sql",    # D-090: additive column on attempts (06)
     "04_indexes.sql",
 ]
 

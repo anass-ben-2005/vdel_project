@@ -80,7 +80,14 @@ NEUTRAL_DIFFICULTY = 0.5
 # D-084 (v6). The scoping and V1 are v5's; V5/V6 additionally leave out the outcomes of an
 # unattempted stub gap (`UNATTEMPTED_EXCLUDED_FROM` below). Stored v2..v5 rows are not touched
 # and those versions stay computable.
-FORMULA_VER = "v6"
+
+# D-088 (v7). V2's cleanliness is measured: the gap-scoped ruff / sqlfluff counts stored on
+# `attempts` (sql/08) replace the fixed `lint_violations = 0, changed_loc = 0` of v2..v6, so a
+# student with measured attempts gets a cleanliness score. Versions up to v6 keep the old
+# zeros, so their stored rows stay reproducible; the v6 row a student may already have would be
+# recomputed differently, which is why this is a new version.
+LINT_MEASURED_FROM = "v7"
+FORMULA_VER = "v7"
 
 # D-084. From this formula version on, V5/V6 leave out a hidden-test outcome of a gap that was
 # an unattempted NotImplementedError stub in that commit (`gap_observation`, the D-079
@@ -318,8 +325,35 @@ def _effort(cur, student_id, formula_ver=FORMULA_VER):
     return effort_regulation(gaps, release_to_first_commit_h=float(lag or 0.0))
 
 
+def _measures_lint(formula_ver):
+    """True for formula versions whose V2 reads the stored lint counts (D-088)."""
+    return formula_ver not in ("v2", "v3", "v4", "v5", "v6")
+
+
+def _lint_totals(cur, student_id):
+    """(violations, changed_loc, attempts_measured) summed over this student's attempts that
+    HAVE a measurement; (0, 0, 0) when none has or the columns are not migrated yet (fail-open:
+    the real database gets sql/08 by hand, and until then V2 must keep working)."""
+    cur.execute("SAVEPOINT lint_totals")
+    try:
+        cur.execute(
+            "SELECT coalesce(sum(lint_violations), 0), coalesce(sum(lint_changed_loc), 0),"
+            " count(*) FROM attempts WHERE student_id = %s AND lint_changed_loc IS NOT NULL",
+            (student_id,))
+        v, loc, n = cur.fetchone()
+        cur.execute("RELEASE SAVEPOINT lint_totals")
+        return int(v), int(loc), int(n)
+    except Exception:  # noqa: BLE001 -- e.g. the columns do not exist yet
+        cur.execute("ROLLBACK TO SAVEPOINT lint_totals")
+        return 0, 0, 0
+
+
 def _discipline(cur, student_id, formula_ver=FORMULA_VER):
     """V2 — cleanliness needs lint counts over changed LOC; testing needs CI wiring.
+
+    D-088 (v7): the counts are real -- gap-scoped ruff / sqlfluff findings and the lines the
+    student changed inside the gaps, stored on `attempts` at grading time. Up to v6 they are
+    the fixed zeros described below.
 
     Reconciliation 2: M1 never checks out the student's code, so ruff/sqlfluff cannot
     run and lint_violations is genuinely unmeasured. changed_loc=0 makes cleanliness()
@@ -338,8 +372,15 @@ def _discipline(cur, student_id, formula_ver=FORMULA_VER):
 
     # cohort_alpha stays None: Cronbach's alpha needs >=10 students (habits.py), so the
     # composite gate cannot open for a cohort of one. Components are reported instead.
-    return engineering_discipline(lint_violations=0, changed_loc=0,
-                                  tests_state=tests_state, cohort_alpha=None).to_dict()
+    if not _measures_lint(formula_ver):
+        return engineering_discipline(lint_violations=0, changed_loc=0,
+                                      tests_state=tests_state, cohort_alpha=None).to_dict()
+    violations, changed, measured = _lint_totals(cur, student_id)
+    result = engineering_discipline(lint_violations=violations, changed_loc=changed,
+                                    tests_state=tests_state, cohort_alpha=None).to_dict()
+    # the evidence behind the number, so a reader of the row can audit it
+    return result | {"lint": {"violations": violations, "changed_loc": changed,
+                              "attempts_measured": measured}}
 
 
 def _pace(cur, student_id, formula_ver=FORMULA_VER):

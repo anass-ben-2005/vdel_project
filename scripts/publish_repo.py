@@ -62,6 +62,18 @@ GH_API = "https://api.github.com"
 _TIMEOUT_S = 60
 
 
+class GitHubHTTPError(RuntimeError):
+    """A GitHub write or read that answered with an error status. Carries the status so a
+    caller can tell 403 (no permission / rate limit), 404 (no such repo, or the token cannot
+    see it) and 422 (validation) apart without parsing text. The message never contains the
+    token."""
+
+    def __init__(self, status: int, reason: str):
+        super().__init__(f"HTTP {status}: {reason}")
+        self.status = status
+        self.reason = reason
+
+
 class PublishRefused(RuntimeError):
     """A safety rule stopped the run. Nothing irreversible had happened yet at the point
     each of these is raised (see the ordering in the module docstring)."""
@@ -279,6 +291,76 @@ class GitHub:
         r = self._req("GET", f"/repos/{owner}/{repo}/commits/{branch}")
         return r.json().get("sha") if r.status_code == 200 else None
 
+    # --- issues and collaborators (D-089, D-090). Each call raises GitHubHTTPError. ---------
+
+    @staticmethod
+    def _raise_for(r, what: str, ok: tuple[int, ...]) -> None:
+        if r.status_code in ok:
+            return
+        try:
+            message = str(r.json().get("message", ""))[:200]
+        except ValueError:
+            message = ""
+        if r.status_code == 403:
+            if r.headers.get("X-RateLimit-Remaining") == "0":
+                raise GitHubHTTPError(403, f"{what}: GitHub rate limit reached; retry later")
+            raise GitHubHTTPError(403, f"{what}: forbidden -- the token lacks permission "
+                                       f"(Issues / repo scope) or the repo is not the token "
+                                       f"owner's. {message}".strip())
+        if r.status_code == 404:
+            raise GitHubHTTPError(404, f"{what}: not found, or the token cannot see it")
+        if r.status_code == 410:
+            raise GitHubHTTPError(410, f"{what}: issues are disabled on this repository")
+        if r.status_code == 422:
+            raise GitHubHTTPError(422, f"{what}: validation failed. {message}".strip())
+        raise GitHubHTTPError(r.status_code, f"{what}: {message}".strip())
+
+    def find_issue(self, owner: str, repo: str, title: str, *, pages: int = 5) -> dict | None:
+        """The issue whose title is exactly `title` (pull requests excluded), open or closed."""
+        for page in range(1, pages + 1):
+            r = self._req("GET", f"/repos/{owner}/{repo}/issues",
+                          params={"state": "all", "per_page": 100, "page": page})
+            self._raise_for(r, f"listing issues of {owner}/{repo}", (200,))
+            items = r.json()
+            for item in items:
+                if "pull_request" not in item and item.get("title") == title:
+                    return item
+            if len(items) < 100:
+                return None
+        return None
+
+    def create_issue(self, owner: str, repo: str, title: str, body: str) -> dict:
+        r = self._req("POST", f"/repos/{owner}/{repo}/issues",
+                      json={"title": title, "body": body})
+        self._raise_for(r, f"creating an issue in {owner}/{repo}", (201,))
+        return r.json()
+
+    def issue_comments(self, owner: str, repo: str, number: int, *, pages: int = 10) -> list[dict]:
+        out: list[dict] = []
+        for page in range(1, pages + 1):
+            r = self._req("GET", f"/repos/{owner}/{repo}/issues/{number}/comments",
+                          params={"per_page": 100, "page": page})
+            self._raise_for(r, f"reading comments of {owner}/{repo}#{number}", (200,))
+            items = r.json()
+            out.extend(items)
+            if len(items) < 100:
+                break
+        return out
+
+    def create_issue_comment(self, owner: str, repo: str, number: int, body: str) -> dict:
+        r = self._req("POST", f"/repos/{owner}/{repo}/issues/{number}/comments",
+                      json={"body": body})
+        self._raise_for(r, f"commenting on {owner}/{repo}#{number}", (201,))
+        return r.json()
+
+    def invite_collaborator(self, owner: str, repo: str, username: str,
+                            permission: str = "push") -> str:
+        """Invite `username` to a repo. 'invited' (201) or 'already' (204)."""
+        r = self._req("PUT", f"/repos/{owner}/{repo}/collaborators/{username}",
+                      json={"permission": permission})
+        self._raise_for(r, f"inviting {username} to {owner}/{repo}", (201, 204))
+        return "invited" if r.status_code == 201 else "already"
+
 
 def preflight_scopes(tree: list[str], scopes: set[str] | None) -> str | None:
     """A warning string, or None; raises PublishRefused when the push cannot succeed.
@@ -357,8 +439,10 @@ def run(*, student: str, attempt_no: int, project: str | None = None,
         repo_name: str | None = None, owner: str | None = None, private: bool = True,
         dry_run: bool = False, update_roster: bool = True, roster_path: Path = ROSTER,
         assume_yes: bool = False, gh=None, remote_base: str | None = None,
-        confirm=input, conn=None) -> dict:
-    """`gh`/`remote_base`/`confirm`/`conn` are injectable for tests; production leaves them
+        confirm=input, conn=None, only_assignment: str | None = None) -> dict:
+    """`only_assignment` (D-090): render, record and register ONE assignment only -- the repo of
+    attempt N+1 of a single stage (scripts/deliver_next_attempt.py); None keeps the whole-project
+    behaviour. `gh`/`remote_base`/`confirm`/`conn` are injectable for tests; production leaves them
     None. `remote_base` replaces https://github.com (tests push to a local bare repo);
     `conn` is a caller-owned transaction used for every DB access and never committed or
     closed here (traces are append-only, so a test must roll back)."""
@@ -376,7 +460,11 @@ def run(*, student: str, attempt_no: int, project: str | None = None,
             github_username, cohort = cur.fetchone()
             cur.execute("SELECT assignment_id, concepts FROM assignments"
                         " WHERE project_id = %s ORDER BY seq", (project_id,))
-            assignments = cur.fetchall()
+            assignments = [a for a in cur.fetchall()
+                           if only_assignment is None or a[0] == only_assignment]
+            if only_assignment is not None and not assignments:
+                raise PublishRefused(f"{only_assignment!r} is not an assignment of "
+                                     f"{project_id!r}.")
         name = choose_repo_name(project_id, student, attempt_no, repo_name)
         roster_text = roster_path.read_text(encoding="utf-8") if roster_path.exists() else ""
         roster = yaml.safe_load(roster_text) or {}
@@ -398,8 +486,12 @@ def run(*, student: str, attempt_no: int, project: str | None = None,
                 # in either case.
                 conn.cursor().execute("SAVEPOINT vdel_publish_dry_run")
             try:
+                # `only_assignment` is passed only when set, so the whole-project call keeps
+                # the exact signature it always had.
                 info = render_student_repo(project_id, student, attempt_no, tree,
-                                           conn=conn if (dry_run or not own_conn) else None)
+                                           conn=conn if (dry_run or not own_conn) else None,
+                                           **({"only_assignment": only_assignment}
+                                              if only_assignment else {}))
             finally:
                 if dry_run:
                     conn.cursor().execute("ROLLBACK TO SAVEPOINT vdel_publish_dry_run")
