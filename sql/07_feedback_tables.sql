@@ -1,6 +1,6 @@
--- 07_feedback_tables.sql -- D-074. ADDITIVE and idempotent. Written, NOT applied to the real
--- database by the overnight batch (apply by hand: `python -m scripts.init_db`, which now lists
--- this file). The test conftest applies it to vdel_test through init_db like every other file.
+-- 07_feedback_tables.sql -- D-074. ADDITIVE and idempotent. Applied to the real database
+-- (it exists there with 0 rows, D-087); `python -m scripts.init_db` lists this file and the test
+-- conftest applies it to vdel_test through init_db like every other file.
 --
 -- One row per feedback comment actually POSTED for a graded commit. It is the idempotency
 -- marker for scripts/post_feedback.py: a (attempt, commit, channel) already present is never

@@ -903,8 +903,15 @@ is ever modified:**
    NotImplementedError stub in that commit (`gap_observation`, the D-079 definition): from the
    trace's own `attempted` flag, or, for a trace that names its commit but not the flag, from that
    commit's `test_results`. A trace that names nothing is kept. v2..v5 are unchanged and
-   `FORMULA_VER` is "v6" (D-084); anas's V5/V6 stay legacy data with a known bias, because his
+   `FORMULA_VER` is now "v7" (v6 = D-084); anas's V5/V6 stay legacy data with a known bias, because his
    traces predate the identity fields.
+
+   **V2 lint counts (D-088, formula v7).** After each graded commit `grade_collected` calls
+   `assessment/lint_scope.record`: ruff / sqlfluff run statically on a private copy of the submitted
+   file, only findings on lines the student wrote inside a gap count (`scope_check.
+   in_gap_submitted_ranges` maps the gaps into the submitted file), and `attempts.lint_violations`,
+   `lint_changed_loc`, `lint_tool` (sql/08) hold the result, NULL when not measured. `_discipline`
+   sums them from v7 on; up to v6 V2 keeps the fixed zeros.
 
 **What each helper does, briefly** (all read-only SQL against the raw tables, feeding
 the pure formula functions from `variables/`):
@@ -1940,8 +1947,45 @@ the expected value; the message is shown only for a test listed in a module-leve
 timeout or tooling problem in plain words). Hidden test source never appears: a shown message is cut
 to one line, every hidden-file line of 12+ characters is redacted, and `assert_no_hidden_source`
 raises before anything is produced. `feedback_posts`
-(`sql/07`, not yet applied to the real database) is the "already posted" marker. The real GitHub
+(`sql/07`, applied to the real database, 0 rows until the issue mode posts) is the "already posted" marker. The real GitHub
 POST (`post_comment`) refuses unless `enabled=True` and `VDEL_ALLOW_FEEDBACK_POST=1`.
+
+**Issue mode (D-089).** `post_feedback --issue` is the v1 channel: one GitHub issue per (student,
+attempt) titled "VDEL feedback - <assignment> - attempt <n>", one comment per graded commit with the
+v0 text, an @mention and a hidden marker. Dry-run by default (prints the API calls and the text,
+contacts nothing); the real write needs `--apply` and `VDEL_ALLOW_GITHUB_WRITE=1`, refuses a
+placeholder username and records `feedback_issues` (sql/09) and `feedback_posts` rows so a second run
+posts nothing. GitHub errors are outcomes, not crashes. `publish_repo.GitHub` carries the issue and
+collaborator calls.
+
+**Delivery of attempt N+1 (D-090).** `scripts/deliver_next_attempt.py` (dry-run by default; `--apply` and
+`VDEL_ALLOW_GITHUB_WRITE=1` for the real run): checks the current attempt is frozen (`--force` needs
+`--i-understand`), runs `next_attempt`, publishes a NEW private repo holding only that stage
+(`publish_repo.run(only_assignment=)`, name `...-<stage>-attempt<n>`), invites the student, comments the
+link on the old attempt's feedback issue and prints the roster rows to add by hand. `attempts.started_at`
+(sql/10) makes `find_pending` ignore commits older than the attempt, so attempt N's commits are never
+offered to attempt N+1.
+
+**The hourly task (D-091).** `scripts/run_hourly.py` = `run_cycle` for every roster student, then the issue
+feedback for commits graded in the last 48 h without a comment. GitHub is written to only when the task's
+environment has `VDEL_ALLOW_GITHUB_WRITE=1`; otherwise the log says `WOULD POST`. Its own advisory lock
+(plus `run_cycle`'s) prevents overlaps; exit 2 = database unreachable, 3 = locked; daily logs under `logs/`
+with 14-day rotation. `scripts/windows/register_task.ps1` / `unregister_task.ps1` (written, not run) and
+`docs/OPERATIONS.md` cover installation, checking, stopping and a database that is down.
+
+**The grading container (D-092).** `VDEL_GRADING_SANDBOX=docker` runs the hidden tests in a container built
+from `docker/grader.Dockerfile` (network none, read-only root, tmpfs scratch, pids / memory / cpu limits, no
+capabilities, non-root, code mounted read-only, report on a separate mount) instead of the subprocess;
+unset keeps the subprocess unchanged. It never falls back, and a traceback's `/work/` paths are mapped back to
+the host copy so a SyntaxError is still a `collection_error`. It does not stop a student's module forging the
+report from inside the test process.
+
+**Checkout safety and its limits (D-093).** `checkout_commit` is `git init` + `git fetch --depth 1 <url> <sha>` +
+`git checkout --detach` into an empty directory, so no hook, `core.hooksPath` or filter of the student's repo
+exists in the clone (tested against a hostile repo). Known limits, described in D-093 and pinned by a test: the
+collector's `since` filter trusts the committer date, so a commit dated in the future hides every later one; a
+force-push regrades rewritten commits as new evidence for V5/V6; a deleted repo makes the student FAILED every
+hour.
 
 **`scripts/render_student_repo.py` — materialises one attempt as a real file tree.**
 Calls `gap_generator.select_variant` and `gap_parser.render_student_file` to produce a real

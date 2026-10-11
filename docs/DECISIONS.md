@@ -3659,3 +3659,362 @@ V9:          Nothing computes V9 yet (the only reader of `out_of_scope_lines` in
              writer). When it is built, the rule is: a value is "unknown" when the attempt's
              graded commit is a collection_error or timeout, even if the column holds 0.
 
+
+### D-086 -- v1 operating decisions (feedback channel, schedule, container, delivery)
+Date:        2026-10-12 (overnight batch "V1 completion")
+Status:      DECIDED by Anas before the batch; this entry only records them. Implementation is the
+             batch's stages 1-7; nothing here was run against GitHub.
+Authority:   Anas
+Decisions:   (1) v1 feedback is the DETERMINISTIC text only (`post_feedback`); the LLM agents stay
+             unwired (IR-1..IR-4 are later). (2) Channel: one GitHub ISSUE per (student, attempt),
+             titled "VDEL feedback - <assignment> - attempt <n>", ONE COMMENT per graded commit,
+             an @mention of the student's github_username, idempotent through `feedback_posts`.
+             (3) The cycle runs on Anas's Windows PC, hourly, through Windows Task Scheduler.
+             (4) One trusted student may be graded without the container; the container is
+             MANDATORY before a pilot of 3 to 5 students. (5) Attempt N+1 is delivered as a NEW
+             private repo with the student invited as collaborator.
+Rails:       every code path that writes to GitHub is behind `--apply` AND the environment variable
+             `VDEL_ALLOW_GITHUB_WRITE=1`, and refuses a placeholder `github_username`. No LLM call.
+             Schema changes are additive new sql files; the real database gets the exact migration
+             command in the report and is not touched by the batch.
+
+### D-087 -- addenda to D-006, D-068 and D-074 (documentation only; nothing above is rewritten)
+Date:        2026-10-12 (overnight batch, stage 1)
+Status:      DECIDED. Documentation only: no code behaviour changed.
+Authority:   Anas (batch brief)
+Addendum D-006: SUPERSEDED in practice. Its blockers are gone: `config/roster.yaml` exists, a token is
+             configured, and collection runs live and idempotently (D-043 per-file attribution, D-063
+             head_sha, D-067 log retry, D-071 `run_cycle`, D-083 the first real cycles for student2 and
+             anas). The M1 DoD clauses it blocked are tracked in `docs/STATUS.md`, not here. Its header
+             still says OPEN because the file is append-only; read it as closed by D-071 / D-083.
+Addendum D-068: RESOLVED by D-069 (option a: one V1, `Memory.replay_mastery`) and later changed by D-079
+             (formula v5: one `mastery_observation` per (attempt, gap)). D-069 already carries the
+             resolution line; this addendum gives the header the pointer it lacked.
+Addendum D-074: it says `feedback_posts` (sql/07) was "written but not applied to the real database".
+             That is no longer true: the table EXISTS on the real database (0 rows). The overnight text
+             in `HANDOFF.md`, `docs/explanation.md` and the comments of `sql/07_feedback_tables.sql` and
+             `scripts/post_feedback.py` that said otherwise were corrected. Nothing writes the table
+             until the issue mode (D-089) is run with `--apply`.
+STATUS.md:   `docs/STATUS.md` has +248 uncommitted lines of DoD evidence (2026-08-31 M2 rehearsal, 2026-09-02
+             classifier-rate query, M3/M4 entries). Not touched by the batch. Recommendation: commit it
+             alone (`docs: record DoD evidence`); it is evidence, contains no secret, and `HANDOFF.md`
+             has asked for that since 2026-10-11.
+
+### D-088 -- V2 cleanliness is measured: gap-scoped ruff / sqlfluff counts at grading time (formula v7)
+Date:        2026-10-12 (overnight batch, stage 2)
+Status:      DECIDED and IMPLEMENTED (brief). Columns NOT applied to the real database (see "To apply").
+Authority:   Anas (batch brief)
+Problem:     `_discipline` passed `lint_violations=0, changed_loc=0` (cleanliness "not measured")
+             because M1 never had the student's code. Grading now has the checkout.
+Decision:    After each graded commit (`scripts/grade_collected.py`, hence `run_cycle`),
+             `assessment/lint_scope.record` lints the submitted file STATICALLY (ruff for .py,
+             sqlfluff for .sql, `agents.tools`, nothing is imported or run) and stores on `attempts`
+             `lint_violations` (findings on lines the student wrote INSIDE a gap), `lint_changed_loc`
+             (lines changed inside the gaps, `scope_check.changed_loc_in_gap`) and `lint_tool`.
+             Gap-scoped (invariant 14, C4): the gaps are known in the released file's coordinates and
+             `scope_check.in_gap_submitted_ranges` maps them to the submitted file with the same line
+             diff and the same block classification V9 uses; master code is never attributed.
+             Same storage rule as `out_of_scope_lines`: the latest graded commit's value until the
+             freeze, the frozen commit's afterwards. NULL = not measured.
+Fail-open:   a collection_error / timeout commit (D-085), a linter that is missing or times out, a file
+             type without a linter, a changed master version (invariant 15), a missing file, or columns
+             not migrated yet all leave NULL and log a warning inside a SAVEPOINT; grading and the
+             cycle are never blocked.
+Rule set:    the file is linted from a private temporary COPY with no project files next to it, so a
+             `pyproject.toml` / `ruff.toml` / `.sqlfluff` in the student's repo cannot switch rules off.
+             The rules are the tools' DEFAULTS (ruff E4/E7/E9/F), the same for every student: a
+             choice, not a measurement. sqlfluff uses the `ansi` dialect (`agents.tools`).
+Where it lives: `assessment/lint_scope.py` imports `agents.tools`; `assessment/test_runner.py` still
+             imports nothing from `agents/` (invariant 13's grep stays true), which is why the call
+             is in `grade_collected`, not in `grade_attempt`. Consequence: a grade made through
+             `grade_attempt` alone (the demo's Beat 3, tests) stores no lint counts.
+Formula:     `compute_features` V2 sums `lint_violations` / `lint_changed_loc` over the student's
+             measured attempts from formula "v7" on (and adds `lint: {violations, changed_loc,
+             attempts_measured}` to the V2 JSON for audit). v2..v6 keep the fixed zeros, so every
+             stored row stays reproducible; no `learner_features` row was touched. `FORMULA_VER` is
+             "v7". A v7 row for a student appears on their next new activity (the watermark collides
+             with the earlier row), as for every earlier bump. `_lint_totals` is fail-open too, so
+             features keep working on a database that has not been migrated.
+Existing data: no attempt has a lint value (the columns do not exist on the real DB). They fill as new
+             commits are graded; nothing is backfilled.
+Tests:       tests/test_lint_scope.py (17): coordinates, in-gap vs master violation, a clean solution
+             is 0 not None, linter unavailable, private copy, sqlfluff dispatch and a real sqlfluff run,
+             storage and the freeze rule, collection_error not measured, missing file and unmigrated
+             columns fail open, the `grade_collected` wiring, V2 under v7 vs v6.
+To apply by hand (real database, NOT run by the batch):
+             `python -m scripts.init_db`   (idempotent: re-applies every file; 08 adds the 3 columns)
+Later:       a per-commit store; V6's `changed_loc` still counts all additions + deletions of a commit
+             (not gap-scoped); lint rules beyond the defaults; V2's composite needs a cohort >= 10.
+
+### D-089 -- feedback by GitHub issue: one issue per (student, attempt), one comment per graded commit
+Date:        2026-10-12 (overnight batch, stage 3)
+Status:      DECIDED and IMPLEMENTED as DRY-RUN BY DEFAULT. Nothing was ever posted; no GitHub call was
+             made by the batch. Implements D-086 decision (2).
+Authority:   Anas (batch brief)
+Decision:    `python -m scripts.post_feedback --student X --issue [--assignment A] [--commit SHA]
+             [--roster PATH]` lists the graded commits that have no issue comment yet and, per commit,
+             prints the exact API calls and the exact text. The text is the deterministic v0 message
+             (D-074, D-077: test name and exception type only, never an assertion message or hidden
+             test code) preceded by `@<github_username>` and followed by a hidden marker
+             `<!-- vdel:feedback attempt=<id> commit=<sha> -->`. The issue is titled
+             "VDEL feedback - <assignment> - attempt <n>" and lives in the repo the roster maps
+             (student, assignment) to.
+Real write:  needs `--apply` AND `VDEL_ALLOW_GITHUB_WRITE=1` in the environment (`require_github_write`:
+             raises before anything is contacted; the CLI exits 2 before even opening the database).
+             It then refuses a placeholder `github_username` (text check: empty, `_`-prefixed,
+             contains placeholder / change_me / render-only / example, or not a valid GitHub login;
+             student2's `student2-placeholder-local-render-only` is one) and a missing roster entry.
+             A GitHub error (403 forbidden or rate limit, 404, 410 issues disabled, 422) becomes a
+             `failed` outcome with a plain reason, writes no row and is retried next run; it never
+             crashes the batch. The token is read from GITHUB_TOKEN, sent only in the Authorization
+             header and never printed or put in an outcome.
+Idempotence: `feedback_issues` (sql/09, new: one row per attempt with owner, repo, issue number) and
+             `feedback_posts` (existing sql/07, channel `github_issue_comment`, `external_ref` = the
+             comment URL). Order: the database row is read first; if the issue is unknown, GitHub is
+             searched for an issue with the exact title (pull requests skipped) before one is created;
+             before each comment the issue's comments are read for the marker, so a comment that
+             reached GitHub but not the database (a crash between the two) is recorded as
+             `recovered` instead of being posted twice. Rows are `ON CONFLICT DO NOTHING`
+             (invariant 9); the command commits after each posted/recovered comment.
+Client:      `publish_repo.GitHub` gained `find_issue`, `create_issue`, `issue_comments`,
+             `create_issue_comment`, `invite_collaborator` and `GitHubHTTPError(status, reason)`.
+Tests:       tests/test_post_feedback_issue.py (25, mocked HTTP only; any real `requests` call fails the
+             test): issue created once and reused, a second run posts nothing, an existing issue with
+             the title is reused, marker recovery, placeholder and missing roster refused with no
+             client built, the write gate, missing feedback tables refused before any call, 403 / 404 / 410 / 422 handled with no row written, the real
+             client's exact requests and status mapping, the token never in an outcome or the output,
+             no assertion text and no hidden line in the body, the CLI dry-run and its refusal.
+Dry-run on the real database (student2, read-only): 4 graded commits, all marked WOULD REFUSE
+             (placeholder username); texts shown in the report.
+Known limits (later): the diagnosis is attempt-wide, so the FIRST comment of an attempt can say
+             "Keeps failing across several pushes" (D-074 finding, as-of-commit diagnosis is later); a
+             never-attempted stub is described as `NotImplementedError` rather than "not started";
+             the issue lives in the repo the roster maps NOW, so after attempt N+1 re-points the
+             roster, a late comment for attempt N would go to the new repo; a student who deletes the
+             issue gets a new one only if the database row is also gone; no edit/close of issues.
+To apply by hand (real database, NOT run by the batch): `python -m scripts.init_db` (adds
+             `feedback_issues`, and the lint columns of D-088).
+
+### D-090 -- delivery of attempt N+1: `deliver_next_attempt`, a new private repo per attempt, `attempts.started_at`
+Date:        2026-10-12 (overnight batch, stage 4)
+Status:      DECIDED and IMPLEMENTED as DRY-RUN BY DEFAULT. No repo was created, no invitation sent,
+             no comment posted. Implements D-086 decision (5).
+Authority:   Anas (batch brief)
+Command:     `python -m scripts.deliver_next_attempt --student X --assignment Y [--roster PATH]
+             [--force --i-understand] [--resume] [--apply]`.
+             Checks the current attempt is FROZEN. `--force` is refused unless `--i-understand` is
+             also given (D-072's `attempts.closed_at` closure is missing: a forced old attempt stays
+             open and `grade_collected` lets an open attempt win over a frozen higher one). Runs
+             `next_attempt`, publishes a NEW private repo through `publish_repo`, invites the student
+             as collaborator, comments the link on the feedback issue of the attempt just completed
+             (D-089), and PRINTS the roster rows to add. It never edits `config/roster.yaml`.
+Name:        `vdel-<project>-gapfill-<student>-<stage>-attempt<n>` (e.g.
+             `vdel-weather-etl-gapfill-student2-extract-attempt2`). The brief says "...-attempt<n>";
+             the stage is added so attempt 2 of two different stages never collide on one name
+             (alternative: no stage, rejected for that reason).
+Scope:       the new repo holds ONE stage (its file, ASSIGNMENT.md, the shared scaffolding and the
+             visible tests), because `publish_repo.run` gained `only_assignment` (default None =
+             unchanged whole-project behaviour) and passes it to `render_student_repo`.
+Real run:    needs `--apply` AND `VDEL_ALLOW_GITHUB_WRITE=1`, refuses a placeholder username, and is
+             idempotent step by step: an existing repo with commits is not re-published, the
+             invitation is a PUT (already a collaborator is fine), the issue comment carries the
+             marker `<!-- vdel:delivery attempt=<id> -->` that is looked for first. A failed run is
+             finished with `--resume` (allowed only for an attempt number >= 2 that is open and has
+             no graded commit).
+Found while doing it (a real flaw, fixed additively): attempt N's commits stay in `raw_commits`
+             under the same (student, assignment). Once the roster points at the new repo,
+             `grade_collected.find_pending` would offer them as pending for attempt N+1 and fail to
+             fetch them from the new repo on EVERY cycle (the student would show as FAILED forever).
+             Fix: `attempts.started_at` (sql/10, nullable, NULL for every existing attempt = no
+             change for them), set by `render_student_repo._upsert_attempt` only when it INSERTS an
+             attempt (never on a re-render), and `find_pending` ignores commits older than it.
+             Both are fail-open when the column does not exist yet.
+Tests:       tests/test_deliver_next_attempt.py (14): the stage in the name, a non-frozen attempt
+             refused, `--force` needs `--i-understand`, placeholder refused on apply and shown in the
+             dry-run, the write gate, the dry-run records and contacts nothing and prints the plan, the
+             real run (fake GitHub over a local bare repo) delivers one stage with no hidden test,
+             invites, comments, never edits the roster; failure then `--resume` then a second resume
+             is a no-op; resume refused for an attempt with graded work; `started_at` stamped once and
+             not moved by a re-render; old commits not pending; no start = old behaviour; unmigrated
+             column fails open.
+Owner: when the student IS the account that owns the repos (the trusted student may be), no invitation is
+             sent: GitHub refuses to invite an owner (422). The step is reported as "not needed" and the comment
+             wording does not promise an invitation.
+Dry-run on the real database, student2 / weather_etl_extract (frozen at ecee294618): attempt 2 would
+             get variant c4c18c3e10e9, hidden gap g_ext_retry, i.e. the SAME variant as attempt 1
+             (expected, D-079: adaptivity needs n >= 3). Whole output in the report.
+Known limits (later): after delivery the old repo is no longer collected (the roster row is replaced),
+             so a late push there is ignored; no automatic roster edit; no email or notification
+             besides the GitHub invitation and the issue comment; the invitation must be accepted by
+             the student; a student who already has push access to the old repo is not removed.
+To apply by hand (real database, NOT run by the batch): `python -m scripts.init_db` (adds the
+             `started_at` column; also the lint columns and `feedback_issues`).
+
+### D-091 -- the hourly task: `scripts/run_hourly.py`, Windows Task Scheduler scripts, `docs/OPERATIONS.md`
+Date:        2026-10-12 (overnight batch, stage 5)
+Status:      DECIDED and IMPLEMENTED. The two PowerShell scripts were parsed for syntax and NOT run;
+             no task is registered. Implements D-086 decision (3).
+Authority:   Anas (batch brief)
+Command:     `python -m scripts.run_hourly [--roster P] [--dry-run] [--skip-network]
+             [--lookback-hours N]`: `run_cycle` for every roster student, then the issue feedback of
+             D-089 for the commits graded in the last N hours (default 48) that have no comment.
+GitHub writes: only with `VDEL_ALLOW_GITHUB_WRITE=1` in the task's environment AND not `--dry-run`.
+             Otherwise the log lists `WOULD POST` lines (and why a post would be refused). The flag is
+             set per task by `register_task.ps1 -AllowGitHubWrite` (inside the task's own command, not
+             machine-wide).
+Locks:       a new advisory lock (key 640201072) held for the whole run, next to `run_cycle`'s
+             (640201071): a second hourly run exits 3 at once; a manual `run_cycle` during a run is
+             refused by the inner lock. Both are session locks, released when the process ends.
+Exit codes:  0 ok; 1 a student or a post failed, or the roster is missing (a message, not a traceback);
+             2 database unreachable (`DATABASE UNREACHABLE: ...` plus a hint to start Docker; nothing
+             else is attempted); 3 locked.
+Logs:        `logs/run_hourly-YYYY-MM-DD.log` (gitignored, added to `.gitignore`), appended, each line
+             timestamped UTC; files older than 14 days deleted at the start of each run, judged by the
+             date in the NAME (a copy or restore changes mtimes); other files untouched.
+Decisions taken without Anas (alternatives):
+             - 48-hour lookback instead of "every unposted graded commit": the backlog (anas's August
+               commits, student2's) would otherwise be posted the first time the flag is on. A failed
+               post is retried for two days. Alternative: post everything unposted; rejected as noisy.
+               The backlog is posted by hand with `post_feedback --issue`.
+             - the task runs as the logged-on user (`LogonType Interactive`), 60 minutes, 50 minute
+               limit, `MultipleInstances IgnoreNew`, `StartWhenAvailable`, `RunOnlyIfNetworkAvailable`.
+               Alternative: "run whether logged on or not" (needs the password stored); rejected, and
+               Docker Desktop needs the session anyway.
+             - `python` is the first one on PATH unless `-PythonExe` is given.
+Tests:       tests/test_run_hourly.py (14): database down -> 2 and a plain line; the lock held by
+             another session -> 3 and nothing collected, released afterwards; no GitHub call without
+             the flag, none in a dry-run even with the flag; with the flag one issue and one comment,
+             a second run posts nothing; a commit graded 10 days ago is not posted; a GitHub 403 is a
+             failed run, not a crash; a placeholder username is refused; the dated log with
+             timestamps and no token; rotation (15 days removed, 14 kept, others untouched); a missing
+             roster; the lookback window; the PowerShell scripts keep writes off by default.
+To apply by hand: `docs/OPERATIONS.md` sections 2-5 (backup, `init_db`, register the task).
+Later:       a "run whether logged on or not" variant; an e-mail or toast on exit 2/1; per-student
+             isolation of the posting phase beyond the per-post outcome; a status page.
+
+### D-092 -- grading in a local Docker container, off by default (`VDEL_GRADING_SANDBOX=docker`)
+Date:        2026-10-12 (overnight batch, stage 6)
+Status:      DECIDED and IMPLEMENTED; OFF unless the variable is set, so nothing changes by default.
+             Implements D-080 (option A) and D-086 decision (4). The real image was NOT built by the
+             batch (a build needs the network); `docker/grader.Dockerfile` is ready to build by hand.
+Authority:   Anas (D-080, batch brief)
+Network use: exactly one pull, logged: `docker pull python:3.11-slim` at 2026-10-11T19:05:28Z gave
+             `sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce`
+             (Python 3.11.17, linux/amd64). The Dockerfile pins that digest. No `pip install`, no other
+             pull. Everything below was verified with an OFFLINE verification image
+             (`vdel-grader:offline-check`: the same base image plus pytest 9.1.1 and requests 2.32.3 copied from
+             this PC's site-packages), because the real image needs `pip install`.
+Image:       `docker/grader.Dockerfile` + `docker/grader-requirements.txt`: pinned slim Python, only the
+             packages the hidden tests and the curriculum import (pytest, requests, pandas and their
+             pins), no secret, user 10001 with no home or shell. Build context is `docker/` only.
+Runner:      `assessment/test_runner.py`: `sandbox_mode()`, `docker_run_argv()` (pure, tested flag by
+             flag), `_run_pytest_docker()`, `_run_tests()` selecting the mode, `SandboxKilled`.
+             Flags: `--rm --pull never --network none --read-only`, tmpfs `/scratch` (64 MB, noexec) and
+             `/tmp`, `--pids-limit 128`, `--memory 512m --memory-swap 512m`, `--cpus 1`, `--cap-drop ALL`,
+             `--security-opt no-new-privileges`, `--user 10001:10001`; the sanitised copy mounted READ-ONLY
+             at /work, the trusted ini and the JUnit report on a SEPARATE mount /results; no host
+             environment variable is passed. The numbers are choices, not measurements.
+Never falls back: docker missing, the image missing (exit 125) or an unknown variable value raises
+             `TestRunnerError` with the build command. A wall-clock timeout kills the container and is
+             recorded as before; an OOM / external kill (exit 137, no report) is recorded as `timeout`
+             too; the container is always removed.
+Bug found by comparing the modes, fixed: a traceback written inside the container names `/work/...`;
+             the collection-error classifier resolved frames against the HOST copy, matched none, and
+             classified a student's SyntaxError as `tooling` ("our fault", never charged) instead of
+             `collection_error`. `_localise_container_paths` rewrites `/work/` to the host copy before
+             classification (container mode only).
+Parity:      on four ordinary repos (solved, unsolved, wrong, syntax error) both modes give the same
+             status, detail and rows, and `test_results` recorded through `grade_attempt` on the test
+             database is identical row by row. One difference is NOT mode-related: pytest prints the
+             'Differing items' of a dict comparison in a hash-seed-dependent order, so two SUBPROCESS runs
+             already disagree on the message text (3 distinct messages in 4 runs). The tests compare the
+             first line and the set of lines. Later: `PYTHONHASHSEED=0` in both environments.
+What each mode lets student code do (run on this PC; the process bomb only in the container):
+| mode | what the student code tried | what happened |
+|---|---|---|
+| subprocess | probe: user / GITHUB_TOKEN in env | uid=n/a token=absent |
+| subprocess | probe: read a file outside the checkout | READ:CANARY-9f3a1c |
+| subprocess | probe: connect to a listener on the PC's loopback | connected (listener received 1 connection(s)) |
+| subprocess | probe: write outside the checkout (a path on the PC) | wrote (file exists afterwards: True) |
+| subprocess | probe: write inside the checkout (/work) | FileNotFoundError |
+| subprocess | probe: write /etc | FileNotFoundError |
+| subprocess | probe: write the scratch dir | FileNotFoundError |
+| subprocess | infinite loop at import (limit 8 s) | status=timeout after 8s |
+| subprocess | process bomb (bounded: tries 300 sleeping children) | NOT RUN on the PC (no process limit exists in this mode; unsafe to try) |
+| docker | probe: user / GITHUB_TOKEN in env | uid=10001 token=absent |
+| docker | probe: read a file outside the checkout | FileNotFoundError |
+| docker | probe: connect to a listener on the PC's loopback | ConnectionRefusedError (listener received 0 connection(s)) |
+| docker | probe: write outside the checkout (a path on the PC) | OSError (file exists afterwards: False) |
+| docker | probe: write inside the checkout (/work) | OSError |
+| docker | probe: write /etc | OSError |
+| docker | probe: write the scratch dir | wrote |
+| docker | infinite loop at import (limit 8 s) | status=timeout after 8s |
+| docker | process bomb (bounded: tries 300 sleeping children) | spawned=127 stopped_by=BlockingIOError (pids-limit 128) |
+
+Tests:       tests/test_grading_container.py (19; the 9 container tests skip unless docker and the image
+             exist, run with `VDEL_GRADING_IMAGE=vdel-grader:offline-check` here: 19 passed, no container
+             left behind), fixtures in tests/sandbox_fixtures.py.
+Does not protect: forgery from inside the test process (the student's module is imported by the hidden
+             test inside the container and can patch pytest or overwrite the JUnit file it can reach);
+             reading the hidden test file; a kernel escape; disk beyond the 64 MB scratch. Mitigation is a
+             second signal (differential execution D-036, not built) or splitting execution from assertion.
+             Later.
+To apply by hand: `docs/OPERATIONS.md` section 11 (`docker build`, a Beat 3 try, the tests, then
+             `register_task.ps1 -UseDockerGrading -Force`).
+
+### D-093 -- robustness: repository hooks never run at checkout; what a force-push or a deleted repo does today
+Date:        2026-10-12 (overnight batch, stage 7)
+Status:      DECIDED (tests only; no behaviour changed). Part (b) is a description from READING the code:
+             nothing in it was run against GitHub.
+Authority:   Anas (batch brief)
+(a) Hooks:   tests/test_checkout_safety.py builds a hostile repository for real (hooks in its `.git/hooks`,
+             `core.hooksPath=.githooks` with a committed `post-checkout`, a `.gitattributes` filter whose
+             smudge command writes a canary, a `.gitmodules` entry) and runs `grade_collected.
+             checkout_commit` against it as a local remote. The canary is never written, the clone has only
+             `*.sample` hooks, no `hooksPath`, no filter, and the submodule is not initialised. The same
+             hook DOES fire on a checkout in the source repository (a second test), so the first result is
+             not a dud trap. Why it holds: hooks and `core.hooksPath` live in `.git`, which `git init` + `git
+             fetch <url> <sha>` + `git checkout --detach` into an empty directory does not transfer; filters
+             need config that a fetch does not bring either. Student code runs only later, under pytest, in
+             the grading subprocess or container.
+(b) A student FORCE-PUSHES over a graded commit (what happens today):
+             - Nothing already recorded changes: `raw_commits`, `test_results`, traces and the freeze are
+               keyed by commit sha and are INSERT/upsert-only, so the old sha, its results and the
+               `mastery_observation` stay. The first-attempt observation of a (attempt, gap) is immutable
+               (D-079), so a rewrite cannot give the student a second "first attempt".
+             - The rewritten commits have NEW shas. They are collected and graded as new commits: their
+               hidden tests produce new `test_results` rows and new `test_result` traces, so V5/V6 count
+               the same work twice (the observation for mastery does not).
+             - The collector asks GitHub only for commits since the largest stored `committed_at` (the
+               COMMITTER date, which the student controls). A rewritten or back-dated commit whose date is
+               not newer than that is never returned and never graded; and ONE commit dated in the future
+               moves `since` past every honest later commit, which then stop being collected
+               (tests/test_collector_known_limits.py pins this, it does not fix it).
+             - After a freeze, commits newer than the frozen commit are skipped (D-069); older rewritten
+               ones are graded.
+             - Whether GitHub still serves the orphaned old sha by `git fetch` is NOT verified here; the
+               rows for it are already complete, so grading does not need it again.
+(b) A student DELETES the repository (or makes it unreachable):
+             - `collect_all` isolates the repo: the 404 becomes a `failed` entry, the student is reported
+               FAILED by `run_cycle` (exit 1) every hour with the same message, until the roster row is
+               fixed or removed. Nothing is written and no other student is affected.
+             - Commits already collected but not yet graded are retried and fail at the checkout every
+               cycle (`FAILED attempt=...`), forever; graded work is untouched.
+             - The feedback phase gets a 404 per comment (an outcome `failed`, retried only inside the
+               48-hour lookback) and the issue row stays.
+             - Nothing is lost: the database keeps every graded result and the profile; re-publishing a repo
+               is refused over an existing history (D-062) but a new empty repo can be registered.
+Later (not done, v1 scope):
+             1. collector: do not trust the committer date. Re-list without `since` (the sha-level skip
+                already prevents the expensive calls), or keep `since` but subtract a safety window, and
+                clamp any `committed_at` in the future to the collection time; flag a push that rewrote
+                history (the push events carry `forced`).
+             2. grader: after N failed fetches of the same sha, mark the commit unfetchable (a counter, an
+                additive column) instead of retrying it every cycle.
+             3. roster: an `archived`/`status` field so a deleted or finished repo stops producing a daily
+                FAILED line.
+             4. V5/V6: treat a rewritten commit whose file content equals an already graded one as the same
+                evidence (store the blob sha of the graded file next to the commit sha).
+             5. audit: store `before`/`after` of a force-push and the tree sha of the frozen commit so a
+                rewrite is visible after the fact.
+

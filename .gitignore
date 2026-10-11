@@ -48,6 +48,8 @@ docs/*
 !docs/agents.md
 !docs/DECISIONS_AGENTS.md
 !docs/resources_template.csv
+# operating notes for the hourly task (D-091); the batch report stays local on purpose
+!docs/OPERATIONS.md
 
 # Local scratch at the repo root: one-off DB queries and a manual Code Agent driver.
 # Neither is part of any deliverable, and neither is worth promoting to scripts/ -- they
@@ -79,3 +81,6 @@ backups/
 
 # agents/budget.py's local per-day LLM call ledger (counts only, no content)
 .vdel/
+
+# run_hourly.py logs (scripts/run_hourly.py, D-091): one file per day, 14 days kept
+logs/
