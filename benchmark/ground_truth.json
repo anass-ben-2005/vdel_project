@@ -10,34 +10,34 @@
   "concept": "spark.aggregation",
   "submissions": {
     "clean.py": {
-      "correctness": null,
-      "approach": null,
-      "readability": null,
-      "idiomatic": null
+      "correctness": 4,
+      "approach": 4,
+      "readability": 4,
+      "idiomatic": 4
     },
     "subtly_wrong.py": {
-      "correctness": null,
-      "approach": null,
-      "readability": null,
-      "idiomatic": null
+      "correctness": 0,
+      "approach": 2,
+      "readability": 4,
+      "idiomatic": 4
     },
     "inefficient.py": {
-      "correctness": null,
-      "approach": null,
-      "readability": null,
-      "idiomatic": null
+      "correctness": 2,
+      "approach": 0,
+      "readability": 4,
+      "idiomatic": 0
     },
     "copy_paste.py": {
-      "correctness": null,
-      "approach": null,
-      "readability": null,
-      "idiomatic": null
+      "correctness": 4,
+      "approach": 2,
+      "readability": 2,
+      "idiomatic": 4
     },
     "broken.py": {
-      "correctness": null,
-      "approach": null,
-      "readability": null,
-      "idiomatic": null
+      "correctness": 0,
+      "approach": 2,
+      "readability": 2,
+      "idiomatic": 4
     }
   }
 }
