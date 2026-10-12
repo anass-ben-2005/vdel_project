@@ -1,0 +1,33 @@
+resource_id,concept_ids,kind,title,locator,url,level
+py-tut-dictionaries,py.data_structures,doc_page,5. Data Structures (Python docs),5.5 Dictionaries,https://docs.python.org/3/tutorial/datastructures.html#tut-dictionaries,beginner
+py-ref-mapping-types,py.data_structures,doc_page,Built-in Types (Python docs),"Mapping types - dict, frozendict",https://docs.python.org/3/builtins/stdtypes.html#typesmapping,intermediate
+py-lib-collections,py.data_structures,doc_page,collections - Container datatypes (Python docs),Module collections,https://docs.python.org/3/library/collections.html,advanced
+py-tut-handling-exceptions,py.errors_debugging,doc_page,8. Errors and Exceptions (Python docs),8.3 Handling Exceptions,https://docs.python.org/3/tutorial/errors.html#tut-handling,beginner
+py-ref-exception-hierarchy,py.errors_debugging,doc_page,Built-in Exceptions (Python docs),Exception hierarchy,https://docs.python.org/3/builtins/exceptions.html#exception-hierarchy,intermediate
+py-lib-pdb,py.errors_debugging,doc_page,pdb - The Python Debugger (Python docs),Module pdb,https://docs.python.org/3/library/pdb.html,advanced
+pandas-10min,py.pandas,doc_page,10 minutes to pandas (pandas docs),Whole page,https://pandas.pydata.org/docs/user_guide/10min.html,beginner
+pandas-indexing-basics,py.pandas,doc_page,Indexing and selecting data (pandas docs),Basics,https://pandas.pydata.org/docs/user_guide/indexing.html#indexing-basics,intermediate
+pandas-copy-on-write,py.pandas,doc_page,Copy-on-Write (CoW) (pandas docs),Whole page,https://pandas.pydata.org/docs/user_guide/copy_on_write.html,advanced
+pytest-get-started,py.testing,doc_page,Get Started (pytest docs),Whole page,https://docs.pytest.org/en/stable/getting-started.html,beginner
+pytest-assertions,py.testing,doc_page,How to write and report assertions in tests (pytest docs),Asserting with the assert statement,https://docs.pytest.org/en/stable/how-to/assert.html#assert-with-the-assert-statement,intermediate
+pytest-fixtures,py.testing,doc_page,How to use fixtures (pytest docs),Whole page,https://docs.pytest.org/en/stable/how-to/fixtures.html,advanced
+pg-tutorial-select,sql.select_filter,doc_page,Querying a Table (PostgreSQL docs),Tutorial 2.5,https://www.postgresql.org/docs/current/tutorial-select.html,beginner
+pg-where-clause,sql.select_filter,doc_page,Table Expressions (PostgreSQL docs),7.2.2 The WHERE Clause,https://www.postgresql.org/docs/current/queries-table-expressions.html#QUERIES-WHERE,intermediate
+pg-select-reference,sql.select_filter,doc_page,SELECT (PostgreSQL docs),WHERE Clause (command reference),https://www.postgresql.org/docs/current/sql-select.html#SQL-WHERE,advanced
+pg-tutorial-aggregates,sql.aggregation,doc_page,Aggregate Functions (PostgreSQL docs),Tutorial 2.7,https://www.postgresql.org/docs/current/tutorial-agg.html,beginner
+pg-group-by,sql.aggregation,doc_page,Table Expressions (PostgreSQL docs),7.2.3 The GROUP BY and HAVING Clauses,https://www.postgresql.org/docs/current/queries-table-expressions.html#QUERIES-GROUP,intermediate
+pg-aggregate-functions,sql.aggregation,doc_page,Aggregate Functions (PostgreSQL docs),9.21 Aggregate Functions (reference),https://www.postgresql.org/docs/current/functions-aggregate.html,advanced
+pg-tutorial-joins,sql.joins,doc_page,Joins Between Tables (PostgreSQL docs),Tutorial 2.6,https://www.postgresql.org/docs/current/tutorial-join.html,beginner
+pg-join-types,sql.joins,doc_page,Table Expressions (PostgreSQL docs),7.2.1.1 Joined Tables,https://www.postgresql.org/docs/current/queries-table-expressions.html#QUERIES-JOIN,intermediate
+spark-sql-getting-started,spark.df_basics,doc_page,Getting Started (Spark docs),Whole page,https://spark.apache.org/docs/latest/sql-getting-started.html,beginner
+pyspark-quickstart-df,spark.df_basics,doc_page,Quickstart: DataFrame (Spark docs),Whole page,https://spark.apache.org/docs/latest/api/python/getting_started/quickstart_df.html,beginner
+spark-rdd-operations,spark.transform_action,doc_page,RDD Programming Guide (Spark docs),RDD Operations (transformations and actions),https://spark.apache.org/docs/latest/rdd-programming-guide.html#rdd-operations,intermediate
+spark-load-save,spark.read,doc_page,Generic Load/Save Functions (Spark docs),Whole page,https://spark.apache.org/docs/latest/sql-data-sources-load-save-functions.html,beginner
+spark-groupby,spark.aggregation,doc_page,GROUP BY Clause (Spark docs),SQL reference,https://spark.apache.org/docs/latest/sql-ref-syntax-qry-select-groupby.html,intermediate
+spark-joins,spark.joins,doc_page,JOIN (Spark docs),SQL reference,https://spark.apache.org/docs/latest/sql-ref-syntax-qry-select-join.html,intermediate
+spark-window-functions,spark.window,doc_page,Window Functions (Spark docs),SQL reference,https://spark.apache.org/docs/latest/sql-ref-syntax-qry-select-window.html,advanced
+spark-scalar-udfs,spark.udf,doc_page,Scalar User Defined Functions (UDFs) (Spark docs),Whole page,https://spark.apache.org/docs/latest/sql-ref-functions-udf-scalar.html,intermediate
+spark-partitioning-hints,spark.partitioning,doc_page,Hints (Spark docs),Partitioning Hints,https://spark.apache.org/docs/latest/sql-ref-syntax-qry-select-hints.html#partitioning-hints,advanced
+spark-caching-data,spark.caching,doc_page,Performance Tuning (Spark docs),Caching Data,https://spark.apache.org/docs/latest/sql-performance-tuning.html#caching-data,intermediate
+spark-performance-tuning,spark.perf_tuning,doc_page,Performance Tuning (Spark docs),Whole page,https://spark.apache.org/docs/latest/sql-performance-tuning.html,advanced
+airflow-operators,airflow.operators,doc_page,Operators (Airflow docs),Whole page,https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/operators.html,beginner

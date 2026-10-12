@@ -48,6 +48,7 @@ docs/*
 !docs/agents.md
 !docs/DECISIONS_AGENTS.md
 !docs/resources_template.csv
+!docs/resources_review.md
 # operating notes for the hourly task (D-091); the batch report stays local on purpose
 !docs/OPERATIONS.md
 
