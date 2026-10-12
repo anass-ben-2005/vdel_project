@@ -199,7 +199,7 @@ def build_feedback(cur, attempt_id: int, commit_sha: str) -> Feedback:
                          f"{attempt_id}")
     hidden = hidden_source_lines(project_id)
     safe = feedback_safe_tests(project_id)
-    diagnosis = diagnose(cur, attempt_id)
+    diagnosis = diagnose(cur, attempt_id, as_of_commit_sha=commit_sha)   # D-094: history to here
 
     statuses = {r[4] for r in rows}
     status = ("tooling" if statuses == {"tooling"}

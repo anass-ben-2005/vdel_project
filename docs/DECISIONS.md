@@ -4018,3 +4018,29 @@ Later (not done, v1 scope):
              5. audit: store `before`/`after` of a force-push and the tree sha of the frozen commit so a
                 rewrite is visible after the fact.
 
+
+### D-094 -- feedback "as of the commit"; grading hash seed pinned; demo Beat 3 names the real mode
+Date:        2026-10-12
+Status:      DECIDED (three small fixes; baseline identical, real database read-only, no GitHub write, no live LLM call)
+Authority:   Anas (brief)
+(1) As of:   `assessment.diagnose.diagnose(cur, attempt_id, as_of_commit_sha=None)`. With a sha, only
+             `test_results` rows whose commit has `raw_commits.committed_at` <= that commit's count, for the
+             recurrence flags, the weakest concept and the failing tests; rows with no commit (a local run) fall
+             outside every cutoff; an unknown sha raises (never a silent whole-history fallback). Default None keeps
+             the old whole-history behaviour for the other callers (`feedback_agent`, `agents_export_fixtures`).
+             `post_feedback.build_feedback` passes the commit it is writing for. Effect: the first comment of an
+             attempt can no longer say "Keeps failing across several pushes", and a later push cannot change what
+             an earlier comment says. Ties on `committed_at` count as history (<=, per the brief). Already posted
+             comments are not rewritten (the marker makes posting idempotent): this fixes the texts built from now on.
+(2) Seed:    `PYTHONHASHSEED=0` is in `grading_env` (subprocess) and in `docker_run_argv` (container). Without it
+             pytest's "Differing items" order, hence the stored `test_results.message`, changed per process
+             (the `canon()` workaround in tests/test_grading_container.py was written for exactly this and is now
+             stricter than needed; left in place). Not a security change: it adds one fixed variable to an allowlist.
+(3) Demo:    Beat 3 prints "docker container" or "real subprocess" from `test_runner.sandbox_mode()`, the same switch
+             the grader reads.
+Tests:       tests/test_post_feedback.py (first / second / later commit, a later push leaves an earlier text unchanged,
+             unknown sha raises), tests/test_grading_sandbox.py (seed pinned against a hostile parent value; a hidden
+             probe whose message depends on set order is identical over 5 runs), tests/test_grading_container.py (seed
+             in the docker argv; raw stored messages identical twice in the container and equal to the host),
+             tests/test_demo.py (label follows the env var). Mutation checks: removing the pin fails both seed tests;
+             reverting `build_feedback` to whole history fails both as-of tests.

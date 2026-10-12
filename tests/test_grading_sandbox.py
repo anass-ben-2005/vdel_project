@@ -80,7 +80,30 @@ def test_grading_env_is_built_from_an_allowlist_not_copied(monkeypatch, tmp_path
     assert Path(env["TEMP"]).is_relative_to(tmp_path)          # real home and temp not handed over
     assert {k for k in env if k not in os.environ} <= {
         "HOME", "USERPROFILE", "TEMP", "TMP", "TMPDIR", "PYTHONPATH",
-        "PYTHONDONTWRITEBYTECODE", "PYTHONIOENCODING", "PYTEST_DISABLE_PLUGIN_AUTOLOAD"}
+        "PYTHONDONTWRITEBYTECODE", "PYTHONHASHSEED", "PYTHONIOENCODING",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD"}
+
+
+def test_the_hash_seed_is_pinned_whatever_the_parent_has(monkeypatch, tmp_path):
+    """D-094: a random seed reorders sets/dicts, so a stored failure message changed run to run."""
+    monkeypatch.setenv("PYTHONHASHSEED", "random")
+    assert tr.grading_env(tmp_path / "home")["PYTHONHASHSEED"] == "0"
+
+
+def test_the_same_repo_graded_repeatedly_stores_identical_messages(monkeypatch, tmp_path):
+    """D-094: a failure message that depends on set order (string hashes) must come out the same
+    every run. Without the pinned seed the ten words below come out in a new order per process."""
+    probe = tmp_path / "order_hidden.py"
+    probe.write_text(
+        "import pytest\n\n\n"
+        "@pytest.mark.gap('g_order')\n"
+        "def test_order():\n"
+        "    raise AssertionError(' '.join({'alpha', 'bravo', 'charlie', 'delta', 'echo',"
+        " 'foxtrot', 'golf', 'hotel', 'india', 'juliet'}))\n", encoding="utf-8")
+    monkeypatch.setattr(tr, "_hidden_test_file", lambda *a: probe)
+    repo = make_repo(tmp_path / "repo")
+    messages = {o.message for _ in range(5) for o in run(repo).outcomes}
+    assert len(messages) == 1 and "alpha" in next(iter(messages))
 
 
 def test_no_key_listed_in_env_example_can_ever_be_passed(monkeypatch, tmp_path):

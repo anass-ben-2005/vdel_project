@@ -44,7 +44,7 @@ from pathlib import Path
 from agents import code_agent
 from assessment.gap_generator import _MIN_OBS_FOR_ADAPTIVE as LOW_DATA_BELOW_N
 from assessment.gap_parser import parse_master
-from assessment.test_runner import grade_attempt
+from assessment.test_runner import grade_attempt, sandbox_mode
 from collectors.collect_github import collect_all
 from memory.memory import Memory
 from scripts.prove_event_sourcing import prove, read_profiles
@@ -144,6 +144,11 @@ def grade_without_persisting(grade, project_id, assignment_id, repo_dir, attempt
         conn.close()
 
 
+def beat3_where() -> str:
+    """Where the hidden tests really ran, from the same switch the grader reads (D-094)."""
+    return "docker container" if sandbox_mode() == "docker" else "real subprocess"
+
+
 def beat3_hidden_tests() -> BeatResult:
     with db.cursor() as cur:
         cur.execute(
@@ -161,9 +166,10 @@ def beat3_hidden_tests() -> BeatResult:
     for o in result.outcomes:
         print(f"    {'PASS' if o.passed else 'FAIL'}  {o.test_name}")
     print("  (graded inside a transaction that was rolled back: nothing was recorded)")
+    where = beat3_where()
     return BeatResult(
         passed=result.tests_total > 0,
-        evidence=f"{result.tests_passed}/{result.tests_total} passed, real subprocess "
+        evidence=f"{result.tests_passed}/{result.tests_total} passed, {where} "
                  f"(frozen={result.frozen}), nothing persisted",
     )
 

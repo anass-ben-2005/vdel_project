@@ -194,6 +194,42 @@ def test_recurrence_and_the_weakest_concept_come_from_diagnose(world):
     assert "Concept to practise next: `" in fb.markdown
 
 
+def test_the_diagnosis_is_as_of_the_commit_not_of_the_whole_attempt(world):
+    """D-094: the text posted for a commit may use only the history up to and including it."""
+    _, cur, aid = world
+    sha3 = "3" * 40
+    cur.execute("INSERT INTO raw_commits (sha, student_id, assignment_id, committed_at)"
+                " VALUES (%s,%s,%s,'2026-08-25 03:00+00')", (sha3, S, ASG))
+    # graded in the "wrong" order on purpose: the cutoff is committed_at, not insertion order
+    for sha in (sha3, SHA2, SHA1):
+        result(cur, aid, sha, T_RETRY, "g_ext_retry", False, "assert False")
+    first = pf.build_feedback(cur, aid, SHA1).markdown
+    second = pf.build_feedback(cur, aid, SHA2).markdown
+    third = pf.build_feedback(cur, aid, sha3).markdown
+    assert "Keeps failing" not in first                       # one push so far
+    assert "Keeps failing across several pushes: `g_ext_retry`" in second
+    assert "Keeps failing across several pushes: `g_ext_retry`" in third
+
+
+def test_a_later_commit_does_not_change_what_an_earlier_one_says(world):
+    _, cur, aid = world
+    result(cur, aid, SHA1, T_RETRY, "g_ext_retry", False, "assert False")
+    result(cur, aid, SHA1, T_PARSE, "g_ext_parse", True)
+    before = pf.build_feedback(cur, aid, SHA1).markdown
+    result(cur, aid, SHA2, T_RETRY, "g_ext_retry", False, "assert False")
+    result(cur, aid, SHA2, T_PARSE, "g_ext_parse", False, "assert False")
+    assert pf.build_feedback(cur, aid, SHA1).markdown == before
+    assert "Keeps failing" not in before
+
+
+def test_an_as_of_commit_that_is_unknown_is_an_error_not_a_silent_whole_history(world):
+    _, cur, aid = world
+    result(cur, aid, SHA1, T_RETRY, "g_ext_retry", False, "assert False")
+    from assessment.diagnose import diagnose
+    with pytest.raises(ValueError):
+        diagnose(cur, aid, as_of_commit_sha="9" * 40)
+
+
 def test_a_passing_commit_and_a_load_error_get_no_history_lines(world):
     _, cur, aid = world
     for sha in (SHA1, SHA2):

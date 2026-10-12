@@ -2095,7 +2095,7 @@ aggregate) and deliberately not built here. **Not wired into `scripts/demo.py` o
 `EXECUTION.md` Stage A–E item** — commissioned directly, ground-laying for the
 still-deferred Feedback Agent, the same trigger as M6 itself.
 
-`diagnose(cur, attempt_id) -> Diagnosis` — real reads only, zero writes, zero LLM calls,
+`diagnose(cur, attempt_id, as_of_commit_sha=None) -> Diagnosis` — (D-094: with a sha, only the history up to and including that commit) real reads only, zero writes, zero LLM calls,
 no new table or column. Keyed by `attempt_id`, not `(student_id, assignment_id)`:
 `test_results` FKs directly to `attempts.attempt_id`, and `(student_id, assignment_id)`
 alone is ambiguous across `attempt_no` (`attempts`' own UNIQUE constraint is three

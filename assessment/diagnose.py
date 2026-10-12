@@ -88,10 +88,28 @@ class Diagnosis:
     failing_tests: tuple[FailingTest, ...]
 
 
-def diagnose(cur, attempt_id: int) -> Diagnosis:
+def _as_of(cur, as_of_commit_sha: str | None) -> tuple[str, tuple]:
+    """SQL fragment + params restricting `test_results` to commits pushed at or before
+    `as_of_commit_sha` (D-094), or nothing when None. A row with no commit (a local run)
+    is outside every cutoff: it is not part of any push's history."""
+    if as_of_commit_sha is None:
+        return "", ()
+    cur.execute("SELECT committed_at FROM raw_commits WHERE sha = %s", (as_of_commit_sha,))
+    row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"no raw_commits row for as_of_commit_sha={as_of_commit_sha!r}")
+    return (" AND commit_sha IN (SELECT sha FROM raw_commits WHERE committed_at <= %s)",
+            (row[0],))
+
+
+def diagnose(cur, attempt_id: int, as_of_commit_sha: str | None = None) -> Diagnosis:
     """The one function this module exists to provide. Deterministic, no LLM, no
     write -- three SELECTs and GROUP BY-shaped Python, exactly C10's own diagnosis
     ("four of its seven listed jobs are GROUP BY").
+
+    `as_of_commit_sha` (D-094): describe the attempt as it stood at that commit -- only
+    `test_results` of commits with `committed_at` <= that commit's. A message written for
+    commit N must not know about commit N+1; None (the default) keeps the whole history.
     """
     cur.execute(
         "SELECT student_id, assignment_id, project_id FROM attempts WHERE attempt_id = %s",
@@ -102,9 +120,10 @@ def diagnose(cur, attempt_id: int) -> Diagnosis:
         raise ValueError(f"no attempt with attempt_id={attempt_id!r}")
     student_id, assignment_id, project_id = row
 
-    weakest_concept = _weakest_concept(cur, attempt_id)
-    recurrence_flags = _recurrence_flags(cur, attempt_id)
-    failing_tests = _failing_tests(cur, attempt_id)
+    as_of = _as_of(cur, as_of_commit_sha)
+    weakest_concept = _weakest_concept(cur, attempt_id, as_of)
+    recurrence_flags = _recurrence_flags(cur, attempt_id, as_of)
+    failing_tests = _failing_tests(cur, attempt_id, as_of)
     attempts_per_stage = _attempts_per_stage(cur, student_id, assignment_id, project_id)
 
     return Diagnosis(
@@ -115,13 +134,13 @@ def diagnose(cur, attempt_id: int) -> Diagnosis:
     )
 
 
-def _weakest_concept(cur, attempt_id: int) -> str | None:
+def _weakest_concept(cur, attempt_id: int, as_of: tuple[str, tuple] = ("", ())) -> str | None:
     cur.execute(
         """SELECT tr.passed, g.concept_ids
            FROM test_results tr
            JOIN gaps g ON g.gap_id = tr.gap_id
-           WHERE tr.attempt_id = %s""",
-        (attempt_id,),
+           WHERE tr.attempt_id = %s""" + as_of[0].replace("commit_sha", "tr.commit_sha"),
+        (attempt_id, *as_of[1]),
     )
     pass_count: Counter[str] = Counter()
     total_count: Counter[str] = Counter()
@@ -143,12 +162,13 @@ def _weakest_concept(cur, attempt_id: int) -> str | None:
     return min(c for c, r in rates.items() if r == weakest_rate)
 
 
-def _recurrence_flags(cur, attempt_id: int) -> dict[str, bool]:
+def _recurrence_flags(cur, attempt_id: int,
+                      as_of: tuple[str, tuple] = ("", ())) -> dict[str, bool]:
     cur.execute(
         """SELECT gap_id, commit_sha, passed
            FROM test_results
-           WHERE attempt_id = %s AND gap_id IS NOT NULL""",
-        (attempt_id,),
+           WHERE attempt_id = %s AND gap_id IS NOT NULL""" + as_of[0],
+        (attempt_id, *as_of[1]),
     )
     failed_commits: dict[str, set] = defaultdict(set)
     for gap_id, commit_sha, passed in cur.fetchall():
@@ -158,13 +178,14 @@ def _recurrence_flags(cur, attempt_id: int) -> dict[str, bool]:
             for gap_id, commits in failed_commits.items()}
 
 
-def _failing_tests(cur, attempt_id: int) -> tuple[FailingTest, ...]:
+def _failing_tests(cur, attempt_id: int,
+                   as_of: tuple[str, tuple] = ("", ())) -> tuple[FailingTest, ...]:
     cur.execute(
         """SELECT test_name, passed, message, gap_id, commit_sha
            FROM test_results
-           WHERE attempt_id = %s AND status <> 'tooling'
+           WHERE attempt_id = %s AND status <> 'tooling'""" + as_of[0] + """
            ORDER BY ran_at DESC""",
-        (attempt_id,),
+        (attempt_id, *as_of[1]),
     )
     rows = cur.fetchall()
     if not rows:

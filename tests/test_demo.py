@@ -122,3 +122,11 @@ def test_beat5_marks_low_data_below_three_observations():
     assert "low data" not in mastery_line("py.x", {**base, "n": 3})
     # the flag sits right next to p, not at the end of the line
     assert "p_mastery=0.776  low data  n=1" in mastery_line("py.x", {**base, "n": 1})
+
+
+def test_beat3_names_the_mode_the_grader_will_really_use(monkeypatch):
+    """D-094: the label follows VDEL_GRADING_SANDBOX, never a hard-coded 'real subprocess'."""
+    monkeypatch.delenv("VDEL_GRADING_SANDBOX", raising=False)
+    assert demo.beat3_where() == "real subprocess"
+    monkeypatch.setenv("VDEL_GRADING_SANDBOX", "docker")
+    assert demo.beat3_where() == "docker container"

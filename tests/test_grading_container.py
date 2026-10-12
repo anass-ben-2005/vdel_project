@@ -77,6 +77,11 @@ def test_no_host_environment_variable_is_passed_in():
     assert not [e for e in passed if e.split("=")[0] in {"GITHUB_TOKEN", "PG_DSN"}]
 
 
+def test_the_container_pins_the_hash_seed():
+    cmd = argv()
+    assert "PYTHONHASHSEED=0" in [cmd[i + 1] for i, a in enumerate(cmd) if a == "-e"]
+
+
 def test_a_path_with_a_comma_is_refused_rather_than_mis_mounted():
     with pytest.raises(tr.TestRunnerError):
         argv(work=Path("/tmp/a,b"))
@@ -216,6 +221,22 @@ def test_both_modes_grade_an_ordinary_repo_identically(name, tmp_path, monkeypat
     assert (host.status, host.detail) == (box.status, box.detail)
     assert rows(host) == rows(box)
     assert rows(host)                                       # and something was actually graded
+
+
+@needs_container
+@pytest.mark.parametrize("name", sorted(fx.ORDINARY))
+def test_stored_messages_are_identical_across_runs_and_modes(name, tmp_path, monkeypatch):
+    """D-094: RAW messages (no canon()): the same repo twice in the container, and once on the
+    host, must store the very same text."""
+    repo = fx.make_repo(tmp_path / "repo", fx.ORDINARY[name])
+
+    def raw(ev):
+        return sorted((o.test_name, o.message) for o in ev.outcomes)
+    monkeypatch.delenv(tr.SANDBOX_ENV_VAR, raising=False)
+    host = raw(evaluate(repo))
+    monkeypatch.setenv(tr.SANDBOX_ENV_VAR, "docker")
+    monkeypatch.setenv(tr.IMAGE_ENV_VAR, IMAGE)
+    assert raw(evaluate(repo)) == raw(evaluate(repo)) == host != []
 
 
 @needs_container

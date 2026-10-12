@@ -275,6 +275,7 @@ def grading_env(home: Path) -> dict[str, str]:
         "TEMP": str(scratch), "TMP": str(scratch), "TMPDIR": str(scratch),
         "PYTHONPATH": "",                      # set by us: nothing inherited, nothing added
         "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONHASHSEED": "0",                 # D-094: stable set/dict order, stable messages
         "PYTHONIOENCODING": "utf-8",
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",  # no third-party pytest plugin is loaded
     })
@@ -400,7 +401,8 @@ def docker_run_argv(work: Path, results: Path, test_rel_path: str, junit_name: s
         "--mount", f"type=bind,source={results},target=/results",
         "-w", "/work",
         "-e", f"HOME={DOCKER_SCRATCH}", "-e", f"TMPDIR={DOCKER_SCRATCH}",
-        "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "PYTHONIOENCODING=utf-8",
+        "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "PYTHONHASHSEED=0",
+        "-e", "PYTHONIOENCODING=utf-8",
         "-e", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
         image,
         "python", "-P", "-m", "pytest", test_rel_path,
