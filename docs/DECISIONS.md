@@ -4044,3 +4044,33 @@ Tests:       tests/test_post_feedback.py (first / second / later commit, a later
              in the docker argv; raw stored messages identical twice in the container and equal to the host),
              tests/test_demo.py (label follows the env var). Mutation checks: removing the pin fails both seed tests;
              reverting `build_feedback` to whole history fails both as-of tests.
+
+### D-095 -- the hourly task survives any character in a path (an apostrophe in `stage_a_l'etranger`); a startup failure is never silent
+Date:        2026-10-12
+Status:      DECIDED (scripts and tests only; the task is NOT registered, the real database, GitHub and roster untouched)
+Authority:   Anas (bug report: "VDEL hourly" ran at 02:43, LastTaskResult 1, nothing in logs/)
+Cause:       register_task.ps1 built `powershell.exe -Command "Set-Location -LiteralPath '<folder>'; & '<python>' ..."`.
+             An apostrophe in the folder ended the single-quoted string: TerminatorExpectedAtEndOfString, the command
+             never ran, so run_hourly never wrote a line. Reproduced with the exact string (a harmless Write-Output
+             with the same quoting gives the same parse error).
+Fix:         new scripts/windows/task_command.ps1 (dot-sourced by register_task.ps1 and by the test), three layers:
+             (1) the command is passed with -EncodedCommand (base64 of UTF-16LE): the command line holds only
+             [A-Za-z0-9+/=]; (2) inside it every path is a single-quoted literal with ' doubled to '' and is used with
+             -LiteralPath; (3) the task's "Start in" stays the project folder but is NOT relied on.
+             Chosen over "WorkingDirectory only, drop Set-Location": TESTED, Windows PowerShell 5.1 started in a folder
+             whose name holds [ or ] silently falls back to its own install folder (brackets read as a wildcard), so
+             Start-in alone breaks on `[`. EncodedCommand alone removes the parse problem; the explicit Set-Location
+             -LiteralPath removes the dependence on Start-in. A property is not parsed, but it is not enough either.
+Visibility:  the wrapper writes logs\task_stderr.log (UTF-8, absolute path, .NET AppendAllText): a `task start` line per
+             run, Python's stderr via a 2>&1 pipeline, `TASK WRAPPER ERROR` for python-not-found and any wrapper
+             exception, and %TEMP%\vdel_task_stderr.log when the folder itself cannot be entered. Two traps found by
+             the tests while building it: PowerShell 5.1's `2>>` writes UTF-16 while Add-Content writes ANSI (one file,
+             two encodings, unreadable), and New-Item has no -LiteralPath. run_hourly's first log line is now
+             `run_hourly START pid= cwd= python=`, written before rotation, the lock or the database.
+Effect:      a task registered by the OLD script keeps its broken command: unregister and register again.
+Tests:       tests/test_task_command.py runs the generated argument string with powershell.exe in a folder and with a
+             python stub both named `o'brien & co [x]`: runs end to end, python starts in the folder, python's exit code
+             is the task's, started from the wrong directory it still reaches the folder, python missing is logged,
+             write/docker flags are set only when asked, the log holds no NUL bytes, and the old quoting is shown to
+             fail. tests/test_run_hourly.py: first log line. Skipped when powershell.exe is absent.
+Known limit: `%` in a path is not covered (cmd.exe expands it when the .cmd stub is launched; python.exe is not a .cmd).

@@ -149,6 +149,9 @@ def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
         tee = Tee(log_dir, now)
         out = tee
     try:
+        # D-095: the very first line, before rotation, the lock or the database, so a run that
+        # dies early still leaves a trace (an empty log used to be the only symptom).
+        out(f"run_hourly START pid={os.getpid()} cwd={Path.cwd()} python={sys.executable}")
         for name in rotate_logs(log_dir, now):
             out(f"log rotation: removed {name}")
         out(f"run_hourly {now:%Y-%m-%d %H:%M} UTC  {'DRY-RUN' if dry_run else 'LIVE'}"

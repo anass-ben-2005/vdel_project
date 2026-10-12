@@ -12,6 +12,7 @@
   need your session anyway), never starts a second copy while one is still running, runs at the
   next opportunity if the PC was off at the scheduled time, and is stopped after 50 minutes.
 
+  D-095: the folder and python paths may contain any character (an apostrophe, a space, '&').
   This script was written but NOT run by the overnight batch. Preview it first:
       powershell -ExecutionPolicy Bypass -File scripts\windows\register_task.ps1 -WhatIf
 
@@ -44,12 +45,11 @@ if (-not $PythonExe) {
 }
 if (-not (Test-Path $PythonExe)) { throw "python.exe not found at $PythonExe" }
 
-# The command the task runs: set the (optional) write flag for this process only, then run.
-$flag = ""
-if ($AllowGitHubWrite) { $flag = "`$env:VDEL_ALLOW_GITHUB_WRITE='1'; " }
-if ($UseDockerGrading) { $flag += "`$env:VDEL_GRADING_SANDBOX='docker'; " }
-$inner = "Set-Location -LiteralPath '$root'; $flag& '$PythonExe' -m scripts.run_hourly; exit `$LASTEXITCODE"
-$arguments = "-NoProfile -ExecutionPolicy Bypass -Command `"$inner`""
+# The command the task runs (D-095): passed encoded, every path a doubled-quote literal, the folder
+# set with -LiteralPath (and also the task's "Start in"). See task_command.ps1 for why.
+. (Join-Path $PSScriptRoot "task_command.ps1")
+$taskScript = New-HourlyTaskScript -ProjectFolder $root -PythonExe $PythonExe -AllowGitHubWrite:$AllowGitHubWrite -UseDockerGrading:$UseDockerGrading
+$arguments = New-HourlyTaskArguments -Script $taskScript
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments -WorkingDirectory $root
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
@@ -67,7 +67,10 @@ Write-Host "Python    : $PythonExe"
 Write-Host "Every     : $EveryMinutes minute(s), first run in about 2 minutes"
 Write-Host "GitHub    : $writeText"
 Write-Host "Grading   : $(if ($UseDockerGrading) { 'in a Docker container' } else { 'in a subprocess on this PC' })"
-Write-Host "Command   : powershell.exe $arguments"
+Write-Host "Start in  : $root"
+Write-Host "Stderr    : $(Join-Path $root 'logs\task_stderr.log')"
+Write-Host "Command (what the encoded argument contains):"
+Write-Host $taskScript
 
 $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($existing -and -not $Force) {

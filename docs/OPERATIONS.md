@@ -68,11 +68,42 @@ Get-ScheduledTaskInfo -TaskName "VDEL hourly"        # LastRunTime, LastTaskResu
 Get-Content logs\run_hourly-$(Get-Date -Format yyyy-MM-dd).log -Tail 40
 ```
 
-`LastTaskResult`: 0 ok, 1 a student or a post failed (the log says which), 2 the database is
-unreachable, 3 another run holds the lock.
+`LastTaskResult`: 0 ok, 1 a student or a post failed (the log says which) **or the task did not start
+at all (see below)**, 2 the database is unreachable, 3 another run holds the lock.
 
 Logs: `logs\run_hourly-YYYY-MM-DD.log`, one file per day, appended, every line timestamped (UTC).
-Files older than 14 days are deleted at the start of each run. `logs\` is gitignored.
+Its first line of every run is `run_hourly START pid=... cwd=... python=...`, written before anything
+else. Files older than 14 days are deleted at the start of each run. `logs\` is gitignored.
+
+### LastTaskResult 1 and no new line in `logs\run_hourly-*.log` (D-095)
+
+**Symptom.** The task ran (LastRunTime is right), ended with `LastTaskResult 1`, and nothing was added
+to `logs\`. Since the first line of a run is now written before anything else, a missing `START` line
+means `run_hourly` never started: the failure happened in the task's own wrapper or in Python's start-up.
+
+**Cause found on 2026-10-12.** The project folder `stage_a_l'etranger` contains an apostrophe. The first
+version of `register_task.ps1` put the folder inside a single-quoted PowerShell string
+(`Set-Location -LiteralPath '<folder>'`), so the apostrophe ended the string, the command did not parse
+(`TerminatorExpectedAtEndOfString`) and nothing ran. Fixed: the command is now passed encoded, every
+path is a literal with `'` doubled to `''`, and the folder is set with `-LiteralPath`
+(`scripts\windows\task_command.ps1`, tested with a folder named `o'brien & co [x]`). **A task registered
+by the old script keeps the broken command: unregister it and register again with the new script.**
+
+**Where to look.** `logs\task_stderr.log` (UTF-8, appended, never rotated: delete it by hand if it grows):
+
+```powershell
+Get-Content logs\task_stderr.log -Tail 40
+```
+
+- `--- <time> task start, folder <path>`: the wrapper started and found the folder. One per run.
+- Lines below it with no new `START` line in the dated log: Python wrote to stderr or failed to start
+  (`No module named ...`, a wrong interpreter, a missing package). The text is Python's own.
+- `TASK WRAPPER ERROR: python not found: <path>`: `python.exe` moved or was uninstalled. Register the
+  task again (it records the interpreter path found at registration, or pass `-PythonExe`).
+- No `task start` line at all: the wrapper could not even reach the folder. Look at
+  `%TEMP%\vdel_task_stderr.log` (`PROJECT FOLDER NOT FOUND`): the folder was moved or renamed.
+- `logs\task_stderr.log` missing and no dated log either: the task did not launch PowerShell. Check
+  `Get-ScheduledTaskInfo` (LastRunTime) and the History tab of the task in Task Scheduler.
 
 ## 5. Stop or remove it
 

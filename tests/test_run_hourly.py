@@ -216,6 +216,19 @@ def test_the_run_writes_a_dated_log_file_with_timestamps(conn, tmp_path, roster_
     assert all(line[2] == ":" for line in text.splitlines())            # "HH:MM:SS ..."
 
 
+def test_the_first_line_of_the_log_is_written_before_anything_else(monkeypatch, tmp_path,
+                                                                   roster_file):
+    """D-095: even a run that dies at once (database down) leaves a START line first."""
+    def down():
+        raise psycopg2.OperationalError("connection refused")
+
+    monkeypatch.setattr(rh.db, "_open", down)
+    assert rh.run(roster_path=roster_file, log_dir=tmp_path / "logs", now=NOW) == 2
+    first = (tmp_path / "logs" / "run_hourly-2026-10-12.log").read_text(encoding="utf-8")
+    first = first.splitlines()[0]
+    assert "run_hourly START pid=" in first and "cwd=" in first and "python=" in first
+
+
 def test_logs_older_than_14_days_are_deleted_and_nothing_else(tmp_path):
     logs = tmp_path / "logs"
     logs.mkdir()
@@ -256,11 +269,13 @@ def test_the_task_scripts_keep_writes_off_by_default():
     from pathlib import Path
 
     folder = Path(__file__).resolve().parent.parent / "scripts" / "windows"
-    register = (folder / "register_task.ps1").read_text(encoding="utf-8")
+    register = (folder / "task_command.ps1").read_text(encoding="utf-8")   # D-095: the builder
     unregister = (folder / "unregister_task.ps1").read_text(encoding="utf-8")
     assert "[switch]$AllowGitHubWrite" in register
+    assert "[switch]$AllowGitHubWrite" in (folder / "register_task.ps1").read_text(encoding="utf-8")
     # the flag is SET in exactly one place: the line of the AllowGitHubWrite branch
-    setters = [ln for ln in register.splitlines() if "VDEL_ALLOW_GITHUB_WRITE='1'" in ln]
+    setters = [ln for ln in register.splitlines() if "VDEL_ALLOW_GITHUB_WRITE = '1'" in ln]
     assert len(setters) == 1 and "if ($AllowGitHubWrite)" in setters[0]
-    assert "SupportsShouldProcess" in register and "SupportsShouldProcess" in unregister
-    assert "-MultipleInstances IgnoreNew" in register and "ExecutionTimeLimit" in register
+    registration = (folder / "register_task.ps1").read_text(encoding="utf-8")
+    assert "SupportsShouldProcess" in registration and "SupportsShouldProcess" in unregister
+    assert "-MultipleInstances IgnoreNew" in registration and "ExecutionTimeLimit" in registration
