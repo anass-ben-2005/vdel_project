@@ -1945,7 +1945,7 @@ the flag, adds the stored paragraph under it. Nothing an agent does can fail the
 the template push (D-098) never reaches an agent. `tests/test_with_llm.py` (fake LLM, all provider
 handlers blocked).
 
-**The Code Agent, hardened (D-103), still not wired.** `agents/code_agent.py grade()` keeps its contract and
+**The Code Agent, hardened (D-103).** `agents/code_agent.py grade()` keeps its contract and
 gained keyword-only options. The submission and the linter findings are escaped (`<<<` -> `[LT3]`) before
 they enter the prompt (v3). The linters run on a private one-file copy in an empty directory (`agents/tools.py`:
 `vet_source` refuses links, paths outside the checkout and files above 200000 bytes; ruff `--isolated`; sqlfluff
@@ -1957,6 +1957,18 @@ lines of context, or skips with a reason. `grade(attempt_id=, commit_sha=, conn=
 trace per pair (with `submission_sha256`, `criteria`, `rejected`; never the file) and returns the stored one on a
 second call without a provider call. No feature, mastery value, flag or posted text reads it, and
 `llm_correctness_opinion` stays research-only (tests). `tests/test_code_agent_hardening.py`.
+
+**The Code Agent in the hook (D-104), behind `--with-code-agent`.** Off by default and refused without `--with-llm`
+(exit code 4). `scripts/run_cycle.AgentsHook` runs, per newly graded commit, ONE agent: the Feedback Agent if a
+check failed, the Code Agent if ALL checks passed (never on the template push, a commit with no test rows, or a
+status other than ok). The Code Agent needs a judgeable file, extractable gap lines and judged text within
+`--code-agent-max-chars` (default 4000); otherwise the log says `code_agent skipped, <reason>`. Each agent runs in its
+own SAVEPOINT and cannot fail the grading. Both draw on one budget (`--llm-run-cap`, `--llm-daily-cap`), and every
+provider handler is capped for the run (`HardCap`), because the budget cannot see failed fallback attempts. Its
+verdict is stored, never posted, read by nothing but `scripts/code_agent_report.py` (labelled "unmeasured judge,
+internal use only, never shown to students"). `run_cycle --plan` lists, read-only, what a cycle would touch.
+`run_hourly --with-llm` refuses to start (exit code 4) when `LLM_PROVIDER` is unset. The task has the switches
+`-WithLlm` and `-WithCodeAgent` (`docs/OPERATIONS.md` section 14). `tests/test_with_code_agent.py`.
 
 **One roster loader (D-070).** `scripts/seed_data.py::load_roster(path=None)` is the only function
 that reads a roster; `roster_repos(roster)` feeds the collector and `roster_repo_for(roster)` the

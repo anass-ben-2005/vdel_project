@@ -218,7 +218,7 @@ def _validate(verdict: Verdict, matchable: str, used: tuple[str, ...]) -> list[d
             if (f["kind"], f["criterion"], f.get("unmatched_quote", "")) in still]
 
 
-def _existing_verdict(conn, attempt_id: int, commit_sha: str) -> tuple[Verdict, int] | None:
+def find_verdict(conn, attempt_id: int, commit_sha: str) -> tuple[Verdict, int] | None:
     """The verdict already stored for this (attempt, commit), or None. Read-only."""
     with conn.cursor() as cur:
         cur.execute(
@@ -245,7 +245,8 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
           scope: scope_mod.ScopeSpec | None = None,
           attempt_id: int | None = None,
           commit_sha: str | None = None,
-          checkout_root: str | Path | None = None) -> tuple[Verdict, int, list | None]:
+          checkout_root: str | Path | None = None,
+          max_prompt_chars: int | None = None) -> tuple[Verdict, int, list | None]:
     """Judge one submission. Returns `(verdict, trace_id, evidence_failures or None)`.
 
     The signature Echo defined and M4 preserves. `conn` exists for the reason `memory.py`'s
@@ -262,7 +263,9 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
 
     The D-103 options (module docstring): `criteria` (else `assignment["criteria"]`, else all
     four), `rubric_table` (else `assignment["rubric"]`, else built from the criteria), `scope`,
-    `attempt_id` + `commit_sha` (both or neither; they need `conn`) and `checkout_root`.
+    `attempt_id` + `commit_sha` (both or neither; they need `conn`), `checkout_root` and
+    `max_prompt_chars` (D-104: skip, with the reason, when the text that would go into the prompt
+    -- the judged lines plus context, or the whole file -- is longer than this).
 
     Raises `ValueError` if the assignment carries no `task`, `FileNotFoundError` if the submission
     is missing -- both are callers who forgot to supply the thing being graded, and both should fail
@@ -299,7 +302,7 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
 
     # ---- idempotence: one verdict per (attempt, commit), no second provider call ---------------
     if persisting:
-        existing = _existing_verdict(conn, attempt_id, commit_sha)
+        existing = find_verdict(conn, attempt_id, commit_sha)
         if existing is not None:
             stored, stored_id = existing
             return stored, stored_id, (stored.evidence_failures or None)
@@ -313,6 +316,9 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
             raise SubmissionSkipped(f"gap lines cannot be extracted: {exc}") from None
     shown = excerpt.text if excerpt is not None else code
     matchable = excerpt.matchable if excerpt is not None else code
+    if max_prompt_chars is not None and len(shown) > max_prompt_chars:
+        raise SubmissionSkipped(
+            f"the judged text is {len(shown)} characters, above the cap of {max_prompt_chars}")
 
     # ---- 1 TOOLS -------------------------------------------------------------------------------
     # Static analysis only, on a private copy, isolated from every config file (agents/tools.py).

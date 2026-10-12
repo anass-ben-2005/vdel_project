@@ -30,13 +30,26 @@ function New-HourlyTaskScript {
         [Parameter(Mandatory)][string]$ProjectFolder,
         [Parameter(Mandatory)][string]$PythonExe,
         [switch]$AllowGitHubWrite,
-        [switch]$UseDockerGrading
+        [switch]$UseDockerGrading,
+        [switch]$WithLlm,
+        [switch]$WithCodeAgent
     )
+    # D-104. -WithLlm adds `--with-llm` (the Feedback Agent) and sets LLM_PROVIDER for THIS TASK ONLY
+    # (an environment variable of the task's own process; nothing else on the machine changes).
+    # -WithCodeAgent adds `--with-code-agent` and is refused without -WithLlm, as run_hourly itself
+    # refuses it. Neither switch changes anything when absent: the no-flag command is the old one.
+    if ($WithCodeAgent -and -not $WithLlm) {
+        throw "-WithCodeAgent needs -WithLlm: the Code Agent is a second agent of the same hook."
+    }
     $py = ConvertTo-PsLiteral $PythonExe
     $folder = ConvertTo-PsLiteral $ProjectFolder
     $flags = ""
     if ($AllowGitHubWrite) { $flags += "`$env:VDEL_ALLOW_GITHUB_WRITE = '1'`n  " }
     if ($UseDockerGrading) { $flags += "`$env:VDEL_GRADING_SANDBOX = 'docker'`n  " }
+    if ($WithLlm) { $flags += "`$env:LLM_PROVIDER = 'openai'`n  " }
+    $agentArgs = ""
+    if ($WithLlm) { $agentArgs += " --with-llm" }
+    if ($WithCodeAgent) { $agentArgs += " --with-code-agent" }
     # A startup failure is never silent: whatever python (or this wrapper) writes to stderr, and
     # any error raised before python starts, lands in logs\task_stderr.log.
     return @"
@@ -60,7 +73,7 @@ try {
   if (-not (Test-Path -LiteralPath `$python -PathType Leaf)) { throw ('python not found: ' + `$python) }
   try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
   `$env:PYTHONIOENCODING = 'utf-8'
-  $flags& `$python -m scripts.run_hourly 2>&1 | ForEach-Object {
+  $flags& `$python -m scripts.run_hourly$agentArgs 2>&1 | ForEach-Object {
     if (`$_ -is [Management.Automation.ErrorRecord]) { Write-TaskLog `$stderrLog `$_.Exception.Message } else { `$_ }
   }
   `$code = `$LASTEXITCODE

@@ -12,11 +12,16 @@ Two phases, in order, under one lock:
      long ago are never posted by the task (post them by hand with `post_feedback --issue`), while
      a post that failed this hour is retried for two days.
 
-AGENTS (D-099). `--with-llm` is OFF by default and is NOT in the scheduled task's command: the task
-runs exactly what it ran before. When given, phase 1 calls the agents on each commit it grades
-(see `run_cycle`, with the same `--llm-run-cap` / `--llm-daily-cap`), and phase 2 ADDS the stored
-LLM paragraph under the deterministic comment, never in place of it. No stored paragraph, or one
-that would leak hidden test source, means the deterministic text alone.
+AGENTS (D-099, D-104). `--with-llm` is OFF by default and is NOT in the scheduled task's command
+unless the task was registered with -WithLlm. When given, phase 1 calls the Feedback Agent on each
+commit it grades that has a failing check (see `run_cycle`, with the same `--llm-run-cap` / `--llm-
+daily-cap`), and phase 2 ADDS the stored LLM paragraph under the deterministic comment, never in
+place of it. No stored paragraph, or one that would leak hidden test source, means the
+deterministic text alone.
+`--with-code-agent` (needs `--with-llm`) also runs the Code Agent on a commit whose checks all
+passed; its verdict is stored and NEVER posted. The run REFUSES TO START (exit code 4, one clear
+log line, nothing collected or graded) when `--with-llm` is given and `LLM_PROVIDER` is not set, or
+when `--with-code-agent` is given without `--with-llm`.
 
 GITHUB WRITES. Phase 2 writes to GitHub ONLY when the environment variable
 `VDEL_ALLOW_GITHUB_WRITE=1` is set in the task's environment (and `--dry-run` is not given).
@@ -47,6 +52,7 @@ from pathlib import Path
 
 from agents.pipeline import find_feedback_addendum
 from scripts import run_cycle as rc
+from scripts.llm_first_call import key_variables
 from scripts.post_feedback import (
     GITHUB_WRITE_ENV_VAR,
     HiddenSourceLeak,
@@ -61,7 +67,7 @@ HOURLY_LOCK_KEY = 640_201_072          # next to run_cycle's 640_201_071: "one h
 LOG_KEEP_DAYS = 14
 DEFAULT_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 DEFAULT_LOOKBACK_HOURS = 48
-EXIT_OK, EXIT_FAILED, EXIT_DB_DOWN, EXIT_LOCKED = 0, 1, 2, 3
+EXIT_OK, EXIT_FAILED, EXIT_DB_DOWN, EXIT_LOCKED, EXIT_REFUSED = 0, 1, 2, 3, 4
 
 
 class Tee:
@@ -116,6 +122,35 @@ def _plan(cur, attempt_id: int, sha: str, repo_for: dict, *, with_llm: bool, out
     return plan_issue_post(cur, attempt_id, sha, repo_for)
 
 
+def _refusal(with_llm: bool, with_code_agent: bool, env) -> str | None:
+    """Why this run must not start, or None. Checked before the lock, the database or any work.
+
+    * `--with-code-agent` needs `--with-llm` (the Code Agent is a second agent of the same hook).
+    * `--with-llm` needs `LLM_PROVIDER` set: the gateway's silent default (anthropic) is not
+      accepted on a task that spends money unattended (D-104). `.env` is read by the gateway when
+      it is imported, so a value there counts."""
+    if with_code_agent and not with_llm:
+        return "--with-code-agent runs only together with --with-llm."
+    if with_llm and not (env.get("LLM_PROVIDER") or "").strip():
+        return ("--with-llm needs LLM_PROVIDER to be set (for the scheduled task: register it with "
+                "-WithLlm, which sets it for the task only). The gateway's default provider is not "
+                "used silently.")
+    return None
+
+
+def _announce_provider(env, out) -> None:
+    """One log line naming the provider, and a warning when more than one provider key is present
+    (the gateway would fall back to another provider if the first fails). Names only, never
+    values."""
+    keys = sorted(var for var in key_variables().values() if (env.get(var) or "").strip())
+    out(f"agents: provider {(env.get('LLM_PROVIDER') or '').strip()}; provider keys present: "
+        f"{', '.join(keys) or 'none'}")
+    if len(keys) > 1:
+        out("WARNING: more than one provider key is present; if the first provider fails the "
+            "gateway may fall back to another one (billed there). Empty the keys you do not want "
+            "used in .env.")
+
+
 def _feedback_phase(roster: dict, *, write: bool, lookback_hours: int, gh, out,
                     conn=None, with_llm: bool = False) -> int:
     """Comment on the recently graded commits. Returns the number of failures. `conn`: a caller's
@@ -165,10 +200,13 @@ def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
         log_dir: Path | None = None, now: datetime | None = None, gh=None,
         collect=None, checkout=None, grade=None, out=None, conn=None,
         with_llm: bool = False, llm_run_cap: int = rc.DEFAULT_LLM_RUN_CAP,
-        llm_daily_cap: int = rc.DEFAULT_LLM_DAILY_CAP, llm=None, ledger=None) -> int:
+        llm_daily_cap: int = rc.DEFAULT_LLM_DAILY_CAP, llm=None, ledger=None,
+        with_code_agent: bool = False, code_prompt_cap: int = rc.DEFAULT_CODE_PROMPT_CAP,
+        env=None) -> int:
     """One hourly run. `collect` / `checkout` / `grade` / `gh` / `out` / `conn` are injectable for
     tests (`conn`: one caller-owned transaction used by the cycle and the feedback phase); so are
-    `llm` and `ledger` (a `FakeLLM`, an in-memory `UsageLedger`)."""
+    `llm` and `ledger` (a `FakeLLM`, an in-memory `UsageLedger`) and `env` (the environment checked
+    for `LLM_PROVIDER`, default `os.environ`)."""
     now = now or datetime.now(UTC)
     log_dir = Path(log_dir) if log_dir else DEFAULT_LOG_DIR
     tee = None
@@ -182,7 +220,16 @@ def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
         for name in rotate_logs(log_dir, now):
             out(f"log rotation: removed {name}")
         out(f"run_hourly {now:%Y-%m-%d %H:%M} UTC  {'DRY-RUN' if dry_run else 'LIVE'}"
-            f"{', network skipped' if skip_network else ''}")
+            f"{', network skipped' if skip_network else ''}"
+            f"{', agents ON' if with_llm else ''}{' + Code Agent' if with_code_agent else ''}")
+        refusal = _refusal(with_llm, with_code_agent, os.environ if env is None else env)
+        if refusal:
+            out(f"REFUSED: {refusal}")
+            out("Nothing was collected, graded or posted in this run, so nothing was half-done. "
+                "Fix the setting (or run without the flag) and the next run proceeds.")
+            return EXIT_REFUSED
+        if with_llm:
+            _announce_provider(os.environ if env is None else env, out)
 
         try:
             lock_conn = db._open()
@@ -212,7 +259,8 @@ def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
             cycle = rc.run_cycle(roster, dry_run=dry_run, skip_network=skip_network, out=out,
                                  conn=conn, with_llm=with_llm, llm_run_cap=llm_run_cap,
                                  llm_daily_cap=llm_daily_cap, llm=llm, ledger=ledger,
-                                 **injected)
+                                 with_code_agent=with_code_agent,
+                                 code_prompt_cap=code_prompt_cap, **injected)
             if cycle.exit_code in (rc.EXIT_DB_DOWN, rc.EXIT_LOCKED):
                 return EXIT_DB_DOWN if cycle.exit_code == rc.EXIT_DB_DOWN else EXIT_LOCKED
 
@@ -247,7 +295,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(line_buffering=True)
     return run(roster_path=args.roster, dry_run=args.dry_run, skip_network=args.skip_network,
                lookback_hours=args.lookback_hours, with_llm=args.with_llm,
-               llm_run_cap=args.llm_run_cap, llm_daily_cap=args.llm_daily_cap)
+               llm_run_cap=args.llm_run_cap, llm_daily_cap=args.llm_daily_cap,
+               with_code_agent=args.with_code_agent, code_prompt_cap=args.code_agent_max_chars)
 
 
 if __name__ == "__main__":

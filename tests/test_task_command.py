@@ -30,6 +30,7 @@ STUB = (
     "@echo off\r\n"
     'echo FAKE-PYTHON-RAN cwd="%CD%" args=%*\r\n'
     "echo write-flag=%VDEL_ALLOW_GITHUB_WRITE% sandbox=%VDEL_GRADING_SANDBOX%\r\n"
+    "echo llm=%LLM_PROVIDER%\r\n"
     "echo boom-on-stderr 1>&2\r\n"
     "exit /b %FAKE_EXIT%\r\n"
 )
@@ -60,7 +61,10 @@ def decode(arguments: str) -> str:
 
 
 def run_task(arguments: str, folder: Path, exit_code: int = 0):
-    return powershell(*arguments.split(" "), cwd=folder, env={"FAKE_EXIT": str(exit_code)})
+    # LLM_PROVIDER is blanked: the test process may hold the machine's own value (system.llm loads
+    # .env on import), and what these tests check is what the TASK sets.
+    return powershell(*arguments.split(" "), cwd=folder,
+                      env={"FAKE_EXIT": str(exit_code), "LLM_PROVIDER": ""})
 
 
 @pytest.fixture
@@ -138,3 +142,60 @@ def test_the_old_quoting_really_did_break_on_an_apostrophe(awkward):
     folder, _ = awkward
     done = powershell("-Command", f"Set-Location -LiteralPath '{folder}'; Write-Output ok")
     assert done.returncode != 0 and "ok" not in done.stdout
+
+
+# --- D-104: the agents are opt-in switches of the task, off by default ---------------------------
+
+def test_the_default_task_runs_exactly_what_it_always_ran_with_no_agent_flag(awkward, tmp_path):
+    folder, stub = awkward
+    arguments = generate(folder, stub, tmp_path)
+    script = decode(arguments)
+    assert "-m scripts.run_hourly 2>&1" in script
+    for absent in ("--with-llm", "--with-code-agent", "LLM_PROVIDER"):
+        assert absent not in script
+    done = run_task(arguments, folder)
+    assert "-m scripts.run_hourly" in done.stdout and "--with" not in done.stdout
+    assert "llm=openai" not in done.stdout
+
+
+def test_with_llm_adds_the_flag_and_sets_the_provider_for_the_task_only(awkward, tmp_path):
+    folder, stub = awkward
+    arguments = generate(folder, stub, tmp_path, "-WithLlm")
+    script = decode(arguments)
+    assert "$env:LLM_PROVIDER = 'openai'" in script
+    assert "-m scripts.run_hourly --with-llm 2>&1" in script and "--with-code-agent" not in script
+    done = run_task(arguments, folder)
+    assert "-m scripts.run_hourly --with-llm" in done.stdout and "llm=openai" in done.stdout
+
+
+def test_with_code_agent_adds_its_flag_and_needs_with_llm(awkward, tmp_path):
+    folder, stub = awkward
+    script = decode(generate(folder, stub, tmp_path, "-WithLlm", "-WithCodeAgent"))
+    assert "-m scripts.run_hourly --with-llm --with-code-agent 2>&1" in script
+    assert "$env:LLM_PROVIDER = 'openai'" in script
+    driver = tmp_path / "alone.ps1"
+    driver.write_text(
+        "param([string]$Lib)\n. $Lib\n"
+        "New-HourlyTaskScript -ProjectFolder 'C:/x' -PythonExe 'C:/x/python.exe' -WithCodeAgent\n",
+        encoding="utf-8")
+    refused = powershell("-ExecutionPolicy", "Bypass", "-File", str(driver), "-Lib",
+                         str(TASK_COMMAND))
+    assert refused.returncode != 0
+    assert "-WithCodeAgent needs -WithLlm" in (refused.stderr + refused.stdout)
+
+
+def test_the_agent_switches_combine_with_the_other_switches(awkward, tmp_path):
+    folder, stub = awkward
+    both = decode(generate(folder, stub, tmp_path, "-AllowGitHubWrite", "-WithLlm",
+                           "-WithCodeAgent"))
+    for needle in ("$env:VDEL_ALLOW_GITHUB_WRITE = '1'", "$env:LLM_PROVIDER = 'openai'",
+                   "--with-llm --with-code-agent"):
+        assert needle in both
+
+
+def test_register_task_declares_the_switches_off_by_default_and_refuses_the_code_agent_alone():
+    text = TASK_COMMAND.with_name("register_task.ps1").read_text(encoding="utf-8")
+    assert "[switch]$WithLlm," in text and "[switch]$WithCodeAgent," in text
+    assert "if ($WithCodeAgent -and -not $WithLlm)" in text
+    assert "-WithLlm:$WithLlm -WithCodeAgent:$WithCodeAgent" in text
+    assert "LLM_PROVIDER=openai" in text                                  # said in the help text

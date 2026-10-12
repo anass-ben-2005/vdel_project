@@ -769,8 +769,10 @@ def test_no_reader_of_the_verdict_kind_exists_outside_the_agent_that_writes_it()
     by the one that checks for its own earlier verdict, and by memory.py's vocabulary (where it is a
     NON-mastery kind, so replay skips it)."""
     # benchmark/run_real_benchmark.py has a JSON key "verdict" in its own results file: not a trace.
+    # scripts/code_agent_report.py (D-104) is the one deliberate reader: read-only, labelled
+    # "internal use only, never shown to students", tested in tests/test_with_code_agent.py.
     allowed = {"agents/code_agent.py", "agents/echo_agent.py", "memory/memory.py",
-               "benchmark/run_real_benchmark.py"}
+               "benchmark/run_real_benchmark.py", "scripts/code_agent_report.py"}
     found = set()
     for path in ROOT.rglob("*.py"):
         rel = path.relative_to(ROOT).as_posix()
@@ -791,10 +793,11 @@ def test_no_reader_of_the_verdict_kind_exists_outside_the_agent_that_writes_it()
 def test_nothing_outside_the_benchmark_and_the_demo_reads_the_correctness_opinion():
     """The field is defined and filled in agents/code_agent.py and asked for in agents/prompts.py;
     agents/trace_compat.py is the reader helper, imported by no non-test code; the benchmark runners
-    and the demo are the only consumers. No feature, variable, memory, assessment, feedback, posting
-    or pipeline module mentions it."""
+    and the demo are the only consumers, with the internal report (D-104). No feature, variable,
+    memory, assessment, feedback, posting or pipeline module mentions it."""
     allowed = {"agents/code_agent.py", "agents/prompts.py", "agents/trace_compat.py",
-               "benchmark/run_benchmark.py", "benchmark/run_real_benchmark.py", "scripts/demo.py"}
+               "benchmark/run_benchmark.py", "benchmark/run_real_benchmark.py", "scripts/demo.py",
+               "scripts/code_agent_report.py"}              # D-104: the labelled report
     found, importers = set(), set()
     for path in ROOT.rglob("*.py"):
         rel = path.relative_to(ROOT).as_posix()

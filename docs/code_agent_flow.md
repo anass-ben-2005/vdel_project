@@ -21,8 +21,10 @@
 > `submission_sha256`, `criteria`, `scope`, `rejected`, one trace per pair, idempotent; **7** with
 > `grade(scope=...)` only the student's gap lines and 3 lines of context are judged
 > (`agents/scope.py`), otherwise the whole file as before; **8** the task text is in FILE order and the
-> criteria come from `config/judging.yaml` (weather_etl drops "idiomatic"). Section **6** (the hook) is
-> unchanged: the Code Agent is still not run by it, and a test keeps that true. Re-run the greps before
+> criteria come from `config/judging.yaml` (weather_etl drops "idiomatic"). Section **6** (the hook) changed
+> in D-104: with `--with-llm --with-code-agent` the hook now runs the Code Agent on a commit whose checks ALL
+> passed (not on a failing commit, the template push, or when the gap lines cannot be found), in its own
+> SAVEPOINT, storing one verdict per (attempt, commit) and posting nothing; without the flag it is unchanged. Re-run the greps before
 > relying on a line number.
 
 Short version: the Code Agent is a complete, tested function (`agents/code_agent.py`), but **nothing in the

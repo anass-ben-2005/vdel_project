@@ -21,6 +21,12 @@
 .PARAMETER AllowGitHubWrite  Let the task post feedback comments (VDEL_ALLOW_GITHUB_WRITE=1).
 .PARAMETER UseDockerGrading  Grade in the container (VDEL_GRADING_SANDBOX=docker in the task's environment).
                   The image must exist first: docs/OPERATIONS.md section 11.
+.PARAMETER WithLlm        Run the Feedback Agent after each graded commit (`--with-llm`, D-099): billed provider
+                  calls, capped (10 per run, 20 per day by default). Sets LLM_PROVIDER=openai in the task's own
+                  environment and nowhere else. The key stays in .env. Off by default.
+.PARAMETER WithCodeAgent  Also run the Code Agent on a commit whose checks all passed (`--with-code-agent`,
+                  D-104). REQUIRES -WithLlm. Its verdict is stored for you to read with
+                  scripts\code_agent_report.py; it is never posted to GitHub. Off by default.
 .PARAMETER EveryMinutes    Repeat interval. Default 60.
 .PARAMETER Force           Replace a task of the same name.
 #>
@@ -30,11 +36,17 @@ param(
     [string]$PythonExe = "",
     [switch]$AllowGitHubWrite,
     [switch]$UseDockerGrading,
+    [switch]$WithLlm,
+    [switch]$WithCodeAgent,
     [int]$EveryMinutes = 60,
     [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($WithCodeAgent -and -not $WithLlm) {
+    throw "-WithCodeAgent needs -WithLlm: the Code Agent is a second agent of the same hook."
+}
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 if (-not (Test-Path (Join-Path $root "scripts\run_hourly.py"))) {
@@ -48,7 +60,7 @@ if (-not (Test-Path $PythonExe)) { throw "python.exe not found at $PythonExe" }
 # The command the task runs (D-095): passed encoded, every path a doubled-quote literal, the folder
 # set with -LiteralPath (and also the task's "Start in"). See task_command.ps1 for why.
 . (Join-Path $PSScriptRoot "task_command.ps1")
-$taskScript = New-HourlyTaskScript -ProjectFolder $root -PythonExe $PythonExe -AllowGitHubWrite:$AllowGitHubWrite -UseDockerGrading:$UseDockerGrading
+$taskScript = New-HourlyTaskScript -ProjectFolder $root -PythonExe $PythonExe -AllowGitHubWrite:$AllowGitHubWrite -UseDockerGrading:$UseDockerGrading -WithLlm:$WithLlm -WithCodeAgent:$WithCodeAgent
 $arguments = New-HourlyTaskArguments -Script $taskScript
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments -WorkingDirectory $root
@@ -67,6 +79,8 @@ Write-Host "Python    : $PythonExe"
 Write-Host "Every     : $EveryMinutes minute(s), first run in about 2 minutes"
 Write-Host "GitHub    : $writeText"
 Write-Host "Grading   : $(if ($UseDockerGrading) { 'in a Docker container' } else { 'in a subprocess on this PC' })"
+$agentsText = if ($WithCodeAgent) { "Feedback Agent + Code Agent (LLM_PROVIDER=openai for this task only)" } elseif ($WithLlm) { "Feedback Agent (LLM_PROVIDER=openai for this task only)" } else { "no LLM" }
+Write-Host "Agents    : $agentsText"
 Write-Host "Start in  : $root"
 Write-Host "Stderr    : $(Join-Path $root 'logs\task_stderr.log')"
 Write-Host "Command (what the encoded argument contains):"

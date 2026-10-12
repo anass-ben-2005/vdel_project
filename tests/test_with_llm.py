@@ -164,12 +164,17 @@ def test_the_defaults_are_off_and_ten_and_twenty():
 
 
 def test_the_scheduled_task_command_is_unchanged():
-    """The hourly task runs `python -m scripts.run_hourly` with no switch: nothing in the files
-    that build its command mentions the agents, so --with-llm can only come from a person."""
-    for name in ("task_command.ps1", "register_task.ps1", "unregister_task.ps1"):
-        text = (WINDOWS / name).read_text(encoding="utf-8")
-        assert "llm" not in text.lower(), name
-    assert "-m scripts.run_hourly 2>&1" in (WINDOWS / "task_command.ps1").read_text("utf-8")
+    """The hourly task runs `python -m scripts.run_hourly` with no switch unless it was registered
+    with -WithLlm (D-104), a switch of register_task.ps1 that is off by default: nothing in the
+    files that build the command turns the agents on by itself, so --with-llm can only come from
+    a person."""
+    task = (WINDOWS / "task_command.ps1").read_text(encoding="utf-8")
+    register = (WINDOWS / "register_task.ps1").read_text(encoding="utf-8")
+    for text in (task, register):
+        assert "[switch]$WithLlm" in text and "[switch]$WithCodeAgent" in text
+        assert "$WithLlm = $true" not in text and "$WithCodeAgent = $true" not in text
+    assert "$agentArgs = " in task and "-m scripts.run_hourly$agentArgs 2>&1" in task
+    assert "llm" not in (WINDOWS / "unregister_task.ps1").read_text(encoding="utf-8").lower()
 
 
 # --- ON: one coach/intervention trace per (attempt, commit), none on a second cycle ----------

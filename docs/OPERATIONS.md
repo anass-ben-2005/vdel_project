@@ -333,3 +333,73 @@ Read `benchmark/RECOMMENDATION.md` after it, section 7 first: the labels were pr
 reviewed by a human on 10 rows only, the files' docstrings give away the bug, and `benchmark/TASK.md` is
 missing. The previous RECOMMENDATION.md (the skeleton) is in git history.
 
+
+
+## 14. The agents in the hourly task: none, Feedback only, or both (D-099, D-104)
+
+The task has three modes. Each is a switch of `register_task.ps1`; none is on by default.
+
+| Mode | Register with | The task runs | Spends |
+|---|---|---|---|
+| none (the original) | no agent switch | `python -m scripts.run_hourly` | nothing |
+| Feedback only | `-WithLlm` | `... run_hourly --with-llm`, with `LLM_PROVIDER=openai` set for the task only | up to the caps (10 calls per run, 20 per day) |
+| both agents | `-WithLlm -WithCodeAgent` | `... run_hourly --with-llm --with-code-agent` | the same caps, shared |
+
+`-WithCodeAgent` is refused without `-WithLlm`. `run_hourly --with-llm` refuses to start (exit code 4, one
+clear log line, nothing collected or graded that hour) when `LLM_PROVIDER` is not set: the task sets it
+itself, so this only bites a hand-made task. The key stays in `.env` (`OPENAI_API_KEY`); if `.env` holds
+other provider keys the log warns by name, because the gateway could fall back to them: empty them.
+
+What each agent does, once per newly graded commit: a commit with a FAILING check gets the Feedback Agent
+(its paragraph is added under the comment only if the task is allowed to post, `-AllowGitHubWrite`); a
+commit whose checks ALL passed gets the Code Agent, if its gap lines can be found and are short enough.
+The Code Agent's verdict is stored and **never posted**; read it with `scripts\code_agent_report.py`, which
+is labelled "unmeasured judge, internal use only, never shown to students". Commits graded before you
+switch are never revisited.
+
+### See what the task runs now
+
+```powershell
+cd "C:\Users\ASUS\Desktop\EMINES\internship\stage_a_l'etranger\projet\vdel"
+$a = (Get-ScheduledTask -TaskName "VDEL hourly").Actions[0].Arguments
+[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($a -split ' ')[-1]))
+```
+
+### Switch (re-registering REPLACES the whole command)
+
+Repeat `-AllowGitHubWrite` and `-UseDockerGrading` if the task has them now, or they are switched off. Read the
+preview first: `-WhatIf` registers nothing and prints the exact command.
+
+```powershell
+# preview, then do it
+.\scripts\windows\register_task.ps1 -Force -WhatIf -WithLlm -WithCodeAgent
+.\scripts\windows\register_task.ps1 -Force -WithLlm                       # Feedback only
+.\scripts\windows\register_task.ps1 -Force -WithLlm -WithCodeAgent        # both agents
+
+# back to no LLM at all (add -AllowGitHubWrite / -UseDockerGrading if they were on)
+.\scripts\windows\register_task.ps1 -Force
+```
+
+### Try it by hand before switching the task
+
+```powershell
+$env:LLM_PROVIDER = "openai"
+Remove-Item Env:VDEL_ALLOW_GITHUB_WRITE -ErrorAction SilentlyContinue   # a cycle never posts anyway
+# 1. what would be touched (reads only: no network, no grading, no LLM call, no write)
+python -m scripts.run_cycle --student anas --plan --with-llm --with-code-agent
+# 2. one real cycle: collects and grades from GitHub (reads), writes the database, makes billed calls
+python -m scripts.run_cycle --student anas --with-llm --with-code-agent --llm-run-cap 10 --llm-daily-cap 20
+# 3. what the Code Agent said (read-only)
+python -m scripts.code_agent_report --student anas
+```
+
+The plan lists only commits already collected and not yet graded; a commit still on GitHub is found by the
+cycle itself. In the cycle's log look for `llm: ON, run cap ...; Code Agent ON`, then per commit one of
+`code_agent stored trace N`, `code_agent already judged this commit`, `code_agent skipped, <reason>`,
+`feedback_agent=ok ...`, and at the end `llm: N real provider call(s) this run`. Today's usage is in
+`.vdel\llm_usage.json` (counts only). A skipped line is normal: a failing commit, a commit that is the
+template push, gap lines not found, judged text above `--code-agent-max-chars` (default 4000), a cap reached.
+
+The report marks a row `tests pass, approach <= 2`: every check passed and the judge scored the approach 2
+or lower. Those rows are the ones to read first. The Code Agent has not been measured against labels on
+`weather_etl` (there are none); do not act on a score.
