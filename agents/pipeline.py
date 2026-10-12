@@ -33,6 +33,7 @@ from typing import Any
 from agents import budget as budget_mod
 from agents import code_agent
 from agents import feedback_agent as fa
+from config import judging as judging_config
 from scripts import post_feedback as pf
 from system import db
 
@@ -161,17 +162,22 @@ def load_assignment_inputs(cur: Any, assignment_id: str) -> tuple[dict, str | No
     """`(assignment dict, file_path)` for the Code Agent, read from the database the way
     `scripts/demo.py` Beat 6 does: the task text is the gaps' instructions in `gap_id` order
     (there is no `assignments.task` column), the concepts are `assignments.concepts`, and
-    `file_path` is where the student's file lives inside the repo. Read-only."""
+    `file_path` is where the student's file lives inside the repo, and `criteria` come from
+    `config/judging.yaml`. Read-only."""
     cur.execute("SELECT concepts, file_path FROM assignments WHERE assignment_id = %s",
                 (assignment_id,))
     row = cur.fetchone()
     if row is None:
         raise ValueError(f"no assignment {assignment_id!r}")
     concepts, file_path = row
-    cur.execute("SELECT instruction FROM gaps WHERE assignment_id = %s ORDER BY gap_id",
+    # FILE order (line_start), not alphabetical gap_id (D-103): in extract.py the retry loop comes
+    # first and the parse second, and `g_ext_parse` sorts before `g_ext_retry`.
+    cur.execute("SELECT instruction FROM gaps WHERE assignment_id = %s ORDER BY line_start, gap_id",
                 (assignment_id,))
-    task = " ".join(r[0] for r in cur.fetchall())
-    assignment = {"assignment_id": assignment_id, "task": task, "concepts": list(concepts or [])}
+    judging = judging_config.for_assignment(assignment_id)
+    task = judging_config.compose_task(judging.statement, [r[0] for r in cur.fetchall()])
+    assignment = {"assignment_id": assignment_id, "task": task, "concepts": list(concepts or []),
+                  "criteria": list(judging.criteria)}
     return assignment, file_path
 
 
@@ -179,7 +185,8 @@ def _calls_since(budget: budget_mod.CallBudget | None, before: int) -> int:
     return 0 if budget is None else max(0, budget.used - before)
 
 
-def _run_code_agent(summary, cur, *, llm, budget, code_path, assignment, reference, memory):
+def _run_code_agent(summary, cur, *, llm, budget, code_path, assignment, reference, memory,
+                    persist_verdict=False, scope=None, checkout_root=None):
     step = StepResult(CODE_AGENT, SKIPPED)
     summary.steps[CODE_AGENT] = step
     if not code_path or not assignment or not (assignment.get("task") or "").strip():
@@ -188,13 +195,25 @@ def _run_code_agent(summary, cur, *, llm, budget, code_path, assignment, referen
         return
     before = budget.used if budget is not None else 0
     try:
-        mem = DryRunMemory(memory, summary.dry_run_traces, getattr(cur, "connection", None))
-        verdict, _trace_id, failures = code_agent.grade(
+        # Persisting goes through the real Memory, in the caller's transaction, one trace per
+        # (attempt, commit) (D-103). Otherwise the writes are only recorded in the summary.
+        extra = {}
+        if persist_verdict:
+            mem = memory
+            extra = {"attempt_id": summary.attempt_id, "commit_sha": summary.commit_sha,
+                     "conn": cur.connection}
+        else:
+            mem = DryRunMemory(memory, summary.dry_run_traces, getattr(cur, "connection", None))
+        verdict, trace_id, failures = code_agent.grade(
             mem, summary.student_id, assignment, str(code_path),
-            reference=reference, llm_client=llm, budget=budget)
+            reference=reference, llm_client=llm, budget=budget, scope=scope,
+            checkout_root=checkout_root, **extra)
         step.status, step.result = OK, (verdict, failures)
-        step.detail = (f"llm_correctness_opinion={verdict.scores.llm_correctness_opinion} "
-                       f"(an opinion, not a result); evidence failures: {len(failures or [])}")
+        # The score itself is research-only data and is not read here (D-103).
+        step.detail = (f"evidence failures: {len(failures or [])}; "
+                       f"{'stored as trace ' + str(trace_id) if persist_verdict else 'not stored'}")
+    except code_agent.SubmissionSkipped as exc:
+        step.status, step.detail = SKIPPED, f"skipped: {exc}"
     except Exception as exc:  # noqa: BLE001 -- isolation: the other agent must still run
         step.status, step.error = FAILED, f"{type(exc).__name__}: {str(exc).strip()[:300]}"
     step.provider_calls = _calls_since(budget, before)
@@ -219,7 +238,10 @@ def run_agents_for_commit(student_id: str, attempt_id: int, commit_sha: str, *, 
                           budget: budget_mod.CallBudget | None, persist: bool = False,
                           cur: Any = None, memory: Any = None, code_path: Any = None,
                           assignment: dict | None = None,
-                          reference: str | None = None) -> PipelineSummary:
+                          reference: str | None = None,
+                          persist_code_verdict: bool = False,
+                          scope: Any = None,
+                          checkout_root: Any = None) -> PipelineSummary:
     """See the module docstring. `cur` (optional) is an existing cursor to read through (tests,
     or a caller already inside a transaction); without it a read-only session is opened and
     closed here. `llm` is `system.llm` or any object with its `judge` signature."""
@@ -234,6 +256,9 @@ def run_agents_for_commit(student_id: str, attempt_id: int, commit_sha: str, *, 
         memory = Memory()
     summary = PipelineSummary(student_id, attempt_id, commit_sha)
 
+    if persist_code_verdict and cur is None:
+        raise ValueError("persist_code_verdict needs the caller's cursor: the verdict is written "
+                         "in the caller's transaction (a read-only session cannot)")
     owned = None
     try:
         if cur is None:
@@ -241,7 +266,9 @@ def run_agents_for_commit(student_id: str, attempt_id: int, commit_sha: str, *, 
             owned.set_session(readonly=True)         # Postgres itself refuses any write
             cur = owned.cursor()
         _run_code_agent(summary, cur, llm=llm, budget=budget, code_path=code_path,
-                        assignment=assignment, reference=reference, memory=memory)
+                        assignment=assignment, reference=reference, memory=memory,
+                        persist_verdict=persist_code_verdict, scope=scope,
+                        checkout_root=checkout_root)
         _run_feedback_agent(summary, cur, llm=llm, budget=budget, memory=memory)
     finally:
         if owned is not None:

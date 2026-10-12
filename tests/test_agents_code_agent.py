@@ -70,7 +70,7 @@ def run(fake, **kw):
 # ---- 4a: the rename -----------------------------------------------------------------------
 
 def test_prompt_version_was_bumped_and_the_schema_uses_the_new_key():
-    assert prompts.PROMPT_VERSION == "v2"
+    assert prompts.PROMPT_VERSION == "v3"                   # D-103 bumped it again
     assert "llm_correctness_opinion" in prompts.OUTPUT_SCHEMA_BLOCK
     assert '"correctness":' not in prompts.OUTPUT_SCHEMA_BLOCK.split('"scores"')[1]
 
@@ -85,8 +85,8 @@ def test_new_traces_are_written_with_the_new_key_only():
     payload = mem.traces[0]["payload"]
     assert payload["scores"]["llm_correctness_opinion"] == 4
     assert "correctness" not in payload["scores"]
-    assert payload["agent"] == "code_agent_v2"
-    assert payload["prompt_version"] == "v2"
+    assert payload["agent"] == "code_agent_v3"
+    assert payload["prompt_version"] == "v3"
 
 
 def test_a_reply_using_the_old_key_is_still_accepted_and_stored_under_the_new_key():

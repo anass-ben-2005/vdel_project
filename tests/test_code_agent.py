@@ -249,7 +249,7 @@ def test_payload_is_traceable_to_what_produced_it(submission, fake_judge):
     payload = mem.traces[0]["payload"]
     assert payload["prompt_version"]
     assert payload["model"] == "fake-model"
-    assert payload["agent"] == "code_agent_v2"
+    assert payload["agent"] == "code_agent_v3"          # D-103: the payload changed
     assert payload["reference_supplied"] is False
     assert payload["tool_reports"][0]["tool"] == "ruff"
     json.dumps(payload)   # JSONB column: must serialise

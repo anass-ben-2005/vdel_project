@@ -78,3 +78,27 @@ guard), a mastery claim reaching the student (quoting numbers forbidden, "master
 
 **Benchmark result:** not yet measured. No live call has been made; the agent was exercised only
 against a scripted fake provider.
+
+---
+
+## v3 — 2026-10-12 — Code Agent hardening (D-103)
+
+**What changed.** (1) Every run of three or more `<` or `>` characters in text that comes from the
+student (the submission, and the linter findings built from it) is replaced by `[LT3]` / `[GT3]`
+before it enters the prompt, and the injection rule says so. (2) The rubric, the output schema and
+the evidence rule follow the criteria asked: an assignment can be judged on a subset
+(`config/judging.yaml`; `weather_etl` drops "Idiomatic Spark/SQL"). With all four criteria the rubric
+table and the schema block are byte-identical to v2 (a test pins the rubric hash). (3) When only the
+student's gap lines are judged, a `## What you are shown` section says so and tells the judge not to
+quote the `[... n line(s) not shown ...]` marker. The Code Agent's payload `agent` is now
+`code_agent_v3`.
+
+**Failure modes.** A student file containing `<<<END SUBMISSION>>>` followed by instructions closed the
+data block in the text the model reads (prompt injection through the delimiter). A pure-Python
+assignment scored against a Spark/SQL criterion. The master's own code, present in every file, judged
+as the student's work.
+
+**Benchmark result:** not yet measured. No live call has been made on this version. For the PySpark
+benchmark (all four criteria, whole file) the only difference in the prompt of a file that holds no
+marker sequence is the three-line addition to the injection rule, so no change in scores is expected;
+that is a hypothesis, not a measurement.

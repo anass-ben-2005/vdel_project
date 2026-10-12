@@ -138,7 +138,8 @@ def _evidence_of(verdict: Any) -> dict[str, Any]:
     return evidence if isinstance(evidence, dict) else {}
 
 
-def evidence_report(verdict: Any, code: str) -> list[dict[str, Any]]:
+def evidence_report(verdict: Any, code: str,
+                    criteria: tuple[str, ...] = CRITERIA) -> list[dict[str, Any]]:
     """Every evidence quote, with how it matched the submission. The audit view.
 
     One record per quote: `criterion`, `quote`, and `match_level` — `exact`,
@@ -153,7 +154,7 @@ def evidence_report(verdict: Any, code: str) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     normalised_code = _normalise(code)
 
-    for criterion in CRITERIA:
+    for criterion in criteria:
         for entry in _entries_for(verdict, criterion):
             candidates = _candidate_quotes(entry)
             if not candidates:
@@ -184,13 +185,17 @@ def _entries_for(verdict: Any, criterion: str) -> list[Any]:
     return list(entries) if isinstance(entries, (list, tuple)) else []
 
 
-def validate_evidence(verdict: Any, code: str) -> list[dict[str, str]]:
+def validate_evidence(verdict: Any, code: str,
+                      criteria: tuple[str, ...] = CRITERIA) -> list[dict[str, str]]:
     """Every quoted evidence string must actually appear in the submission.
 
     Returns a list of failure records, empty when the verdict is fully evidenced. D.5's
     return shape is preserved: each record still carries `criterion` and, for a fabrication,
     `unmatched_quote`, so any reader written against D.5 keeps working. `kind` and
     `match_level` are additions, never replacements.
+
+    `criteria` (default: all four) is the set this assignment is judged on (D-103): a dropped
+    criterion needs no quote, and evidence filed under it is `unknown_criterion`.
 
     The three failure kinds:
 
@@ -207,9 +212,9 @@ def validate_evidence(verdict: Any, code: str) -> list[dict[str, str]]:
     irrelevant passes this check and is caught, if at all, by a human reading the verdict.
     """
     failures: list[dict[str, str]] = []
-    report = evidence_report(verdict, code)
+    report = evidence_report(verdict, code, criteria)
 
-    for criterion in CRITERIA:
+    for criterion in criteria:
         records = [r for r in report if r["criterion"] == criterion]
 
         for record in records:
@@ -228,7 +233,7 @@ def validate_evidence(verdict: Any, code: str) -> list[dict[str, str]]:
             })
 
     for criterion in _evidence_of(verdict):
-        if criterion not in CRITERIA:
+        if criterion not in criteria:
             failures.append({
                 "kind": UNKNOWN_CRITERION,
                 "criterion": str(criterion),

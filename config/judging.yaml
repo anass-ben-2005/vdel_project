@@ -1,0 +1,37 @@
+# config/judging.yaml -- how the Code Agent judges each assignment (D-103).
+#
+# Not in the database on purpose: it is course content that changes with the course, and a database
+# column for it was the "invented structure" CLAUDE.md warns about (code_agent.py, deviation 3).
+# Read by config/judging.py; used by agents/pipeline.load_assignment_inputs.
+#
+# TASK TEXT. The text the judge is told the student was set is built from the assignment's gap
+# instructions (the `# @instruct:` lines of the master), in FILE order (gaps.line_start), not in
+# alphabetical gap_id order as before. `statement`, when set, is put in front of them: an
+# assignment-level description of the exercise. It is left null below because nobody has written one
+# yet; TODO(author): the course author's statement for each weather_etl stage. Nothing is invented
+# here.
+#
+# CRITERIA. The rubric (agents/prompts.py) has four criteria. The default keeps all four: the PySpark
+# benchmark is judged with all four. An assignment lists the subset that applies to it.
+
+version: 1
+
+default:
+  criteria: [correctness, approach, readability, idiomatic]
+  note: "the fixed rubric of agents/prompts.py; what the PySpark benchmark is judged with"
+
+assignments:
+  weather_etl_extract: &weather_etl
+    criteria: [correctness, approach, readability]
+    note: >-
+      "idiomatic" (Idiomatic Spark/SQL) is dropped: weather_etl is plain Python (requests, dicts,
+      datetime), there is no DataFrame or SQL to be idiomatic about, and the anchors of that
+      criterion speak of collect(), partitioning and the DataFrame API. Left in, the judge would
+      score a rubric that does not describe the exercise.
+    statement: null
+  weather_etl_transform:
+    <<: *weather_etl
+  weather_etl_load:
+    <<: *weather_etl
+  weather_etl_quality:
+    <<: *weather_etl

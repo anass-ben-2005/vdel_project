@@ -1945,6 +1945,19 @@ the flag, adds the stored paragraph under it. Nothing an agent does can fail the
 the template push (D-098) never reaches an agent. `tests/test_with_llm.py` (fake LLM, all provider
 handlers blocked).
 
+**The Code Agent, hardened (D-103), still not wired.** `agents/code_agent.py grade()` keeps its contract and
+gained keyword-only options. The submission and the linter findings are escaped (`<<<` -> `[LT3]`) before
+they enter the prompt (v3). The linters run on a private one-file copy in an empty directory (`agents/tools.py`:
+`vet_source` refuses links, paths outside the checkout and files above 200000 bytes; ruff `--isolated`; sqlfluff
+with our config and the `raw` templater), because a student's `.sqlfluff` `library_path` makes sqlfluff run
+their Python and a student's `ruff.toml` changes ruff's rules (both shown by controls in the tests).
+`config/judging.yaml` lists the criteria per assignment (weather_etl drops "idiomatic"; the task text is the gap
+instructions in file order). `grade(scope=...)` (`agents/scope.py`) judges only the student's gap lines plus 3
+lines of context, or skips with a reason. `grade(attempt_id=, commit_sha=, conn=)` stores one `code_agent`/`verdict`
+trace per pair (with `submission_sha256`, `criteria`, `rejected`; never the file) and returns the stored one on a
+second call without a provider call. No feature, mastery value, flag or posted text reads it, and
+`llm_correctness_opinion` stays research-only (tests). `tests/test_code_agent_hardening.py`.
+
 **One roster loader (D-070).** `scripts/seed_data.py::load_roster(path=None)` is the only function
 that reads a roster; `roster_repos(roster)` feeds the collector and `roster_repo_for(roster)` the
 grader from the same rows. `scripts/collect.py` and `scripts/grade_collected.py` take `--roster`.

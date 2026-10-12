@@ -8,6 +8,23 @@
 > locally). Anything I could not check says **not verified**, with the reason. Where a docstring and the
 > code disagree, the code wins and the disagreement is said.
 
+> **Superseded in part by D-103 (2026-10-12, `docs/DECISIONS.md`).** Every `file:line` below is the code
+> at commit `eb9727c`, before the hardening. What changed since, by section: **2** the submission is now
+> passed through `prompts.escape_markers` (`<<<` -> `[LT3]`, `>>>` -> `[GT3]`) and the prompt is v3;
+> **3** both linters run on a private one-file copy in an empty temp directory, ruff with `--isolated`
+> and an explicit rule set, sqlfluff with `--ignore-local-config` and our own config (templater `raw`),
+> after `tools.vet_source` has refused links, paths outside the checkout and files above 200000 bytes;
+> the two "not verified" items about ruff are now verified (ruff 0.16.1 does obey a student's config
+> beside the file; the isolation test and its control prove it is blocked), and the sqlfluff
+> `library_path` execution is proven by a control and blocked; **4** the verdict model follows the
+> criteria asked; **5** `grade(attempt_id=, commit_sha=, conn=)` stores `attempt_id`, `commit_sha`,
+> `submission_sha256`, `criteria`, `scope`, `rejected`, one trace per pair, idempotent; **7** with
+> `grade(scope=...)` only the student's gap lines and 3 lines of context are judged
+> (`agents/scope.py`), otherwise the whole file as before; **8** the task text is in FILE order and the
+> criteria come from `config/judging.yaml` (weather_etl drops "idiomatic"). Section **6** (the hook) is
+> unchanged: the Code Agent is still not run by it, and a test keeps that true. Re-run the greps before
+> relying on a line number.
+
 Short version: the Code Agent is a complete, tested function (`agents/code_agent.py`), but **nothing in the
 hourly loop calls it today**. It runs in `scripts/demo.py` (by hand), in the two benchmark runners, and in
 `agents/pipeline.py` only when a caller supplies a file, which the cycle's hook does not. Its verdict is
