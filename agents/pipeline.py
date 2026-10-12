@@ -126,13 +126,13 @@ def persist_feedback(mem: Any, cur: Any, student_id: str, assignment_id: str | N
     if cur.fetchone() is not None:
         return None
     payload = result.to_trace_payload()
-    payload["addendum_markdown"] = _checked_addendum(inp, result.output)
+    payload["addendum_markdown"] = checked_addendum(inp, result.output)
     return mem.log_trace(student_id, "coach", "intervention", payload,
                          assignment_id=assignment_id, concept_ids=list(inp.concepts),
                          conn=cur.connection)
 
 
-def _checked_addendum(inp: fa.FeedbackInput, out: fa.FeedbackOutput | None) -> str | None:
+def checked_addendum(inp: fa.FeedbackInput, out: fa.FeedbackOutput | None) -> str | None:
     """The model-only paragraph, redacted, or None if it cannot be shown safely."""
     if out is None:
         return None

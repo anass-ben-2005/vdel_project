@@ -259,3 +259,39 @@ Rules worth knowing:
   boundary, not a virtual machine.
 - **Disk and CPU time outside the limits.** The scratch is 64 MB; the wall-clock limit is 120 s.
 
+## 12. The first real LLM call (by hand, one commit, a dry run) (D-101)
+
+Before `--with-llm` is ever used, look at ONE real answer. `scripts/llm_first_call.py` reads one
+graded commit, runs only the Feedback Agent, and prints the provider, the model, the number of
+provider calls, the tokens, the deterministic text, the paragraph that would be added under it and
+whether the validator accepted it. It stores nothing and posts nothing: the session is read-only,
+there is no trace, no `feedback_posts` row, no GitHub call and no usage-ledger file. It costs at most
+3 provider calls (`--call-cap`, 2 or 3; 3 is a hard ceiling at the provider handler, not just a
+budget).
+
+Find the three values with a read-only query (an attempt that failed at least one check, and one of
+its graded commits):
+
+```powershell
+cd "C:\Users\ASUS\Desktop\EMINES\internship\stage_a_l'etranger\projet\vdel"
+docker exec vdel-postgres psql -U vdel -d vdel -c "SELECT a.student_id, a.attempt_id, t.commit_sha, count(*) FILTER (WHERE NOT t.passed) AS failed FROM test_results t JOIN attempts a USING (attempt_id) WHERE t.status = 'ok' GROUP BY 1,2,3 HAVING count(*) FILTER (WHERE NOT t.passed) > 0 ORDER BY max(t.ran_at) DESC LIMIT 5;"
+```
+
+Then, with exactly ONE provider key in the environment:
+
+```powershell
+$env:LLM_PROVIDER = "<provider>"      # anthropic | openai | google | nvidia: the provider whose key you keep
+python -m scripts.llm_first_call --student <STUDENT_ID> --attempt-id <ATTEMPT_ID> --commit-sha <COMMIT_SHA>
+```
+
+It refuses (exit code 2, no call) if `LLM_PROVIDER` is not set, if more than one provider key is set or
+the one set is not the key of `LLM_PROVIDER`, if `--call-cap` is not 2 or 3, if the commit is a
+collection error / timeout / tooling result, the template push (D-098), or has no failing check. The
+gateway falls back to any other provider that has a key, which is why only one may exist. **Keys in
+`.env`:** `.env` is loaded by the gateway, and `$env:NAME = ""` in PowerShell deletes the variable, so
+`.env` would refill it. To blank the other keys, empty them in `.env` (`NAME=`) or comment them out for
+this session, and put them back afterwards. A key is never printed, only its variable name.
+
+Read the output as a reviewer: is the paragraph useful, does it stay inside the facts, does the
+validator's verdict match your own? A rejection is a finding, not an error (exit code 0).
+

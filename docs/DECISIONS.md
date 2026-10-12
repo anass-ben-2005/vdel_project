@@ -4249,3 +4249,37 @@ Decision:    The decisions D-200..D-225 of the agents branch are in `docs/DECISI
              copied here. They are append-only there. A reader of this file who meets "D-2xx" in a code comment (for example
              D-200/D-201, the rename of the correctness score to `llm_correctness_opinion`) looks it up there. Decisions about
              the integration of the agents into the main loop are numbered here (D-099 and up).
+
+### D-101 -- the first real LLM call is a manual, dry-run script with a hard cap, not `--with-llm`
+Date:        2026-10-12
+Status:      DECIDED and implemented. Not committed. I (the assistant) did NOT run it; the user does.
+Authority:   Anas (the request).
+Decision:    `scripts/llm_first_call.py --student --attempt-id --commit-sha [--call-cap]`: read ONE graded commit read-only, run
+             ONLY the Feedback Agent through the gateway, print provider, model, provider calls, tokens, the deterministic text,
+             the paragraph `--with-llm` would add under it, and the validator's verdict with its reasons. Banner "DRY RUN,
+             nothing stored, nothing posted" at the top and the bottom. Nothing is written: the session is `readonly`, no
+             trace, no `feedback_posts`, no GitHub call, the budget is in memory (no `.vdel` ledger file). A test scans the
+             source for write verbs and commits.
+Refuses:     (exit 2, before any call) `LLM_PROVIDER` unset; not exactly one provider key set, or the one set is not the key of
+             `LLM_PROVIDER` (the gateway falls back to any provider with a key); a cap outside 2..3; an attempt that is not the
+             student's; a commit with no graded results, status collection_error / timeout / tooling, the template push (D-098),
+             or no failing check. Keys are never printed, only the variable names. The check runs AFTER `system.llm` has loaded
+             `.env`, so it sees what the gateway sees; the check itself is a pure function of a dict, tested without any key.
+Cap:         max 3 (default 3), min 2: one `judge()` reserves 2 calls for its corrective retry, so a cap of 1 could never make a
+             call (that is a consequence of `agents/budget.py`, not a choice). The cap is enforced twice: `CallBudget` before
+             each call and `HardCap`, a wrapper on every provider handler that raises on the (cap+1)th REAL call. The second
+             layer is needed because the gateway walks its model fallback chain on a transient failure inside one `judge()`,
+             which a budget cannot see; a test shows a cap of 1 stops a chain that makes 2 calls uncapped.
+Limits:      (1) `$env:NAME = ""` in PowerShell deletes the variable and `.env` refills it, so a second key kept in `.env`
+             cannot be blanked from the shell: the user must empty or comment it in `.env` for the session (docs/OPERATIONS.md
+             section 12). I did not read `.env` and cannot say whether that applies. (2) In tests the FakeLLM replaces the
+             handlers `HardCap` wraps, so the handler count printed is 0 there; the cap's effect is tested on its own.
+             (3) The tokens line sums the gateway's `CallRecord`s of the run, failed attempts included.
+Tests:       tests/test_llm_first_call.py (30, fake LLM only, every provider handler blocked, test database): refusals without
+             a database or a call (no provider, two keys with the secret values absent from the output, zero keys, a mismatched
+             key, caps 4/10/1/0/-1); the three arguments required and the cap default 3; the handler ceiling; the banner twice,
+             provider/model/calls/tokens/both texts/ACCEPTED; a rejected answer and a provider failure printed with their
+             reasons and exit 0; writes nothing (row counts of nine tables, no file in the working directory); the default
+             session is read-only on a `_test` database; collection_error / timeout / tooling / template push / no failing
+             check / another student's attempt / unknown commit refused with zero LLM calls. Mutation-checked: the two-key
+             check, the handler ceiling, the read-only session and the status refusal each turn their tests red.
