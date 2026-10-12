@@ -111,11 +111,12 @@ class HardCap:
     `cap`. A context manager: the gateway's handlers are restored on exit."""
 
     def __init__(self, cap: int):
-        self.cap, self.count, self._saved = cap, 0, {}
+        self.cap, self.count, self.blocked, self._saved = cap, 0, 0, {}
 
     def _wrap(self, handler):
         def guarded(*args, **kwargs):
             if self.count >= self.cap:
+                self.blocked += 1                      # a call that was refused, never made
                 raise CapReached(f"call cap {self.cap} reached: this call was not made")
             self.count += 1
             return handler(*args, **kwargs)

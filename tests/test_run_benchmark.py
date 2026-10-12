@@ -54,16 +54,17 @@ def test_submissions_finds_every_real_file_and_excludes_task_md():
     assert "TASK.md" not in names
 
 
-def test_ground_truth_loads_the_real_template_with_every_score_null():
-    # Pins the CURRENT state of the real file -- Stage C3's own contract (CLAUDE.md 10:
-    # never invent a number). If this test starts failing because a real score landed,
-    # that is Anas filling in his own labels, not a regression -- update the test then.
+def test_ground_truth_holds_a_complete_label_for_every_row():
+    # Pins the CURRENT state of the real file. It was an all-null template until the labels
+    # landed (commit 73b0e84, pre-labelled by an LLM and human-reviewed on a 10-row sample); the
+    # old version of this test said to update it then. A real run (run_real_benchmark) refuses
+    # to start on a null or out-of-scale label, so this keeps that failure at test time.
     truth = _load_ground_truth()
     assert set(truth) == {"clean.py", "subtly_wrong.py", "inefficient.py",
                            "copy_paste.py", "broken.py"}
     for submission_scores in truth.values():
         assert set(submission_scores) == set(CRITERIA)
-        assert all(v is None for v in submission_scores.values())
+        assert all(v in (0, 2, 4) for v in submission_scores.values())
 
 
 def test_ground_truth_path_is_valid_json_with_a_submissions_key():

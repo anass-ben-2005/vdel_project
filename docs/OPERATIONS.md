@@ -295,3 +295,41 @@ this session, and put them back afterwards. A key is never printed, only its var
 Read the output as a reviewer: is the paragraph useful, does it stay inside the facts, does the
 validator's verdict match your own? A rejection is a finding, not an error (exit code 0).
 
+## 13. The real benchmark run (by hand, billed, capped) (D-102)
+
+`benchmark/run_real_benchmark.py` grades the 5 PySpark files 3 times each with the Code Agent and
+compares every verdict with `benchmark/ground_truth.json`. It writes `benchmark/results/<timestamp>/`
+and regenerates `benchmark/RECOMMENDATION.md` from the numbers. It opens no database and writes
+nothing to GitHub.
+
+The maximum number of provider calls is computed and printed every time, never guessed: submissions
+x runs x 2 attempts (the first call and one corrective retry) x the models of the provider's fallback
+chain. With 5 files and 3 runs that is 60 for anthropic, openai and google (30 per model) and 30 for
+nvidia; with `--runs 1`, 20 and 10. The usual cost is 15 calls (5 files x 3 runs). The run is refused
+if the maximum is above `--max-calls`, and the message says by how much.
+
+The same rules as section 12: exactly one provider key, `LLM_PROVIDER` set, no key printed. See there for
+emptying the other keys in `.env`.
+
+```powershell
+cd "C:\Users\ASUS\Desktop\EMINES\internship\stage_a_l'etranger\projet\vdel"
+$env:LLM_PROVIDER = "<provider>"
+
+# 1. Read the plan and the maximum (calls nothing, writes nothing):
+python -m benchmark.run_real_benchmark --max-calls <MAX_CALLS>
+
+# 2. The real run (billed). --max-calls must be at least the printed maximum:
+python -m benchmark.run_real_benchmark --max-calls <MAX_CALLS> --confirm-billed-run
+```
+
+Options: `--runs N` (default 3), `--only clean.py`, `--reference none` (do not give the judge
+`clean.py` as the reference solution; by default it does, as `run_benchmark.py` always did, so
+`clean.py` is judged with itself), `--allow-partial` (accept a cap below the printed maximum: the run
+stops cleanly at the cap, writes what it has and exits with code 3), and
+`--price-in-per-mtok` / `--price-out-per-mtok` (USD per million tokens, from the provider's price page;
+without them the cost line says "not computed"). Exit codes: 0 done, 2 refused, 3 stopped at the cap.
+
+Read `benchmark/RECOMMENDATION.md` after it, section 7 first: the labels were pre-written by an LLM and
+reviewed by a human on 10 rows only, the files' docstrings give away the bug, and `benchmark/TASK.md` is
+missing. The previous RECOMMENDATION.md (the skeleton) is in git history.
+

@@ -123,9 +123,11 @@ def test_legend_prints_the_anchors(capsys):
     assert "Score each criterion 0, 2, or 4" in capsys.readouterr().out
 
 
-def test_the_real_ground_truth_template_is_still_all_null():
-    template = json.loads(ls.GROUND_TRUTH_TEMPLATE.read_text(encoding="utf-8"))
-    assert all(v is None for s in template["submissions"].values() for v in s.values())
+def test_the_real_ground_truth_holds_labels_on_the_rubric_scale():
+    # Was "still all null" until the labels landed (commit 73b0e84). The import script still
+    # never overwrites this file (test_import_never_overwrites_the_template).
+    truth = json.loads(ls.GROUND_TRUTH_TEMPLATE.read_text(encoding="utf-8"))
+    assert all(v in (0, 2, 4) for s in truth["submissions"].values() for v in s.values())
 
 
 # ---- 9b: the benchmark end to end on the fake ---------------------------------------------
@@ -161,7 +163,8 @@ def test_benchmark_runs_end_to_end_on_the_fake_with_zero_live_calls(results_dir)
     for name in names:
         assert len(results[name]["runs"]) == 3 and results[name]["call_errors"] == []
         assert set(results[name]["self_consistency"].values()) == {1.0}     # a stable fake
-        assert results[name]["ground_truth_match"] is None                  # labels are null
+        match = results[name]["ground_truth_match"]                         # labels are present
+        assert set(match) == set(CRITERIA) and all(isinstance(v, bool) for v in match.values())
     assert fake.call_count == 3 * len(names)          # use_cache=False: every run really called
     assert {c.temperature for c in fake.calls} == {0.0}
     assert {c.provider for c in fake.calls} == {"anthropic"}                # the pinned fake

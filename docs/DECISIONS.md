@@ -4283,3 +4283,58 @@ Tests:       tests/test_llm_first_call.py (30, fake LLM only, every provider han
              session is read-only on a `_test` database; collection_error / timeout / tooling / template push / no failing
              check / another student's attempt / unknown commit refused with zero LLM calls. Mutation-checked: the two-key
              check, the handler ceiling, the read-only session and the status refusal each turn their tests red.
+
+### D-102 -- the real benchmark run: an exact call maximum, a hard cap, no database, a report from the numbers only
+Date:        2026-10-12
+Status:      DECIDED and implemented. Not committed. I (the assistant) did NOT run it; the user does.
+Authority:   Anas (the request; scope answered: the 5 PySpark files only, 20 rows).
+Decision:    `benchmark/run_real_benchmark.py --max-calls N [--runs 3] [--confirm-billed-run] [--allow-partial]
+             [--reference clean.py|none] [--price-in-per-mtok P --price-out-per-mtok Q]`. `benchmark/run_benchmark.py`
+             and its DB-based `run()` are untouched (their tests still pin them); the real run is a separate module.
+Maximum:     computed by `plan_calls` from the gateway's own `_model_chain`, printed on EVERY invocation, never guessed:
+             maximum = submissions x runs x 2 attempts x len(model chain). One `judge()` scores all four criteria at once,
+             so the 20 rows (5 files x 4 criteria) do not multiply calls. 2 attempts = the first call plus ONE corrective retry
+             (`llm.judge`). The chain is the configured provider's models, tried in turn on a transient failure
+             (anthropic 2, openai 2, google 2, nvidia 1); with exactly one key set the cross-provider layer adds 0. With 5 files
+             and 3 runs: 15 judge() x 2 = 30 attempts, x 2 models = 60 for anthropic / openai / google (30 per model), 30 for
+             nvidia; with 1 run: 20 and 10. The usual case is 15 (one valid answer per judge()); 60 needs every attempt to
+             fail over to the second model after an invalid answer, so the cap is a bound, not a forecast.
+Refusal:     the run is refused when the maximum exceeds `--max-calls`, and the message says by how much. `--allow-partial`
+             accepts a cap below the worst case (my addition: without it a run that "stops cleanly at the cap" could never
+             happen, since the refusal would always come first); the run then stops at the cap, writes partial results and
+             exits 3. Without `--confirm-billed-run` it only prints the plan (my addition: a billed run is never one
+             keystroke from a dry look).
+Cap:         hard, at the provider handler (`scripts/llm_first_call.HardCap`, which gained a `blocked` counter): the (cap+1)th
+             real call is not made even if the gateway's fallback chain tries. A judge() cut off by the cap is recorded as
+             `interrupted_by_cap`, not scored, and its spent calls count.
+Safety:      same checks as `llm_first_call` (LLM_PROVIDER set, exactly one key, the key of that provider, never printed);
+             `use_cache=False` (D-213); NO database: a `NullMemory` takes the Code Agent's trace and mastery writes, the module
+             opens no connection (the tests make `db._open` and `psycopg2.connect` raise), nothing goes to GitHub; refuses to
+             start when a label is null or off the 0/2/4 scale.
+Output:      `benchmark/results/<UTC timestamp>/` (gitignored): `plan.txt`, `raw_runs.jsonl` (one row per judge() run, written
+             and flushed as it goes: verdict, evidence failures, call records), `summary.json`, `confusion.csv`,
+             `RECOMMENDATION.md`; then `benchmark/RECOMMENDATION.md` (overwritten; the skeleton is in git history) when at
+             least one run finished. Per criterion and overall: exact and within-one-level agreement (one level = a step of
+             0/2/4) over every successful run, the confusion table, the agreement with and without the rows the ground truth
+             lists as non-applicable (optional top-level `"non_applicable": [[file, criterion], ...]`; none today, so the two
+             are identical and the report says so), stability across runs (min and mean over submissions), JSON validity,
+             unmatched-quote share, latency, tokens by model and per run, and a cost only if prices are passed (none are in the
+             repo; otherwise "not computed"). The recommendation text uses only those numbers and the one documented target
+             (80% exact, BUILD_PLAN 4.5), says it measured ONE provider and is not a model comparison, and states the limits:
+             ground truth pre-labelled by an LLM and human-reviewed on a 10-row sample only; docstrings reveal the planted bug;
+             `benchmark/TASK.md` is missing; one task, five files; the reference-solution option used.
+Limits:      (1) The 4 "non applicable" idiomatic rows belong to the 4 weather_etl fixtures, which are not in
+             `ground_truth.json` and have a different task: out of scope by the user's choice, so they are not in this run.
+             (2) By default `clean.py` is judged with itself as the reference solution (what `run_benchmark.py` already does);
+             `--reference none` removes it. Both choices are recorded in the report; running both doubles the cost. (3) Agreement
+             is pooled over all successful runs, not run 1 only as `run_benchmark.py` does. (4) The three tests that pinned the
+             ground truth as "all null" (test_run_benchmark, test_agents_benchmark x2) are updated to pin the labelled state,
+             as their own comments said to do when the labels landed (commit 73b0e84); they were the only failures of the suite.
+Tests:       tests/test_run_real_benchmark.py (23, fake LLM only, handlers blocked, database made unreachable): the plan
+             arithmetic and its follow-the-gateway property for every provider; refusal above the cap with the excess; two
+             keys / no provider / key values absent; null and off-scale labels; plan-only calls nothing and creates nothing;
+             a full run (15 calls, cache empty, 15 raw rows, agreement counts equal to an independent computation, confusion
+             sums, files, recommendation limits, cost only with prices); the cap hard at 7 and mid-judge at 3 with partial
+             results; every judge failing; exact / within-one / confusion / N-A / stability arithmetic. Mutation-checked: the
+             pre-check, the handler ceiling, `use_cache`, the refusal, the within-one rule and the environment check each fail
+             their tests.
