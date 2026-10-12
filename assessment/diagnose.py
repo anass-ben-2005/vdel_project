@@ -89,17 +89,29 @@ class Diagnosis:
 
 
 def _as_of(cur, as_of_commit_sha: str | None) -> tuple[str, tuple]:
-    """SQL fragment + params restricting `test_results` to commits pushed at or before
-    `as_of_commit_sha` (D-094), or nothing when None. A row with no commit (a local run)
-    is outside every cutoff: it is not part of any push's history."""
+    """SQL fragment + params for the `test_results` rows the history may use. `{COL}` stands for
+    the query's own commit_sha column.
+
+    Always (D-098): not a template push. It is not a student push, and every stub gap failed on
+    it, so counting it would make the first real commit "keep failing across several pushes".
+    With `as_of_commit_sha` (D-094): only commits pushed at or before that one. A row with no
+    commit (a local run) is outside every cutoff but kept when there is none."""
+    from features.compute_features import template_commit_sql  # lazy: one definition of "template"
+
+    sql = (" AND ({COL} IS NULL OR {COL} NOT IN (SELECT c.sha FROM raw_commits c WHERE "
+           + template_commit_sql("c") + "))")
     if as_of_commit_sha is None:
-        return "", ()
+        return sql, ()
     cur.execute("SELECT committed_at FROM raw_commits WHERE sha = %s", (as_of_commit_sha,))
     row = cur.fetchone()
     if row is None:
         raise ValueError(f"no raw_commits row for as_of_commit_sha={as_of_commit_sha!r}")
-    return (" AND commit_sha IN (SELECT sha FROM raw_commits WHERE committed_at <= %s)",
+    return (sql + " AND {COL} IN (SELECT sha FROM raw_commits WHERE committed_at <= %s)",
             (row[0],))
+
+
+def _col(as_of: tuple[str, tuple], column: str) -> str:
+    return as_of[0].replace("{COL}", column)
 
 
 def diagnose(cur, attempt_id: int, as_of_commit_sha: str | None = None) -> Diagnosis:
@@ -134,12 +146,12 @@ def diagnose(cur, attempt_id: int, as_of_commit_sha: str | None = None) -> Diagn
     )
 
 
-def _weakest_concept(cur, attempt_id: int, as_of: tuple[str, tuple] = ("", ())) -> str | None:
+def _weakest_concept(cur, attempt_id: int, as_of: tuple[str, tuple]) -> str | None:
     cur.execute(
         """SELECT tr.passed, g.concept_ids
            FROM test_results tr
            JOIN gaps g ON g.gap_id = tr.gap_id
-           WHERE tr.attempt_id = %s""" + as_of[0].replace("commit_sha", "tr.commit_sha"),
+           WHERE tr.attempt_id = %s""" + _col(as_of, "tr.commit_sha"),
         (attempt_id, *as_of[1]),
     )
     pass_count: Counter[str] = Counter()
@@ -163,11 +175,11 @@ def _weakest_concept(cur, attempt_id: int, as_of: tuple[str, tuple] = ("", ())) 
 
 
 def _recurrence_flags(cur, attempt_id: int,
-                      as_of: tuple[str, tuple] = ("", ())) -> dict[str, bool]:
+                      as_of: tuple[str, tuple]) -> dict[str, bool]:
     cur.execute(
         """SELECT gap_id, commit_sha, passed
            FROM test_results
-           WHERE attempt_id = %s AND gap_id IS NOT NULL""" + as_of[0],
+           WHERE attempt_id = %s AND gap_id IS NOT NULL""" + _col(as_of, "commit_sha"),
         (attempt_id, *as_of[1]),
     )
     failed_commits: dict[str, set] = defaultdict(set)
@@ -179,11 +191,11 @@ def _recurrence_flags(cur, attempt_id: int,
 
 
 def _failing_tests(cur, attempt_id: int,
-                   as_of: tuple[str, tuple] = ("", ())) -> tuple[FailingTest, ...]:
+                   as_of: tuple[str, tuple]) -> tuple[FailingTest, ...]:
     cur.execute(
         """SELECT test_name, passed, message, gap_id, commit_sha
            FROM test_results
-           WHERE attempt_id = %s AND status <> 'tooling'""" + as_of[0] + """
+           WHERE attempt_id = %s AND status <> 'tooling'""" + _col(as_of, "commit_sha") + """
            ORDER BY ran_at DESC""",
         (attempt_id, *as_of[1]),
     )

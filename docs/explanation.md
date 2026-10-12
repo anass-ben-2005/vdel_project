@@ -906,6 +906,19 @@ is ever modified:**
    `FORMULA_VER` is now "v7" (v6 = D-084); anas's V5/V6 stay legacy data with a known bias, because his
    traces predate the identity fields.
 
+   **Formula v8 (D-098, `FORMULA_VER` is now "v8"): the template push of a delivered repo.** v4's rule (c)
+   needs `assignment_id IS NULL`, true for the four-assignment attempt-1 repo only; in a one-assignment repo
+   (attempt >= 2, D-090) the push carries that assignment. From v8 `initial_commit_sql(alias, formula_ver)` also
+   matches an `Initial commit:` commit that is the EARLIEST commit graded under its attempt (attempt_no >= 2;
+   `_first_commit_of_delivered_repo_sql`: by `committed_at`, ties by sha; the repo is read through
+   `test_results.attempt_id` because `raw_commits` has no repo column). Fail open: a NULL message, a commit that was
+   never graded or one with an earlier graded commit in its attempt stays a student commit. `_not_student_commit_sql`
+   passes the version, so the push, its CI run (`head_sha`), its LOC, its V3 gap and the watermark / dirty test
+   are left out exactly as the sync commit is; `_drop_template_commit_results` also removes its `test_result`
+   traces from V5/V6 (traces that name no commit are kept). `template_commit_sql(alias)` is the current definition,
+   used where there is no formula version (feedback). v2..v7 compute as before (the branch is behind
+   `_initial_commit_by_attempt`); the push is still graded and stored, and mastery was already safe (D-079).
+
    **V2 lint counts (D-088, formula v7).** After each graded commit `grade_collected` calls
    `assessment/lint_scope.record`: ruff / sqlfluff run statically on a private copy of the submitted
    file, only findings on lines the student wrote inside a gap count (`scope_check.
@@ -1940,7 +1953,7 @@ from `scope_check` against the released file rebuilt from the master and the att
 (`gap_parser.render_student_file_with_ranges`); fail-open (NULL and a logged warning) on any problem. A commit graded as `collection_error` or `timeout` is not measured at all (D-085): the column stays NULL ("not measured") or keeps an earlier commit's value.
 
 **`scripts/post_feedback.py` — feedback v0, dry-run only (D-074).** Builds a short markdown message
-per graded commit from `diagnose` and that commit's `test_results` rows (a failing check is shown by
+per graded commit (never for the template push, D-098: `graded_commits` and `recent_unposted` skip it, and `build_feedback` / `feedback_agent.gather_input` raise `TemplateCommit` via `is_template_commit`; `diagnose` leaves it out of the history too) from `diagnose` and that commit's `test_results` rows (a failing check is shown by
 test name and EXCEPTION TYPE only, because an assertion message such as `assert 32.0 == f(0)` states
 the expected value; the message is shown only for a test listed in a module-level
 `FEEDBACK_SAFE_TESTS` of the hidden file, read with `ast`, none today (D-077); a collection error,
@@ -2095,7 +2108,7 @@ aggregate) and deliberately not built here. **Not wired into `scripts/demo.py` o
 `EXECUTION.md` Stage A–E item** — commissioned directly, ground-laying for the
 still-deferred Feedback Agent, the same trigger as M6 itself.
 
-`diagnose(cur, attempt_id, as_of_commit_sha=None) -> Diagnosis` — (D-094: with a sha, only the history up to and including that commit) real reads only, zero writes, zero LLM calls,
+`diagnose(cur, attempt_id, as_of_commit_sha=None) -> Diagnosis` — (D-094: with a sha, only the history up to and including that commit) (D-098: a template push is never part of the history) real reads only, zero writes, zero LLM calls,
 no new table or column. Keyed by `attempt_id`, not `(student_id, assignment_id)`:
 `test_results` FKs directly to `attempts.attempt_id`, and `(student_id, assignment_id)`
 alone is ambiguous across `attempt_no` (`attempts`' own UNIQUE constraint is three

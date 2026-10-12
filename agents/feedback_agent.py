@@ -384,6 +384,8 @@ def gather_input(cur, attempt_id: int, commit_sha: str, *, memory: Any = None,
     """
     from assessment.diagnose import diagnose
 
+    if pf.is_template_commit(cur, commit_sha):                       # D-098
+        raise pf.TemplateCommit(f"commit {commit_sha[:10]} is the template push: no feedback")
     cur.execute("SELECT student_id, assignment_id, project_id, attempt_no FROM attempts"
                 " WHERE attempt_id = %s", (attempt_id,))
     row = cur.fetchone()

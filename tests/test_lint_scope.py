@@ -234,4 +234,4 @@ def test_v7_survives_unmigrated_columns(world):
 def test_the_version_switch():
     assert [cf._measures_lint(v) for v in ("v2", "v3", "v4", "v5", "v6", "v7")] == \
         [False, False, False, False, False, True]
-    assert cf.FORMULA_VER == "v7" and cf.LINT_MEASURED_FROM == "v7"
+    assert cf.FORMULA_VER == "v8" and cf.LINT_MEASURED_FROM == "v7"

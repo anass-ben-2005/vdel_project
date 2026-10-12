@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from assessment.diagnose import diagnose
+from features.compute_features import template_commit_sql
 from scripts.publish_repo import GitHub, GitHubHTTPError, PublishRefused
 from scripts.publish_repo import _token as github_token
 from scripts.seed_data import load_roster, roster_repo_for
@@ -185,8 +186,23 @@ def _commit_rows(cur, attempt_id: int, commit_sha: str):
     return cur.fetchall()
 
 
+class TemplateCommit(ValueError):
+    """The commit is the template push of a delivered repo: no feedback is built for it (D-098)."""
+
+
+def is_template_commit(cur, commit_sha: str) -> bool:
+    """True when `commit_sha` is the template push (same definition as the features, v8)."""
+    cur.execute(f"SELECT {template_commit_sql('c')} FROM raw_commits c WHERE c.sha = %s",
+                (commit_sha,))
+    row = cur.fetchone()
+    return bool(row and row[0])
+
+
 def build_feedback(cur, attempt_id: int, commit_sha: str) -> Feedback:
-    """The message for ONE graded commit. Deterministic; reads only."""
+    """The message for ONE graded commit. Deterministic; reads only. Raises `TemplateCommit` for
+    the template push (D-098): it is not something the student did."""
+    if is_template_commit(cur, commit_sha):
+        raise TemplateCommit(f"commit {commit_sha[:10]} is the template push: no feedback")
     cur.execute("SELECT student_id, assignment_id, project_id, attempt_no FROM attempts"
                 " WHERE attempt_id = %s", (attempt_id,))
     row = cur.fetchone()
@@ -300,7 +316,8 @@ def graded_commits(cur, student_id: str, assignment_id: str | None = None,
     """(attempt_id, commit_sha) for every graded commit, oldest first."""
     query = ("SELECT DISTINCT t.attempt_id, t.commit_sha, c.committed_at FROM test_results t"
              " JOIN attempts a USING (attempt_id) JOIN raw_commits c ON c.sha = t.commit_sha"
-             " WHERE a.student_id = %s AND t.commit_sha IS NOT NULL")
+             " WHERE a.student_id = %s AND t.commit_sha IS NOT NULL"
+             f" AND NOT {template_commit_sql('c')}")            # D-098: never the template push
     args: list = [student_id]
     if assignment_id:
         query += " AND a.assignment_id = %s"
@@ -538,6 +555,7 @@ def recent_unposted(cur, student_id: str, hours: int) -> list[tuple[int, str]]:
         "SELECT t.attempt_id, t.commit_sha FROM test_results t"
         " JOIN attempts a USING (attempt_id) JOIN raw_commits c ON c.sha = t.commit_sha"
         " WHERE a.student_id = %s AND t.commit_sha IS NOT NULL"
+        f" AND NOT {template_commit_sql('c')}"                  # D-098: never the template push
         " GROUP BY t.attempt_id, t.commit_sha, c.committed_at"
         " HAVING max(t.ran_at) >= now() - make_interval(hours => %s)"
         " ORDER BY c.committed_at, t.commit_sha", (student_id, hours))

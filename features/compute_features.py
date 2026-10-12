@@ -87,7 +87,17 @@ NEUTRAL_DIFFICULTY = 0.5
 # zeros, so their stored rows stay reproducible; the v6 row a student may already have would be
 # recomputed differently, which is why this is a new version.
 LINT_MEASURED_FROM = "v7"
-FORMULA_VER = "v7"
+
+# D-098 (v8). The template push of a DELIVERED repo (attempt >= 2, one assignment: D-090) is not a
+# student action. v4's rule (c) only saw it when it touched no assignment (`assignment_id IS NULL`),
+# which holds for the four-assignment attempt-1 repo but not for a one-assignment repo, where the
+# collector gives every commit that assignment. From v8 on, "Initial commit:" also matches when the
+# commit is the earliest commit graded under its (attempt >= 2) attempt, i.e. the first of its repo.
+# `raw_commits` has no repo column, so the repo is read through `test_results.attempt_id`; a commit
+# that was never graded, or whose order cannot be established, stays a student commit (fail open).
+# Versions up to v7 keep the old rule, so their stored rows stay reproducible and are not touched.
+INITIAL_COMMIT_BY_ATTEMPT_FROM = "v8"
+FORMULA_VER = "v8"
 
 # D-084. From this formula version on, V5/V6 leave out a hidden-test outcome of a gap that was
 # an unattempted NotImplementedError stub in that commit (`gap_observation`, the D-079
@@ -130,25 +140,58 @@ def sync_commit_sql(alias="c"):
             f"AND COALESCE({alias}.files_changed <= {SYNC_MAX_FILES}, false))")
 
 
-def initial_commit_sql(alias="c"):
-    """SQL condition: `alias` (a raw_commits row) is the initial template commit (D-069).
+def _first_commit_of_delivered_repo_sql(alias):
+    """SQL condition (D-098): `alias` is the earliest commit graded under an attempt >= 2.
 
-    Same shape as `sync_commit_sql` and the same fail-open stance: a NULL message or a
-    non-NULL assignment_id means "not the initial commit", so an unknown value KEEPS the row.
-    A legacy repo whose first commit touches an assignment file gets an assignment_id
-    (D-043) and is therefore never matched -- the safe direction (KNOWN HOLE, listed as
-    later)."""
+    A delivered repo (D-090) holds one assignment and belongs to exactly one `attempts` row, so
+    that row stands for the repo. "Earliest" is by `committed_at`, ties by sha. Fail open: a
+    commit with no graded result (unknown repo) never matches, and neither does one that has an
+    earlier graded commit in the same attempt."""
+    return (
+        f"EXISTS (SELECT 1 FROM test_results t0"
+        f" JOIN attempts att0 ON att0.attempt_id = t0.attempt_id"
+        f" WHERE t0.commit_sha = {alias}.sha AND att0.attempt_no >= 2"
+        f" AND NOT EXISTS (SELECT 1 FROM test_results t1"
+        f" JOIN raw_commits c1 ON c1.sha = t1.commit_sha"
+        f" WHERE t1.attempt_id = t0.attempt_id AND t1.commit_sha <> {alias}.sha"
+        f" AND (c1.committed_at < {alias}.committed_at"
+        f" OR (c1.committed_at = {alias}.committed_at AND c1.sha < {alias}.sha))))")
+
+
+def _initial_commit_by_attempt(formula_ver):
+    """True for formula versions that also recognise the template push of a delivered repo."""
+    return formula_ver not in ("v2", "v3", "v4", "v5", "v6", "v7")
+
+
+def initial_commit_sql(alias="c", formula_ver=FORMULA_VER):
+    """SQL condition: `alias` (a raw_commits row) is the initial template commit (D-069, D-098).
+
+    Same shape as `sync_commit_sql` and the same fail-open stance: a NULL message means "not
+    the initial commit", so an unknown value KEEPS the row. Up to v7 the commit must also carry
+    no assignment (`assignment_id IS NULL`). From v8 it may instead be the first commit of its
+    delivered repo (`_first_commit_of_delivered_repo_sql`): a one-assignment repo gives its
+    template push that assignment (D-043), so the NULL test alone never saw it."""
     assert "'" not in INITIAL_COMMIT_PREFIX
-    return (f"(COALESCE(starts_with({alias}.message, '{INITIAL_COMMIT_PREFIX}'), false) "
-            f"AND {alias}.assignment_id IS NULL)")
+    prefix = f"COALESCE(starts_with({alias}.message, '{INITIAL_COMMIT_PREFIX}'), false)"
+    if not _initial_commit_by_attempt(formula_ver):
+        return f"({prefix} AND {alias}.assignment_id IS NULL)"
+    return (f"({prefix} AND ({alias}.assignment_id IS NULL "
+            f"OR {_first_commit_of_delivered_repo_sql(alias)}))")
+
+
+def template_commit_sql(alias="c"):
+    """SQL condition: `alias` is the template push that no feedback is ever built for (D-098).
+    Always the current definition: feedback has no formula version."""
+    return initial_commit_sql(alias, INITIAL_COMMIT_BY_ATTEMPT_FROM)
 
 
 def _not_student_commit_sql(formula_ver, alias):
     """SQL: `alias` is a commit that is NOT a student action under `formula_ver`
-    (v3: a sync commit; v4: a sync commit or the initial template commit)."""
+    (v3: a sync commit; v4: a sync commit or the initial template commit; v8: also the template
+    push of a delivered repo)."""
     if formula_ver == "v3":
         return sync_commit_sql(alias)
-    return f"({sync_commit_sql(alias)} OR {initial_commit_sql(alias)})"
+    return f"({sync_commit_sql(alias)} OR {initial_commit_sql(alias, formula_ver)})"
 
 
 def _run_scopes(formula_ver, alias="r"):
@@ -463,6 +506,21 @@ def _drop_unattempted(cur, results):
     return kept
 
 
+def _drop_template_commit_results(cur, results):
+    """`results` (test_result_history entries) without those graded on a template push (D-098).
+
+    The push is not a student action, so its outcomes are no evidence about the student, exactly
+    as its CI run is left out by `_run_scopes`. An entry with no `commit_sha` (older traces) is
+    kept: it cannot be placed, and an unknown value is never dropped by guess."""
+    shas = sorted({r["commit_sha"] for r in results if r["commit_sha"]})
+    if not shas:
+        return results
+    cur.execute(f"SELECT c.sha FROM raw_commits c WHERE c.sha = ANY(%s) AND "
+                f"{template_commit_sql('c')}", (shas,))
+    template = {row[0] for row in cur.fetchall()}
+    return [r for r in results if r["commit_sha"] not in template]
+
+
 def _error_stats(cur, student_id, est, formula_ver=FORMULA_VER):
     """V5 and V6 — both read the sequential run history, so they share one pass.
 
@@ -499,6 +557,8 @@ def _error_stats(cur, student_id, est, formula_ver=FORMULA_VER):
                     if r["passed"] is not None]
     if _excludes_unattempted(formula_ver):
         test_results = _drop_unattempted(cur, test_results)
+    if _initial_commit_by_attempt(formula_ver):
+        test_results = _drop_template_commit_results(cur, test_results)
 
     runs = [(ts, conclusion) for ts, conclusion, _, _ in ci_rows]
     runs += [(r["ts"], "success" if r["passed"] else "failure") for r in test_results]

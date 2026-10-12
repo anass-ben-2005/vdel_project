@@ -4137,3 +4137,53 @@ Effect on already-delivered repos: none changed. A repo delivered before this fi
 What CI looks like for an unfilled single-assignment repo (reasoned, not run on GitHub): ruff step (continue-on-error), then pytest
              collects the one visible file and its tests fail with NotImplementedError, exit 1: a red run for the right reason,
              and no collection error. The collection-error CI case remains classified 'unclassified' (D-096 item 2).
+
+### D-098 -- the template push of a delivered repo is not a student action: formula v8, no feedback for it
+Date:        2026-10-12
+Status:      DECIDED and implemented. Real database untouched (read-only check only).
+Authority:   Anas (answers to the five questions of the previous note).
+Problem:     In a one-assignment repo (attempt >= 2, D-090) the collector gives EVERY commit that assignment, including the
+             template push "Initial commit: ...". v4's rule (c) needed `assignment_id IS NULL`, true for the four-assignment
+             attempt-1 repo only, so the push counted as a student commit, its CI run as a student run, its 92 added lines as
+             the student's LOC, and its all-stub results as failed pushes in the feedback history.
+Rule (v8):   "Initial commit:" message AND (`assignment_id IS NULL` OR it is the EARLIEST commit graded under its attempt, with
+             attempt_no >= 2). Order by committed_at, ties by sha. Fail open: a NULL message, a commit that was never graded
+             (repo unknown), or one with an earlier graded commit in its attempt stays a student commit.
+Repo:        `raw_commits` has no repo column and none was added (a schema change needs your word; and a new column would be
+             NULL for the existing commits, so the effect could not be shown on attempt 1770). A delivered repo holds one
+             assignment and is exactly one `attempts` row (D-090), so the repo is read through `test_results.attempt_id`.
+             Consequences, stated: (a) it needs the commit to have been graded, which the cycle does before the features;
+             (b) an UNGRADED commit earlier than the template push would hide it (unknown order, so fail open: the push
+             then stays a student commit); (c) attempt-1 repos are not affected by the new branch (the four-assignment repo has
+             several attempt rows and its template push already has no assignment). Upgrade trigger: store owner/repo on
+             `raw_commits` at collection time (additive, nullable).
+Scope:       grading and storing are unchanged: the push is still graded and its `test_results` / traces kept (mastery was
+             already safe: D-079, an all-stub commit is "unattempted"). It is excluded from: V3 gaps and the
+             release-to-first-commit lag; V6 changed LOC; the CI runs V4/V5/V6 read (`_run_scopes`, through head_sha); the
+             watermark and the dirty-student test (a fresh delivery alone is not student activity); and, in V5/V6, its
+             `test_result` traces (`_drop_template_commit_results`, which keeps traces that name no commit). Also from
+             the diagnosis (`assessment/diagnose.py`, always): without that, g_ext_parse failing on the template push AND on the
+             first real push would print "keeps failing across several pushes" on the first real comment.
+V4 (read):   V4 does not read commits at all: it reads `raw_workflow_runs` per assignment. The template push entered it as the
+             CI run on that commit: as `last_run` for a censored student (elapsed measured to a push the student did not
+             make), and as `first_pass` if that run were ever green. Both go with the `_run_scopes` change. Not changed, and
+             not this decision's business: the clock starts at `assignments.released_at`, which is the first release, not the
+             start of attempt N (so a pass on attempt 2 is measured from the original release).
+V3 (read):   gaps and `procrastination_h` (= first commit - release): the template push was a commit like any other, so a
+             fresh student's "first commit" was the push (a lag measured to the template) and the first real gap started at
+             it. Both now start at the first student commit. `procrastination_h` takes the student's first commit overall and
+             the earliest release of the assignments joined: unchanged and aggregated across attempts, as before.
+Feedback:    `graded_commits` and `recent_unposted` (so the CLI, the dry run and the hourly phase) skip the push;
+             `build_feedback` and `feedback_agent.gather_input` raise `TemplateCommit` for it, so no text is built either.
+Versions:    FORMULA_VER = "v8". v2..v7 compute exactly as before (the new branch is behind `_initial_commit_by_attempt`),
+             stored rows are not touched, and a v8 run at the same watermark as a v7 row never overwrites it (D-063).
+Effect:      attempt 1770 of anas, read-only, computed in memory (nothing written): f343fb1b3f ("Initial commit:", 04:02:23)
+             is the template push under v8 and is NOT under v7; bc2bf5cf55 ("extract: retry loop") is a student commit under
+             both. v7 -> v8: excluded commits 3 -> 4, excluded (sync/template) CI runs 3 -> 4, V3 regularity 0.163 -> 0.164 and
+             burstiness 0.674 -> 0.671, V6 score 0.735 -> 0.741 with py.data_structures failures 8 -> 7 and fail_ratio
+             0.365 -> 0.355; V4 and V5 unchanged for anas (V4 has no cohort passers, so no score either way).
+Tests:       tests/test_template_commit.py (12): recognised from v8 only; a student commit named "Initial commit:" that is not
+             first is kept; never graded and NULL message are kept; attempt-1 repos unchanged; two deliveries each have their
+             own push; commits, LOC, runs, gaps, watermark and dirty test; the trace filter; v6/v7 values do not depend on the
+             rule; a stored v7 row is not rewritten; no feedback is selected, built or gathered for it and the first real
+             comment does not say "keeps failing". With the v8 branch disabled 10 of the 12 fail.
