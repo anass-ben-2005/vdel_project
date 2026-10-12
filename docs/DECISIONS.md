@@ -4074,3 +4074,66 @@ Tests:       tests/test_task_command.py runs the generated argument string with 
              write/docker flags are set only when asked, the log holds no NUL bytes, and the old quoting is shown to
              fail. tests/test_run_hourly.py: first log line. Skipped when powershell.exe is absent.
 Known limit: `%` in a path is not covered (cmd.exe expands it when the .cmd stub is launched; python.exe is not a .cmd).
+
+### D-096 -- OPEN: does a single-assignment repo (attempt 2) ship visible tests it cannot import? Plus two findings on CI classification and V5/V6
+Date:        2026-10-12
+Status:      OPEN. Nothing was changed. The empirical check (item 1) was BLOCKED by a permission rule and, as agreed, was not
+             redone another way; items 2 and 3 depend on it. Items marked READ below come from reading code / read-only
+             queries, not from a run.
+(1) Question: `render_student_repo(..., only_assignment=X)` renders only X's file, `<project>/__init__.py`, `requirements.txt`,
+             and then `shutil.copytree` of the WHOLE `tests/visible` (render_student_repo.py, the "tests/visible copied"
+             block). READ: tests/visible holds test_extract / test_load / test_quality / test_transform, which import
+             `weather_etl.extract / .load / .quality / .transform`. For weather_etl_extract only `extract.py` exists, so by
+             reading, three of the four files cannot be imported. NOT RUN: whether `python -m pytest tests/visible` then stops
+             with 3 collection errors (pytest's default: "Interrupted: 3 errors during collection", no test runs at all, so
+             test_extract.py would not run either) is expected but UNVERIFIED. The ci.yml the render ships is
+             `pip install -r requirements.txt; pip install ruff pytest; ruff check . (continue-on-error); python -m pytest tests/visible`.
+             Check to run by hand: render attempt 2 for anas/weather_etl_extract inside a rolled-back transaction, create a
+             fresh venv, run those two pip lines and the pytest line there.
+(2) READ, how a CI collection error is classified today (collectors/error_classifier.py): a first-match rule table with no rule for
+             ModuleNotFoundError / ImportError / "ERROR collecting". A collection-error log therefore falls to
+             ('unmatched', 'unclassified') unless some other line of the whole log text happens to match a rule (the text is the
+             entire run log, not only the pytest step). Real data agrees for the other unmatched failures: 12 of 21 CI failures in
+             raw_workflow_runs are 'unmatched'/'unclassified'.
+(3) READ + real data, V5/V6 and 'unclassified' (features/compute_features.py, `_error_features`): the CI rows are selected by
+             student_id and the outcome scope only, with NO assignment_id filter, so a run with assignment_id NULL (a repo that
+             covers several assignments) counts the same as one with an assignment. A failed 'unclassified' run therefore
+             enters `runs`/`failures` (total_runs, time-to-fix, V6 failed_runs and errors) AND, because the test is
+             `if concept_id` (the string 'unclassified' is truthy), also `concept_events` and `by_concept`. The stored v2 row
+             for anas has by_concept {'py.testing': 7, 'unclassified': 12, 'py.data_structures': 6}; the current code path is the
+             same. Consequence: V5's "worst concept" can be 'unclassified' (the 12 beat the 7), which is not a concept and breaks
+             the intent of invariant 10 for V5/V6 (V1 no longer reads CI rows since D-069, so mastery itself is not affected). A
+             CI collection error of an attempt-2 repo would add one such 'unclassified' failure per push.
+             The GRADER's own collection errors are different and already handled (D-066/D-069): status `collection_error`, no
+             mastery trace, no V5/V6 `test_result` trace, and a module missing in OUR test file is `tooling`, never a failure.
+Not decided: the fix for (1) (ship only the visible tests whose module is in the render; attempt-1 repos unchanged), the
+             'unclassified' filter in `concept_events`, and a classifier rule for collection errors. Each needs your word.
+
+### D-097 -- a single-assignment repo ships only the visible tests it can import (resolves D-096 item 1 and its renderer part)
+Date:        2026-10-12
+Status:      DECIDED and implemented. D-096's items on the CI classifier and on 'unclassified' in V5/V6 stay OPEN.
+Authority:   Anas (brief) + Anas's own confirmation of the failure.
+Confirmed:   by Anas, in a copy of an attempt-1 repo with load.py, quality.py and transform.py removed:
+             `python -m pytest tests/visible -q` ends with "3 errors during collection" (ModuleNotFoundError: No module named
+             'weather_etl.load' / '.quality' / '.transform'), "Interrupted", and test_extract.py does not run at all. (The
+             render-then-venv run I tried was blocked by a permission rule and not redone; this is the equivalent run.)
+Fix:         `render_student_repo(..., only_assignment=X)` now copies from tests/visible only the `test_*.py` files whose imported
+             project modules are all in the render (`_project_modules_imported` reads the file with `ast`: `from weather_etl.x
+             import`, `import weather_etl.x`, `from weather_etl import x` when x.py exists in the master; relative imports ignored).
+             Any other file in tests/visible (a helper, a conftest) ships as before; an unparsable test file ships (not this
+             filter's job to hide a broken file). The whole-project render keeps the original `shutil.copytree`, so attempt-1
+             repos are byte-for-byte as before. The return dict gains `visible_tests` (what shipped).
+Why imports:  the rule is the actual failure condition (an import that cannot resolve), not a name convention; a new stage or
+             test file needs no table to be kept in step. A stage whose test imports two modules ships only when both are rendered.
+Unchanged:   variant ids (select_variant is untouched; the demo's Beat 2 still prints 864fe8bbecf4 / c4c18c3e10e9), the
+             hidden-test guard (`_assert_no_hidden_tests_leaked` still runs on every render), ci.yml.
+Tests:       tests/test_render_visible_tests.py: each of the four single-assignment renders ships exactly its own test, byte-equal
+             to the master's; the workflow's pytest command collects and runs test_extract.py in the extract render (exit 0/1,
+             never 2); the failure as confirmed is reproduced when the full folder is put back (exit 2, "3 errors during
+             collection"); a four-assignment render ships all four, unchanged; variant ids are the same whole-project and
+             single-assignment; no path named hidden. With the filter disabled 5 of the 9 fail.
+Effect on already-delivered repos: none changed. A repo delivered before this fix (attempt 2 of any stage) still holds all four
+             visible tests; the next delivery is correct. Nothing was delivered for a real student yet (HANDOFF).
+What CI looks like for an unfilled single-assignment repo (reasoned, not run on GitHub): ruff step (continue-on-error), then pytest
+             collects the one visible file and its tests fail with NotImplementedError, exit 1: a red run for the right reason,
+             and no collection error. The collection-error CI case remains classified 'unclassified' (D-096 item 2).

@@ -19,6 +19,7 @@ this reason. Real values land later, once collect_github has a matching raw_comm
 
 from __future__ import annotations
 
+import ast
 import shutil
 import sys
 from contextlib import contextmanager
@@ -111,6 +112,61 @@ def _assert_no_hidden_tests_leaked(out_dir: Path) -> None:
             f"tests/hidden leaked into the student repo: {[str(p) for p in leaks]}. "
             "This must never happen -- refusing to return a repo in this state."
         )
+
+
+def _project_modules_imported(source: str, project_id: str, project_dir: Path) -> set[str]:
+    """The top-level modules of the project package that a visible test file imports:
+    `from weather_etl.extract import x` -> {"extract"}; `import weather_etl.load` -> {"load"};
+    `from weather_etl import quality` -> {"quality"} (a name is a module only if the master has
+    that file, so `from weather_etl import __version__` adds nothing). Relative imports are
+    ignored. Read with `ast`; the file is parsed, never imported."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            head, _, rest = node.module.partition(".")
+            if head != project_id:
+                continue
+            if rest:
+                found.add(rest.split(".")[0])
+            else:
+                found.update(a.name for a in node.names
+                             if (project_dir / project_id / f"{a.name}.py").exists())
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                head, _, rest = alias.name.partition(".")
+                if head == project_id and rest:
+                    found.add(rest.split(".")[0])
+    return found
+
+
+def _visible_tests_to_ship(visible_src: Path, project_id: str, project_dir: Path,
+                           rendered_files: list[str]) -> list[Path]:
+    """The files of `tests/visible` this render ships (D-097).
+
+    (A whole-project render does not come here: it copies the folder unchanged.)
+    A single-assignment render (D-072/D-090) contains ONE module of the package, and a visible
+    test whose module is not in the render cannot be imported: pytest's collection error
+    ("Interrupted: 3 errors during collection") then stops the run before any test executes,
+    including the one test file that could have run. So a `test_*.py` ships only when every
+    project module it imports is in the render. Any other file (a helper, a conftest) ships
+    as it always did."""
+    files = sorted(p for p in visible_src.rglob("*") if p.is_file()
+                   and "__pycache__" not in p.parts)
+    available = {Path(f).stem for f in rendered_files if Path(f).parent.name == project_id}
+    keep = []
+    for path in files:
+        if not (path.name.startswith("test_") and path.suffix == ".py"):
+            keep.append(path)
+            continue
+        try:
+            needed = _project_modules_imported(path.read_text(encoding="utf-8"),
+                                               project_id, project_dir)
+        except SyntaxError:
+            keep.append(path)               # our own file is broken: not for this filter to hide
+            continue
+        if needed <= available:
+            keep.append(path)
+    return keep
 
 
 def _upsert_variant(cur, variant_id: str, assignment_id: str,
@@ -265,8 +321,9 @@ def render_student_repo(
            moment a variant is assigned, before anything reaches GitHub.
       3-4. render_student_file turns each master file into its student-facing version;
            written to out_dir preserving the project's own file layout.
-      5.   tests/visible/ copied if present; tests/hidden/ never copied, by construction
-           (the loop below only ever walks tests/visible, never tests/hidden at all).
+      5.   tests/visible/ copied if present (a single-assignment render only the visible
+           tests whose module is in the render, D-097); tests/hidden/ never copied, by
+           construction (the loop below only ever walks tests/visible, never tests/hidden).
       6.   ASSIGNMENT.md: every hidden gap, its file, its line, its instruction.
       7.   .github/workflows/ci.yml: install, lint (non-blocking), run VISIBLE tests only.
       8.   conftest.py (comment-only) at the repo root, so bare `pytest tests/visible` can
@@ -350,8 +407,23 @@ def render_student_repo(
     # tests/visible copied if present; tests/hidden is NEVER read, let alone copied --
     # not "copied then filtered out", simply never touched by this loop at all.
     visible_src = project_dir / "tests" / "visible"
+    shipped_tests: list[str] = []
     if visible_src.exists():
-        shutil.copytree(visible_src, out_dir / "tests" / "visible")
+        # D-097: a single-assignment render ships only the visible tests it can import.
+        rendered_files = ([a["file_path"] for a in project["assignments"]
+                           if a["assignment_id"] == only_assignment] if only_assignment else None)
+        if rendered_files is None:
+            shutil.copytree(visible_src, out_dir / "tests" / "visible")      # unchanged
+            shipped_tests = sorted(p.relative_to(out_dir / "tests" / "visible").as_posix()
+                                   for p in (out_dir / "tests" / "visible").rglob("*")
+                                   if p.is_file())
+        else:
+            for src in _visible_tests_to_ship(visible_src, project_id, project_dir,
+                                              rendered_files):
+                dest = out_dir / "tests" / "visible" / src.relative_to(visible_src)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dest)
+                shipped_tests.append(src.relative_to(visible_src).as_posix())
 
     assignment_md = ["# ASSIGNMENT\n", f"Project: `{project_id}` -- attempt {attempt_no}\n"]
     for e in assignment_md_entries:
@@ -375,6 +447,7 @@ def render_student_repo(
                            if not only_assignment or a["assignment_id"] == only_assignment],
         "hidden_gap_count": len(assignment_md_entries),
         "visible_tests_copied": visible_src.exists(),
+        "visible_tests": shipped_tests,
     }
 
 

@@ -1989,7 +1989,7 @@ hour.
 
 **`scripts/render_student_repo.py` — materialises one attempt as a real file tree.**
 Calls `gap_generator.select_variant` and `gap_parser.render_student_file` to produce a real
-directory: rendered source, `tests/visible/` (copied; `tests/hidden/` is never copied — a
+directory: rendered source, `tests/visible/` (copied whole for a whole-project render; for a single-assignment render, `only_assignment`, only the `test_*.py` files whose imported project modules are all in the render, D-097 — otherwise pytest dies at collection and runs nothing; `tests/hidden/` is never copied — a
 runtime check, `_assert_no_hidden_tests_leaked`, walks the output tree and refuses to return
 a repo where that's been violated, not just a comment promising it won't happen),
 `ASSIGNMENT.md`, and a generated `.github/workflows/ci.yml`. As of 2026-08-25 it also writes
