@@ -404,8 +404,13 @@ class IssuePlan:
         return bool(self.problems)
 
 
-def plan_issue_post(cur, attempt_id: int, commit_sha: str, repo_for: dict) -> IssuePlan:
-    """Read-only. `repo_for` maps (student_id, assignment_id) -> (owner, repo) (the roster)."""
+def plan_issue_post(cur, attempt_id: int, commit_sha: str, repo_for: dict,
+                    addendum: str | None = None) -> IssuePlan:
+    """Read-only. `repo_for` maps (student_id, assignment_id) -> (owner, repo) (the roster).
+
+    `addendum` (D-099): an LLM paragraph ADDED under the deterministic text, never replacing it.
+    The final guard below runs on the exact text sent, so an addendum that carried hidden test
+    source raises `HiddenSourceLeak`; the caller then plans again without it."""
     cur.execute("SELECT a.student_id, a.assignment_id, a.attempt_no, s.github_username"
                 " FROM attempts a JOIN students s USING (student_id) WHERE a.attempt_id = %s",
                 (attempt_id,))
@@ -434,7 +439,8 @@ def plan_issue_post(cur, attempt_id: int, commit_sha: str, repo_for: dict) -> Is
                     (attempt_id,))
         found = cur.fetchone()
         number = found[0] if found else None
-    body = issue_comment_body(username or "?", feedback.markdown, attempt_id, commit_sha)
+    markdown = feedback.markdown + (f"\n{addendum.strip()}\n" if addendum else "")
+    body = issue_comment_body(username or "?", markdown, attempt_id, commit_sha)
     hidden = hidden_source_lines(_project_of(cur, attempt_id))
     assert_no_hidden_source(body, hidden)                   # last guard, on the exact text sent
     return IssuePlan(

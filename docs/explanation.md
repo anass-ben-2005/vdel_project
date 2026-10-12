@@ -1929,7 +1929,21 @@ features (`compute_features.run(only=[sid], conn=)`, only when the student's wat
 A Postgres advisory lock (key 640201071) stops two cycles overlapping (exit 3); an unreachable
 database exits at once (2); a failing student is recorded and the others still run (exit 1 if any
 failed). `--dry-run` reads only and calls no network; `--skip-network` skips collect and grade;
-`--with-llm` only reports "NOT WIRED". `tests/test_run_cycle.py` uses a fake GitHub layer.
+`--with-llm` (D-099) is OFF by default: see the next paragraph. `tests/test_run_cycle.py` uses a fake
+GitHub layer.
+
+**`--with-llm` (D-099): the agents after grading.** `run_cycle` and `run_hourly` accept `--with-llm`,
+`--llm-run-cap N` (default 10) and `--llm-daily-cap N` (default 20), both counting provider calls
+(`agents/budget.py`, ledger `.vdel/llm_usage.json`). `grade_collected.run(after_grade=...)` calls
+`run_cycle.AgentsHook` for each commit graded `ok`, before the temporary checkout is deleted; the hook
+runs the Feedback Agent (`agents/pipeline.run_agents_for_commit`; the Code Agent is skipped, it
+would cost calls for a verdict nobody reads or stores) inside a SAVEPOINT of the grading
+transaction. The Feedback Agent's LLM answer is stored, as one
+`coach`/`intervention` trace per (attempt, commit) (`pipeline.persist_feedback`, through
+`Memory.log_trace`; not a mastery kind). `run_hourly` posts the deterministic text as before and, with
+the flag, adds the stored paragraph under it. Nothing an agent does can fail the grading or the cycle;
+the template push (D-098) never reaches an agent. `tests/test_with_llm.py` (fake LLM, all provider
+handlers blocked).
 
 **One roster loader (D-070).** `scripts/seed_data.py::load_roster(path=None)` is the only function
 that reads a roster; `roster_repos(roster)` feeds the collector and `roster_repo_for(roster)` the

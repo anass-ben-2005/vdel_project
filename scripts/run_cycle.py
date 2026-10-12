@@ -2,6 +2,7 @@
 
     python -m scripts.run_cycle [--student X] [--roster PATH] [--dry-run]
                                 [--skip-network] [--with-llm]
+                                [--llm-run-cap N] [--llm-daily-cap N]
 
 For every student in the roster (or just --student), in this order, each stage a separate
 unit of work:
@@ -10,7 +11,7 @@ unit of work:
     2. grade       ungraded commits -> test_results, traces       (grade_collected.run, network)
     3. features    learner_features, only for students whose latest event has no row yet
     4. profile     Memory.sync_features_ref, only when features_ref is stale
-    5. llm         off by default; `--with-llm` reports "not wired" (see below)
+    5. llm         off by default; `--with-llm` runs the agents right after each graded commit
 
 It reuses the existing functions and reimplements none of them (D-071). Idempotent: a second
 run with nothing new on GitHub writes nothing -- the collector skips what it stored, the
@@ -27,9 +28,15 @@ Guarantees (each is a test in tests/test_run_cycle.py):
   - `--skip-network`: stages 1 and 2 are skipped (grading fetches the commit from GitHub);
     features and profile are computed from what the database already holds.
 
-`--with-llm` is a stub: the Code Agent needs a rendered checkout of the student's repo and a
-billed call per attempt, which is more than a pipeline stage; it is not wired here, and the
-cycle says so rather than pretending.
+`--with-llm` (D-099, OFF by default) calls the Feedback Agent once per commit that has just been
+graded with status `ok`, from inside the grade stage (`agents/pipeline.run_agents_for_commit`).
+The Code Agent is NOT run here: the Feedback Agent does not read its output and its verdict would
+not be stored, so it would only cost provider calls. The Feedback Agent's LLM answer is stored as
+ONE `coach`/`intervention` trace per (attempt, commit). Two caps, both counting PROVIDER calls:
+`--llm-run-cap` (default 10) for this run and `--llm-daily-cap` (default 20) for the day, kept in
+`.vdel/llm_usage.json`. Hitting a cap, a rejected answer, a provider error or any agent exception
+is reported on its line and never fails the grading or the cycle. The template push of a
+delivered repo (D-098) never reaches an agent. `--dry-run` calls no agent.
 
 Exit codes: 0 all students ok (or dry-run); 1 some student failed; 2 database unreachable;
 3 another cycle holds the lock.
@@ -42,16 +49,23 @@ import contextlib
 import sys
 from dataclasses import dataclass, field
 
+from agents import pipeline as agents_pipeline
+from agents.budget import DEFAULT_LEDGER_PATH, CallBudget, UsageLedger
 from assessment.test_runner import grade_attempt
 from collectors.collect_github import collect_all
 from features import compute_features as cf
 from memory.memory import Memory
 from scripts import grade_collected as gc
+from scripts import post_feedback as pf
 from scripts.seed_data import load_roster, roster_repo_for, roster_repos
 from system import db
 
 ADVISORY_LOCK_KEY = 640_201_071       # arbitrary constant: "one vdel cycle at a time"
 EXIT_OK, EXIT_STUDENT_FAILED, EXIT_DB_DOWN, EXIT_LOCKED = 0, 1, 2, 3
+# Chosen numbers (D-099), not measurements: a Feedback Agent run is at most 4 provider calls
+# (agents/budget.py), so 10 is a run of about two commits.
+DEFAULT_LLM_RUN_CAP = 10
+DEFAULT_LLM_DAILY_CAP = 20
 
 
 @dataclass
@@ -125,6 +139,75 @@ def _needs_features(cur, student_id: str) -> bool:
     return cur.fetchone() is None
 
 
+# --- the agents hook (--with-llm) --------------------------------------------------------------
+
+class AgentsHook:
+    """What runs right after a commit is graded, when `--with-llm` is on (D-099).
+
+    One per cycle: it owns the `CallBudget`, so the run cap spans every student. `bind(conn)`
+    returns the `after_grade` callable for the grade stage's connection: the agents read, and the
+    one trace is written, in the SAME transaction as the grading, inside a SAVEPOINT, so an agent
+    that raises (even in SQL) leaves the grading untouched."""
+
+    def __init__(self, llm, budget: CallBudget, mem, out, daily_cap: int):
+        self.llm, self.budget, self.mem, self.out, self.daily_cap = llm, budget, mem, out, daily_cap
+
+    def today(self) -> str:
+        return f"calls today: {self.budget.ledger.day_total()}/{self.daily_cap}"
+
+    def bind(self, conn):
+        def after_grade(p, repo_dir, result):
+            cur = conn.cursor()
+            cur.execute("SAVEPOINT agents_after_grade")
+            try:
+                self._run(cur, p, repo_dir, result)
+                cur.execute("RELEASE SAVEPOINT agents_after_grade")
+            except Exception:
+                cur.execute("ROLLBACK TO SAVEPOINT agents_after_grade")
+                raise
+        return after_grade
+
+    def _run(self, cur, p, repo_dir, result):
+        who = f"{p.student_id}/{p.assignment_id} {p.sha[:7]}"
+        if pf.is_template_commit(cur, p.sha):                 # D-098: not a student action
+            self.out(f"  llm       {who}: template push, no agent")
+            return
+        if not result.tests_total:
+            self.out(f"  llm       {who}: no test rows, no agent")
+            return
+        # No assignment and no code_path: the pipeline marks the Code Agent `skipped` and makes no
+        # call. The Feedback Agent reads only test_results, the diagnosis and the mastery slice.
+        summary = agents_pipeline.run_agents_for_commit(
+            p.student_id, p.attempt_id, p.sha, llm=self.llm, budget=self.budget, cur=cur,
+            memory=self.mem)
+        trace = None
+        step = summary.steps.get(agents_pipeline.FEEDBACK_AGENT)
+        if step is not None and step.status == agents_pipeline.OK:
+            trace = agents_pipeline.persist_feedback(
+                self.mem, cur, p.student_id, p.assignment_id, step.result)
+        parts = [f"{name}={s.status}" + (f" ({s.error})" if s.error else "")
+                 for name, s in summary.steps.items()]
+        self.out(f"  llm       {who}: " + ", ".join(parts)
+                 + (f", coach trace {trace}" if trace else ", no trace")
+                 + f"  ({self.today()})")
+
+
+def _make_hook(llm, run_cap, daily_cap, ledger, mem, out) -> AgentsHook | None:
+    """None (with the reason printed) when the agents cannot be set up: the cycle goes on without
+    them. A bad ledger file fails CLOSED: unknown usage means no spending."""
+    try:
+        if llm is None:
+            from system import llm as gateway  # only now: --with-llm is the only caller
+            llm = gateway
+        ledger = ledger if ledger is not None else UsageLedger(DEFAULT_LEDGER_PATH)
+        budget = CallBudget(max_calls=run_cap, day_cap=daily_cap, ledger=ledger)
+    except Exception as exc:  # noqa: BLE001 -- LedgerCorrupt, bad caps, no gateway
+        out(f"llm: DISABLED for this cycle, no agent will run ({type(exc).__name__}: "
+            f"{str(exc).strip()[:200]})")
+        return None
+    return AgentsHook(llm, budget, mem, out, daily_cap)
+
+
 # --- the stages -------------------------------------------------------------------------------
 
 def _stage_collect(res, sid, repos, conn, collect, dry_run, out):
@@ -144,10 +227,11 @@ def _stage_collect(res, sid, repos, conn, collect, dry_run, out):
         + (f", {len(outcome.get('failed', []))} repo(s) FAILED" if outcome.get("failed") else ""))
 
 
-def _stage_grade(res, sid, repo_for, conn, checkout, grade, dry_run, out):
+def _stage_grade(res, sid, repo_for, conn, checkout, grade, dry_run, out, hook=None):
     with _unit(conn, "grade") as c:
         summary = gc.run(student=sid, dry_run=dry_run, repo_for=repo_for,
-                         checkout=checkout, grade=grade, conn=c)
+                         checkout=checkout, grade=grade, conn=c,
+                         after_grade=hook.bind(c) if hook is not None and not dry_run else None)
     res.pending = summary["pending"]
     res.post_freeze_skipped = summary["post_freeze_commits_skipped"]
     if dry_run:
@@ -159,7 +243,9 @@ def _stage_grade(res, sid, repo_for, conn, checkout, grade, dry_run, out):
     res.frozen = sum(1 for g in summary["graded"] if g[4])
     for label, err in summary["failed"]:
         res.errors.append(f"grade {label}: {err}")
-    out(f"  grade     {res.graded} graded, {res.frozen} attempt(s) frozen, "
+    for label, err in summary["agent_errors"]:          # reported, never an error of the student
+        out(f"  llm       AGENT ERROR {label}: {err}")
+    out(f"  grade    {res.graded} graded, {res.frozen} attempt(s) frozen, "
         f"{len(summary['failed'])} failed, {len(summary['no_repo'])} without a repo, "
         f"{res.post_freeze_skipped} after a freeze (not graded)")
 
@@ -203,11 +289,14 @@ def _stage_profile(res, sid, mem, conn, dry_run, out):
 def run_cycle(roster: dict, *, student: str | None = None, dry_run: bool = False,
               skip_network: bool = False, with_llm: bool = False, conn=None,
               collect=collect_all, checkout=gc.checkout_commit, grade=grade_attempt,
-              out=print) -> CycleResult:
+              out=print, llm_run_cap: int = DEFAULT_LLM_RUN_CAP,
+              llm_daily_cap: int = DEFAULT_LLM_DAILY_CAP, llm=None, ledger=None) -> CycleResult:
     """Run one cycle over `roster`. Never raises for a single student's failure.
 
     `conn`: tests only (see `_unit`). `collect` / `checkout` / `grade` are injectable so the
-    tests use a fake GitHub layer: no network is needed to exercise the whole cycle."""
+    tests use a fake GitHub layer: no network is needed to exercise the whole cycle. `llm` /
+    `ledger`: tests only (a `FakeLLM` and an in-memory `UsageLedger`); the defaults are
+    `system.llm` and the `.vdel/llm_usage.json` file."""
     lock_conn = None
     try:
         lock_conn = db._open()                  # also the fail-fast "is the database there?"
@@ -230,13 +319,14 @@ def run_cycle(roster: dict, *, student: str | None = None, dry_run: bool = False
 
     try:
         return _run_locked(roster, student, dry_run, skip_network, with_llm, conn,
-                           collect, checkout, grade, out)
+                           collect, checkout, grade, out,
+                           (llm, llm_run_cap, llm_daily_cap, ledger))
     finally:
         lock_conn.close()                 # closing the session releases the advisory lock
 
 
 def _run_student(sid, repos, repo_for, mem, conn, skip_network, dry_run,
-                 collect, checkout, grade, out) -> StudentResult:
+                 collect, checkout, grade, out, hook=None) -> StudentResult:
     """All stages for ONE student. An exception in a stage is recorded on the result and the
     next stage still runs; nothing here can stop another student."""
     out(f"[{sid}]")
@@ -246,7 +336,7 @@ def _run_student(sid, repos, repo_for, mem, conn, skip_network, dry_run,
         stages.append(("collect", lambda: _stage_collect(
             res, sid, repos, conn, collect, dry_run, out)))
         stages.append(("grade", lambda: _stage_grade(
-            res, sid, repo_for, conn, checkout, grade, dry_run, out)))
+            res, sid, repo_for, conn, checkout, grade, dry_run, out, hook)))
     else:
         out("  collect/grade skipped (--skip-network)")
     stages.append(("features", lambda: _stage_features(res, sid, conn, dry_run, out)))
@@ -261,7 +351,7 @@ def _run_student(sid, repos, repo_for, mem, conn, skip_network, dry_run,
 
 
 def _run_locked(roster, student, dry_run, skip_network, with_llm, conn,
-                collect, checkout, grade, out) -> CycleResult:
+                collect, checkout, grade, out, llm_settings=(None, 0, 0, None)) -> CycleResult:
     all_repos = roster_repos(roster)
     repo_for = roster_repo_for(roster)
     student_ids = list(dict.fromkeys(r["student_id"] for r in all_repos))
@@ -275,13 +365,21 @@ def _run_locked(roster, student, dry_run, skip_network, with_llm, conn,
     mode = "DRY-RUN (reads only)" if dry_run else "LIVE"
     out(f"cycle: {len(student_ids)} student(s), {mode}"
         + (", network skipped" if skip_network else ""))
-    if with_llm:
-        out("llm: NOT WIRED in run_cycle (the Code Agent needs a rendered checkout and a "
-            "billed call per attempt); skipped")
-
     mem = Memory()
+    hook = None
+    if with_llm and dry_run:
+        out("llm: dry-run, no agent will be called")
+    elif with_llm and skip_network:
+        out("llm: grading is skipped (--skip-network), so no commit reaches an agent")
+    elif with_llm:
+        llm, run_cap, daily_cap, ledger = llm_settings
+        hook = _make_hook(llm, run_cap, daily_cap, ledger, mem, out)
+        if hook is not None:
+            out(f"llm: ON, run cap {run_cap}, daily cap {daily_cap} provider call(s) "
+                f"({hook.today()})")
     results = [_run_student(sid, [r for r in all_repos if r["student_id"] == sid], repo_for,
-                            mem, conn, skip_network, dry_run, collect, checkout, grade, out)
+                            mem, conn, skip_network, dry_run, collect, checkout, grade, out,
+                            hook)
                for sid in student_ids]
 
     out("")
@@ -298,6 +396,17 @@ def _run_locked(roster, student, dry_run, skip_network, with_llm, conn,
     return CycleResult(code, results)
 
 
+def add_llm_arguments(parser: argparse.ArgumentParser) -> None:
+    """The three agent options, shared with run_hourly so the two commands cannot drift."""
+    parser.add_argument("--with-llm", action="store_true",
+                        help="after each graded commit run the Code and Feedback agents (OFF by "
+                             "default; makes billed provider calls)")
+    parser.add_argument("--llm-run-cap", type=int, default=DEFAULT_LLM_RUN_CAP,
+                        help="max provider calls in this run (default %(default)s)")
+    parser.add_argument("--llm-daily-cap", type=int, default=DEFAULT_LLM_DAILY_CAP,
+                        help="max provider calls per day, all runs (default %(default)s)")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--student", help="only this student_id")
@@ -307,11 +416,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="read only: say what a cycle would do, write nothing")
     parser.add_argument("--skip-network", action="store_true",
                         help="skip collect and grade (both need GitHub)")
-    parser.add_argument("--with-llm", action="store_true",
-                        help="stub: reports 'not wired'")
+    add_llm_arguments(parser)
     args = parser.parse_args(argv)
     result = run_cycle(load_roster(args.roster), student=args.student, dry_run=args.dry_run,
-                       skip_network=args.skip_network, with_llm=args.with_llm)
+                       skip_network=args.skip_network, with_llm=args.with_llm,
+                       llm_run_cap=args.llm_run_cap, llm_daily_cap=args.llm_daily_cap)
     return result.exit_code
 
 

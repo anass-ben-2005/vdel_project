@@ -1,4 +1,4 @@
-"""agents/pipeline.py -- the agents entry point for one graded commit. Not called by run_cycle yet.
+"""agents/pipeline.py -- the agents entry point for one graded commit (`run_cycle --with-llm`).
 
     run_agents_for_commit(student_id, attempt_id, commit_sha, *, llm, budget, persist=False)
 
@@ -14,8 +14,10 @@ WRITES NOTHING. `persist=False` is the only implemented mode:
     `update_mastery` only record what would have been written (in `summary.dry_run_traces`);
   - the Feedback Agent already writes nothing;
   - the database session this module opens itself is read-only at the Postgres level.
-`persist=True` raises `IntegrationPending` before anything runs and before any LLM call: the
-trace kinds and the transaction boundary are the main branch's to decide (IR-3).
+`persist=True` raises `IntegrationPending` before anything runs and before any LLM call.
+Persistence is a separate step the CALLER takes after the run (D-099): `persist_feedback` below
+logs the Feedback Agent's LLM answer through `Memory.log_trace` inside the caller's transaction;
+`find_feedback_addendum` reads it back. `run_agents_for_commit` itself still writes nothing.
 
 INPUTS THE CALLER MUST SUPPLY for the Code Agent: `code_path` (the student's file as of
 `commit_sha`) and `assignment` (a dict with `assignment_id`, `task`, `concepts`). The task text is
@@ -31,6 +33,7 @@ from typing import Any
 from agents import budget as budget_mod
 from agents import code_agent
 from agents import feedback_agent as fa
+from scripts import post_feedback as pf
 from system import db
 
 CODE_AGENT, FEEDBACK_AGENT = "code_agent", "feedback_agent"
@@ -100,6 +103,58 @@ class DryRunMemory:
     def update_mastery(self, student_id: str, concept: str, **kw: Any) -> None:
         self._sink.append({"student_id": student_id, "would": "update_mastery",
                            "concept": concept})
+
+
+def persist_feedback(mem: Any, cur: Any, student_id: str, assignment_id: str | None,
+                     result: fa.FeedbackResult) -> int | None:
+    """Log the Feedback Agent's LLM answer as ONE `coach`/`intervention` trace (IR-3, D-099).
+
+    Returns the new `trace_id`, or None when nothing was written: the answer did not come from the
+    LLM (the deterministic text is reproducible, so it needs no row), or a row for this
+    (attempt, commit) already exists. `intervention` is in `NON_MASTERY_KINDS`: this row can never
+    feed BKT. The write goes through `mem.log_trace` on `cur`'s connection, inside the caller's
+    transaction (no SQL INSERT here, no commit; invariant 2). The payload also carries
+    `addendum_markdown`, the model-only paragraph the hourly phase may post under the
+    deterministic text; it is stored already redacted and checked against the hidden tests."""
+    if not result.used_llm or result.input is None:
+        return None
+    inp = result.input
+    cur.execute("SELECT 1 FROM traces WHERE actor = 'coach' AND kind = 'intervention'"
+                " AND payload->>'agent' = %s AND payload->>'commit_sha' = %s"
+                " AND (payload->>'attempt_id')::bigint = %s", (fa.AGENT, inp.commit_sha,
+                                                              inp.attempt_id))
+    if cur.fetchone() is not None:
+        return None
+    payload = result.to_trace_payload()
+    payload["addendum_markdown"] = _checked_addendum(inp, result.output)
+    return mem.log_trace(student_id, "coach", "intervention", payload,
+                         assignment_id=assignment_id, concept_ids=list(inp.concepts),
+                         conn=cur.connection)
+
+
+def _checked_addendum(inp: fa.FeedbackInput, out: fa.FeedbackOutput | None) -> str | None:
+    """The model-only paragraph, redacted, or None if it cannot be shown safely."""
+    if out is None:
+        return None
+    hidden = pf.hidden_source_lines(inp.project_id) if inp.project_id else frozenset()
+    text = pf.redact(fa.render_addendum(inp, out), hidden)
+    try:
+        pf.assert_no_hidden_source(text, hidden)
+    except pf.HiddenSourceLeak:
+        return None
+    return text
+
+
+def find_feedback_addendum(cur: Any, attempt_id: int, commit_sha: str) -> str | None:
+    """The stored LLM paragraph for one (attempt, commit), or None. Read-only."""
+    cur.execute("SELECT payload->>'addendum_markdown' FROM traces"
+                " WHERE actor = 'coach' AND kind = 'intervention'"
+                " AND payload->>'agent' = %s AND payload->>'commit_sha' = %s"
+                " AND (payload->>'attempt_id')::bigint = %s AND payload->>'source' = %s"
+                " ORDER BY trace_id DESC LIMIT 1",
+                (fa.AGENT, commit_sha, attempt_id, fa.SOURCE_LLM))
+    row = cur.fetchone()
+    return row[0] if row and row[0] else None
 
 
 def load_assignment_inputs(cur: Any, assignment_id: str) -> tuple[dict, str | None]:

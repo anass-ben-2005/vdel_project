@@ -237,13 +237,19 @@ def _record_lint(conn, p, repo_dir: Path, status: str) -> None:
 def run(
     *, student: str | None = None, assignment: str | None = None,
     dry_run: bool = False, latest_only: bool = False, repo_for: dict,
-    checkout=checkout_commit, grade=grade_attempt, conn=None,
+    checkout=checkout_commit, grade=grade_attempt, conn=None, after_grade=None,
 ) -> dict:
     """Grade everything pending. `conn`: join a caller's transaction (tests; traces are
     append-only so a test must roll back rather than delete); None = production, where
     `grade_attempt` commits per commit. `checkout`/`grade` are injectable for the same
     reason. Returns a summary dict; never raises for a single bad commit (per-commit
-    isolation, same stance as collect_github's per-repo isolation)."""
+    isolation, same stance as collect_github's per-repo isolation).
+
+    `after_grade(pending, repo_dir, result)` (D-099), when given, is called for a commit that
+    graded with status `ok`, BEFORE the temporary checkout is deleted: it is the only moment the
+    student's file exists on disk, so it is where an agent can read it. Whatever it raises is
+    recorded in `summary["agent_errors"]` and never fails the grading. This module still imports
+    nothing from `agents/` (invariant 13): the hook is the caller's."""
     if conn is None:
         with db.cursor() as cur:
             pending, skipped = find_pending(cur, repo_for, student=student,
@@ -253,7 +259,7 @@ def run(
                                         assignment=assignment, latest_only=latest_only)
 
     summary = {"pending": len(pending), "graded": [], "failed": [], "no_repo": [],
-               "would_grade": [], **skipped}
+               "would_grade": [], "agent_errors": [], **skipped}
     for p in pending:
         label = f"attempt={p.attempt_id} ({p.student_id}/{p.assignment_id}) {p.sha[:10]}"
         if p.owner is None:
@@ -281,6 +287,12 @@ def run(
                 print(f"    {status.upper()}: {getattr(result, 'detail', None)}")
             if result.tests_total == 0 and status == "ok":
                 print("    WARNING: zero test rows -- this commit will be retried next run")
+            if after_grade is not None and status == "ok":
+                try:
+                    after_grade(p, repo_dir, result)     # repo_dir is removed in `finally`
+                except Exception as exc:  # noqa: BLE001 -- an agent must never fail the grading
+                    summary["agent_errors"].append((label, f"{type(exc).__name__}: {exc}"))
+                    print(f"  AGENT ERROR {label}: {type(exc).__name__}: {exc}")
         except Exception as exc:  # noqa: BLE001 -- one bad commit must not stop the rest
             summary["failed"].append((label, f"{type(exc).__name__}: {exc}"))
             print(f"  FAILED    {label}: {type(exc).__name__}: {exc}")

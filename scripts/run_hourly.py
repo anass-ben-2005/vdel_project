@@ -1,7 +1,8 @@
 """scripts/run_hourly.py -- the one command the hourly Windows task runs (D-091).
 
     python -m scripts.run_hourly [--roster PATH] [--dry-run] [--skip-network]
-                                 [--lookback-hours N]
+                                 [--lookback-hours N] [--with-llm]
+                                 [--llm-run-cap N] [--llm-daily-cap N]
 
 Two phases, in order, under one lock:
 
@@ -10,6 +11,12 @@ Two phases, in order, under one lock:
      48) that have no comment yet. The lookback is what keeps the backlog quiet: commits graded
      long ago are never posted by the task (post them by hand with `post_feedback --issue`), while
      a post that failed this hour is retried for two days.
+
+AGENTS (D-099). `--with-llm` is OFF by default and is NOT in the scheduled task's command: the task
+runs exactly what it ran before. When given, phase 1 calls the agents on each commit it grades
+(see `run_cycle`, with the same `--llm-run-cap` / `--llm-daily-cap`), and phase 2 ADDS the stored
+LLM paragraph under the deterministic comment, never in place of it. No stored paragraph, or one
+that would leak hidden test source, means the deterministic text alone.
 
 GITHUB WRITES. Phase 2 writes to GitHub ONLY when the environment variable
 `VDEL_ALLOW_GITHUB_WRITE=1` is set in the task's environment (and `--dry-run` is not given).
@@ -38,9 +45,11 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from agents.pipeline import find_feedback_addendum
 from scripts import run_cycle as rc
 from scripts.post_feedback import (
     GITHUB_WRITE_ENV_VAR,
+    HiddenSourceLeak,
     plan_issue_post,
     post_issue_feedback,
     recent_unposted,
@@ -92,8 +101,23 @@ def rotate_logs(log_dir: Path, now: datetime, keep_days: int = LOG_KEEP_DAYS) ->
     return removed
 
 
+def _plan(cur, attempt_id: int, sha: str, repo_for: dict, *, with_llm: bool, out):
+    """The post plan: deterministic text, plus the stored LLM paragraph under it when `with_llm`.
+    Any problem with the paragraph (none stored, hidden source in it, a read error) gives the
+    deterministic plan alone; the LLM text can add to a comment, never remove or block one."""
+    if with_llm:
+        try:
+            addendum = find_feedback_addendum(cur, attempt_id, sha)
+            if addendum:
+                return plan_issue_post(cur, attempt_id, sha, repo_for, addendum=addendum)
+        except HiddenSourceLeak:
+            out(f"    llm paragraph for attempt {attempt_id} commit {sha[:10]} dropped (it held "
+                "hidden test source); posting the deterministic text alone")
+    return plan_issue_post(cur, attempt_id, sha, repo_for)
+
+
 def _feedback_phase(roster: dict, *, write: bool, lookback_hours: int, gh, out,
-                    conn=None) -> int:
+                    conn=None, with_llm: bool = False) -> int:
     """Comment on the recently graded commits. Returns the number of failures. `conn`: a caller's
     transaction (tests), never committed, rolled back or closed here."""
     repo_for = roster_repo_for(roster)
@@ -110,8 +134,8 @@ def _feedback_phase(roster: dict, *, write: bool, lookback_hours: int, gh, out,
                 out(f"[{student}] feedback: nothing new in the last {lookback_hours} h")
                 continue
             for attempt_id, sha in todo:
-                plan = plan_issue_post(cur, attempt_id, sha, repo_for)
-                label = f"[{student}] attempt {attempt_id} commit {sha[:10]} -> " \
+                plan = _plan(cur, attempt_id, sha, repo_for, with_llm=with_llm, out=out)
+                label =f"[{student}] attempt {attempt_id} commit {sha[:10]} -> " \
                         f"{plan.owner}/{plan.repo}"
                 if not write:
                     note = f" (would be refused: {'; '.join(plan.problems)})" if plan.refused \
@@ -139,9 +163,12 @@ def _feedback_phase(roster: dict, *, write: bool, lookback_hours: int, gh, out,
 def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
         skip_network: bool = False, lookback_hours: int = DEFAULT_LOOKBACK_HOURS,
         log_dir: Path | None = None, now: datetime | None = None, gh=None,
-        collect=None, checkout=None, grade=None, out=None, conn=None) -> int:
+        collect=None, checkout=None, grade=None, out=None, conn=None,
+        with_llm: bool = False, llm_run_cap: int = rc.DEFAULT_LLM_RUN_CAP,
+        llm_daily_cap: int = rc.DEFAULT_LLM_DAILY_CAP, llm=None, ledger=None) -> int:
     """One hourly run. `collect` / `checkout` / `grade` / `gh` / `out` / `conn` are injectable for
-    tests (`conn`: one caller-owned transaction used by the cycle and the feedback phase)."""
+    tests (`conn`: one caller-owned transaction used by the cycle and the feedback phase); so are
+    `llm` and `ledger` (a `FakeLLM`, an in-memory `UsageLedger`)."""
     now = now or datetime.now(UTC)
     log_dir = Path(log_dir) if log_dir else DEFAULT_LOG_DIR
     tee = None
@@ -183,7 +210,9 @@ def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
             injected = {k: v for k, v in (("collect", collect), ("checkout", checkout),
                                           ("grade", grade)) if v is not None}
             cycle = rc.run_cycle(roster, dry_run=dry_run, skip_network=skip_network, out=out,
-                                 conn=conn, **injected)
+                                 conn=conn, with_llm=with_llm, llm_run_cap=llm_run_cap,
+                                 llm_daily_cap=llm_daily_cap, llm=llm, ledger=ledger,
+                                 **injected)
             if cycle.exit_code in (rc.EXIT_DB_DOWN, rc.EXIT_LOCKED):
                 return EXIT_DB_DOWN if cycle.exit_code == rc.EXIT_DB_DOWN else EXIT_LOCKED
 
@@ -191,7 +220,7 @@ def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
             out("")
             out(f"feedback by issue: {'WRITES ON' if write else 'writes off'}")
             failures = _feedback_phase(roster, write=write, lookback_hours=lookback_hours, gh=gh,
-                                       out=out, conn=conn)
+                                       out=out, conn=conn, with_llm=with_llm)
             code = EXIT_FAILED if (cycle.exit_code or failures) else EXIT_OK
             out(f"run_hourly done: cycle exit {cycle.exit_code}, feedback failures {failures} "
                 f"-> exit {code}")
@@ -212,11 +241,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="skip collect and grade (the feedback phase still runs)")
     ap.add_argument("--lookback-hours", type=int, default=DEFAULT_LOOKBACK_HOURS,
                     help="only comment on commits graded in the last N hours (default 48)")
+    rc.add_llm_arguments(ap)
     args = ap.parse_args(argv)
     with contextlib.suppress(AttributeError):
         sys.stdout.reconfigure(line_buffering=True)
     return run(roster_path=args.roster, dry_run=args.dry_run, skip_network=args.skip_network,
-               lookback_hours=args.lookback_hours)
+               lookback_hours=args.lookback_hours, with_llm=args.with_llm,
+               llm_run_cap=args.llm_run_cap, llm_daily_cap=args.llm_daily_cap)
 
 
 if __name__ == "__main__":

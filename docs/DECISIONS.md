@@ -4187,3 +4187,65 @@ Tests:       tests/test_template_commit.py (12): recognised from v8 only; a stud
              own push; commits, LOC, runs, gaps, watermark and dirty test; the trace filter; v6/v7 values do not depend on the
              rule; a stored v7 row is not rewritten; no feedback is selected, built or gathered for it and the first real
              comment does not say "keeps failing". With the v8 branch disabled 10 of the 12 fail.
+
+### D-099 -- the agents are wired into the hourly loop behind `--with-llm` (IR-1, IR-3, IR-4 of docs/agents.md section 11)
+Date:        2026-10-12
+Status:      DECIDED and implemented. Not committed. OFF by default; the scheduled task's command is unchanged.
+Authority:   Anas (the request to apply the integration requests; the Code Agent answer below is his). The two cap values
+             are his numbers; the arithmetic in CONFIRM 1 is mine.
+What:        (IR-1) `scripts/demo.py` reads `llm_correctness_opinion` on both lines (the lines were 273 and 288, not 267 and 282).
+             (IR-4a) `grade_collected.run(after_grade=None)`: for a commit that graded with status `ok`, the callable runs
+             BEFORE the temporary checkout is deleted (the only moment the student's file exists); whatever it raises goes to
+             `summary["agent_errors"]`, never to `summary["failed"]`. The module still imports nothing from `agents/` (inv. 13).
+             (IR-4b) `run_cycle` and `run_hourly`: `--with-llm` (default off), `--llm-run-cap` (default 10), `--llm-daily-cap`
+             (default 20); both caps count PROVIDER calls through `agents.budget.CallBudget` + `UsageLedger(.vdel/llm_usage.json)`.
+             One budget per cycle. `--dry-run`, `--skip-network` and a corrupt ledger file each call no agent (the last fails
+             CLOSED, with a line saying so). The hook (`run_cycle.AgentsHook`) is built per grade-stage connection, NOT with the
+             cycle's `conn` the IR sketch used (that is None in production), and runs in a SAVEPOINT, so a SQL error inside an
+             agent cannot abort the grading transaction. It runs the Feedback Agent ONLY (see CODE AGENT below).
+             (IR-3) `agents.pipeline.persist_feedback`: ONE `coach`/`intervention` trace per (attempt, commit), only when
+             `result.used_llm`, idempotent by a SELECT on (agent, commit_sha, attempt_id), written through `Memory.log_trace` on
+             the caller's connection. `memory/memory.py` is unchanged; `intervention` is in `NON_MASTERY_KINDS`, so BKT never reads
+             it. `run_agents_for_commit(persist=True)` still raises `IntegrationPending` (a test pins it): persistence is a step
+             the caller takes after the run, not a mode of the run.
+             Text posted to GitHub: the deterministic text stays the BASE. With `--with-llm`, `run_hourly` adds the stored
+             model-only paragraph ("More detail", from `feedback_agent.render_addendum`) UNDER it via
+             `plan_issue_post(..., addendum=)`; the marker stays last. No stored paragraph (rejected, failed, capped, an
+             `--with-llm` off run, a commit graded before the flag) or one that would leak hidden test source (the final guard
+             raises, `_plan` catches it) means the deterministic text alone. The paragraph is redacted and leak-checked when it
+             is stored AND again on the exact text sent.
+             The template push (D-098) never reaches an agent: `AgentsHook._run` returns before any read or call, and the posting
+             queries already exclude it.
+CAPS:        10 per run, 20 per day (his numbers). One commit now costs at most 4 provider calls (the Feedback Agent, two
+             `judge()` of up to 2 calls each, `agents/budget.py`), so a run of 10 is about two commits and a day of 20 about five.
+CODE AGENT:  DECIDED (Anas): its verdict is never persisted. Case that applies: the Feedback Agent does NOT need the Code Agent's
+             output (`gather_input` reads `test_results`, `diagnose` and the mastery slice through `cur`; the Code Agent was
+             only ever given a `DryRunMemory`, whose writes are discarded). So the hook does not run it: it passes no
+             `assignment` and no `code_path`, `run_agents_for_commit` marks the step `skipped` and no provider call is made
+             for it. `run_agents_for_commit` and the Code Agent itself are unchanged (the demo and the benchmark still use
+             them); only the cycle's hook leaves it out. Reversible by passing `assignment`/`code_path` again.
+Incident:    My first partial test run still contained `test_with_llm_is_reported_as_not_wired`, which calls
+             `run_cycle(with_llm=True)` with no fake. Harmless while the flag was a stub; with the wiring it went through the REAL
+             gateway: 2 provider calls on model `gpt-6.1-sol` were recorded in `.vdel/llm_usage.json` (the request said NO LIVE
+             CALL). The test is deleted (its job is done by tests/test_with_llm.py), the ledger file I created was removed, and
+             `tests/test_with_llm.py` now blocks every provider handler in an autouse fixture and points the default ledger path
+             at a temp file, with a regression test. I did not read the model's reply or the key setup. The real database was
+             not touched (D-064 counter: 0 connections to `vdel`).
+Tests:       tests/test_with_llm.py (24, fake LLM, no network): on makes exactly one provider call (the Feedback Agent; no
+             prompt carries a submission) and the log says `code_agent=skipped`; off writes nothing and prints nothing about the agents; the task
+             command files never mention the agents; on writes one trace and a second cycle none (no new call); persisting twice
+             writes one; a rejected answer, a provider outage, a daily cap reached, a run cap of 0, a corrupt ledger, a raising
+             agent and a SQL error in an agent each leave the grading and the cycle finished; mastery is equal with and without the
+             agents, the only extra trace is the coach row, and the wipe-and-replay proof matches; the template push reaches no
+             agent while the student's own commit in the same attempt does; `after_grade` sees the file and the directory is
+             gone afterwards; the posted comment has the deterministic text first, the paragraph under it, the marker last;
+             a leaking paragraph is dropped. Mutation-checked: removing the template check, the persist guard, the SAVEPOINT
+             rollback or the addendum each fails the matching test.
+
+### D-100 -- where the agents branch's decisions live
+Date:        2026-10-12
+Status:      DECIDED (a pointer, nothing else).
+Decision:    The decisions D-200..D-225 of the agents branch are in `docs/DECISIONS_AGENTS.md`, under their own numbers, not
+             copied here. They are append-only there. A reader of this file who meets "D-2xx" in a code comment (for example
+             D-200/D-201, the rename of the correctness score to `llm_correctness_opinion`) looks it up there. Decisions about
+             the integration of the agents into the main loop are numbered here (D-099 and up).

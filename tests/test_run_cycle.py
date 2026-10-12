@@ -222,12 +222,6 @@ def test_skip_network_skips_collect_and_grade_but_not_features(conn, tmp_path):
     assert a.graded == 0 and a.features == "written"
 
 
-def test_with_llm_is_reported_as_not_wired(conn, tmp_path):
-    make_student(conn, "_cyc_a")
-    _, lines = cycle(conn, FakeGitHub(tmp_path), ["_cyc_a"], with_llm=True)
-    assert any("NOT WIRED" in line for line in lines)
-
-
 def test_an_unreachable_database_exits_at_once_with_a_clear_message(monkeypatch, tmp_path):
     def down():
         raise psycopg2.OperationalError("could not connect to server: Connection refused")

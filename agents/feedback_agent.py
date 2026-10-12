@@ -241,6 +241,21 @@ def validate_output(out: FeedbackOutput, inp: FeedbackInput,
 
 # ---- Rendering ----------------------------------------------------------------------------
 
+def _model_lines(inp: FeedbackInput, out: FeedbackOutput) -> list[str]:
+    """The part of the message that is the model's: summary, next steps, the chosen reading (its
+    row comes from the table, not the model) and the AI-written disclaimer."""
+    lines = [out.summary.strip(), "", "What to check next:"]
+    lines += [f"{i}. {step.strip()}" for i, step in enumerate(out.what_to_check_next, 1)]
+    chosen = next((c for c in inp.candidates if c.resource_id == out.resource_id), None)
+    if chosen is not None:
+        where = f", {chosen.locator}" if chosen.locator else ""
+        link = f" {chosen.url}" if chosen.url else ""
+        lines += ["", f"Suggested reading: **{chosen.title}**{where}.{link}".rstrip()]
+    lines += ["", "_This note was written by an AI assistant from your check results. The "
+                  "checks, not this note, decide whether your code is correct._", ""]
+    return lines
+
+
 def render_markdown(inp: FeedbackInput, out: FeedbackOutput) -> str:
     """The message for the student. Facts (counts, the failed-check list, the resource row) are
     written by code from the data; only the summary and the next steps are the model's words."""
@@ -253,16 +268,14 @@ def render_markdown(inp: FeedbackInput, out: FeedbackOutput) -> str:
             lines.append(f"- `{pf.short_test_name(f.test_name)}`: "
                          f"{f.exception_type or 'check failed'}")
         lines.append("")
-    lines += [out.summary.strip(), "", "What to check next:"]
-    lines += [f"{i}. {step.strip()}" for i, step in enumerate(out.what_to_check_next, 1)]
-    chosen = next((c for c in inp.candidates if c.resource_id == out.resource_id), None)
-    if chosen is not None:
-        where = f", {chosen.locator}" if chosen.locator else ""
-        link = f" {chosen.url}" if chosen.url else ""
-        lines += ["", f"Suggested reading: **{chosen.title}**{where}.{link}".rstrip()]
-    lines += ["", "_This note was written by an AI assistant from your check results. The "
-                  "checks, not this note, decide whether your code is correct._", ""]
-    return "\n".join(lines)
+    return "\n".join(lines + _model_lines(inp, out))
+
+
+def render_addendum(inp: FeedbackInput, out: FeedbackOutput) -> str:
+    """Only the model's part (no header, no counts, no failed-check list), for posting UNDER the
+    deterministic text, which stays the base of the message (IR-3/IR-4, D-099)."""
+    return "\n".join(["**More detail** (written by an AI assistant)", "",
+                      *_model_lines(inp, out)])
 
 
 # ---- The run ------------------------------------------------------------------------------

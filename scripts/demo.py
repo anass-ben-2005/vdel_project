@@ -270,7 +270,7 @@ def beat6_code_agent(skip_llm: bool) -> BeatResult:
     )
     s = verdict.scores
     print(f"  trace_id={trace_id}")
-    print(f"  LLM correctness estimate (not authoritative)={s.correctness} "
+    print(f"  LLM correctness estimate (not authoritative)={s.llm_correctness_opinion} "
           f"approach={s.approach} "
           f"readability={s.readability} idiomatic={s.idiomatic}")
     print("  (correctness here is the model's reading of the code; correctness is decided "
@@ -285,7 +285,7 @@ def beat6_code_agent(skip_llm: bool) -> BeatResult:
     return BeatResult(
         passed=not evidence_failures,
         evidence=f"trace_id={trace_id}, "
-                 f"LLM correctness estimate (not authoritative)={s.correctness}, "
+                 f"LLM correctness estimate (not authoritative)={s.llm_correctness_opinion}, "
                  f"{quotes_checked} evidence quote(s), "
                  f"{len(evidence_failures or [])} evidence failure(s)",
     )

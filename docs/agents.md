@@ -446,7 +446,10 @@ Rules that hold everywhere (each is enforced by a test named in sections 4-9):
 
 ## 11. Integration requests (changes needed in files this branch must not edit)
 
-Each is something the main branch (or its owner) does when merging. Nothing here was applied.
+Each is something the main branch (or its owner) does when merging. When this section was written
+nothing was applied. **Applied 2026-10-12 (D-099 in `docs/DECISIONS.md`): IR-1, IR-3, IR-4.** IR-2 has
+nothing to apply yet; IR-5 and IR-6 hold. Where the sketches below differ from the code (the lines of
+IR-1, the connection used by the IR-4 hook), the code and D-099 are right.
 
 ### IR-1 `scripts/demo.py` lines 267 and 282: use the new field name
 
