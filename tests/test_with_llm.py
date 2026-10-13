@@ -29,6 +29,7 @@ from scripts import run_hourly as rh
 from scripts.prove_event_sourcing import prove
 from scripts.seed_data import roster_repo_for
 from system import db
+from tests.support import vdel_dir_state
 from tests.test_run_cycle import ASSIGNMENT, FakeGitHub, insert_commit, make_student, roster_for
 from tests.test_template_commit import ASG as TPL_ASG
 from tests.test_template_commit import S as TPL_STUDENT
@@ -356,6 +357,7 @@ def test_forgetting_the_fake_cannot_reach_a_provider_in_this_module(conn, tmp_pa
     and the flag on, the call is stopped at the provider handler, the cycle still finishes, and
     nothing is written to the repository's .vdel/."""
     from system import llm as gateway
+    vdel_before = vdel_dir_state()
     for handler in gateway._PROVIDER_HANDLERS.values():
         with pytest.raises(AssertionError, match="LIVE PROVIDER CALL"):
             handler("prompt", 0.0, "model")
@@ -366,7 +368,7 @@ def test_forgetting_the_fake_cannot_reach_a_provider_in_this_module(conn, tmp_pa
                           checkout=gh.checkout, out=lines.append, with_llm=True)   # no llm=
     assert result.exit_code == 0 and result.students[0].graded == 1
     assert coach_traces(conn, "_cyc_a") == []
-    assert not (Path(__file__).resolve().parent.parent / ".vdel").exists()
+    assert vdel_dir_state() == vdel_before
 
 
 def test_dry_run_and_skip_network_call_no_agent(conn, tmp_path):

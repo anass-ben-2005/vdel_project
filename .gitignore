@@ -31,26 +31,25 @@ SETUP.md
 EXECUTION.md
 .claude/
 
-# docs/ is ignored wholesale EXCEPT the three files CLAUDE.md's own documentation contract
-# (CLAUDE.md §11) calls "Permanent": DECISIONS.md (the append-only viva answer sheet),
-# STATUS.md (the DoD-evidence board), and explanation.md (meant to update in the same
-# commit as the code it describes). Until 2026-08-31 this line ignored the whole directory,
-# which meant those three "Permanent" files had never actually entered git history since
-# acffca6 -- fixed same day (see DECISIONS.md). docs/HANDOFF.md stays ignored: it's
-# explicitly "One session; overwritten," so tracking it would only add churn, not history
-# worth having. docs/reading/ stays ignored too: a disposable compression cache, "Until the
-# code changes," not a permanent record.
-docs/*
-!docs/DECISIONS.md
-!docs/STATUS.md
-!docs/explanation.md
-# agents branch deliverables (docs/AGENTS_OVERNIGHT_REPORT.md stays local on purpose)
-!docs/agents.md
-!docs/DECISIONS_AGENTS.md
-!docs/resources_template.csv
-!docs/resources_review.md
-# operating notes for the hourly task (D-091); the batch report stays local on purpose
-!docs/OPERATIONS.md
+*.bak
+
+# docs/ is TRACKED (D-105). Until then the directory was ignored wholesale with a short allow-list,
+# so most documents never entered git. These stay local on purpose; each is either personal,
+# rewritten every session, or a disposable cache:
+#   STATUS.md            the author's milestone board with pasted run output (note: it was already
+#                        added to git while it was allow-listed; ignoring it does not untrack it)
+#   FRAMEWORK_STATUS.md  the author's private framework notes
+#   HANDOFF.md           one session, overwritten at every session end
+#   reading/             compressed reads, valid "until the code changes"
+#   *OVERNIGHT_REPORT.md batch reports kept local on purpose (agents branch, v1 batch)
+#   design/              the redesign document, listed as "not meant for the public repo" above
+# docs/FINALIZE_PROGRESS.md is deliberately NOT here: it is how a new session resumes the work.
+docs/STATUS.md
+docs/FRAMEWORK_STATUS.md
+docs/HANDOFF.md
+docs/reading/
+docs/*OVERNIGHT_REPORT.md
+docs/design/
 
 # Local scratch at the repo root: one-off DB queries and a manual Code Agent driver.
 # Neither is part of any deliverable, and neither is worth promoting to scripts/ -- they

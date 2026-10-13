@@ -403,3 +403,29 @@ template push, gap lines not found, judged text above `--code-agent-max-chars` (
 The report marks a row `tests pass, approach <= 2`: every check passed and the judge scored the approach 2
 or lower. Those rows are the ones to read first. The Code Agent has not been measured against labels on
 `weather_etl` (there are none); do not act on a score.
+
+## 15. Is the machine ready? The doctor, and recording a delivery in the roster (D-105)
+
+```powershell
+# read-only: Python, Docker and the grader image, the database and its migrations, the GitHub token
+# (name) and its scopes, the roster, open attempts the roster cannot reach, which LLM keys exist
+# (names), the scheduled task and the flags it runs with
+python -m scripts.doctor
+python -m scripts.doctor --no-network      # skip the single GET /user that reads the token's scopes
+```
+
+`FAIL` means something stops the system (exit code 1); `WARN` is something to read. The doctor never
+prints a token or a key, only their names and the scope names GitHub returns.
+
+After `deliver_next_attempt --apply` the roster must point at the new repo, or the next cycle never sees
+it (the cycle now logs `WARN  open attempt N of A ...` when that happens). The delivery prints the exact
+command; run it WITHOUT `--yes` first to see the diff, then with it:
+
+```powershell
+python -m scripts.roster_apply --student X --assignment weather_etl_extract --owner OWNER --repo NEW_REPO
+python -m scripts.roster_apply --student X --assignment weather_etl_extract --owner OWNER --repo NEW_REPO --yes
+```
+
+It keeps `config\roster.yaml.<UTC time>.bak`, changes only that row's `owner` and `repo` (comments,
+line endings and `released_at` stay), and refuses an ambiguous target or a credential. A row that does not
+exist yet also needs `--released-at <the real date the work began>`.

@@ -439,8 +439,11 @@ def run(*, student: str, attempt_no: int, project: str | None = None,
         repo_name: str | None = None, owner: str | None = None, private: bool = True,
         dry_run: bool = False, update_roster: bool = True, roster_path: Path = ROSTER,
         assume_yes: bool = False, gh=None, remote_base: str | None = None,
-        confirm=input, conn=None, only_assignment: str | None = None) -> dict:
-    """`only_assignment` (D-090): render, record and register ONE assignment only -- the repo of
+        confirm=input, conn=None, only_assignment: str | None = None,
+        next_hint: str | None = None) -> dict:
+    """`next_hint` (D-105): the "Next:" text printed after a push; None prints the default, ""
+    prints nothing.
+    `only_assignment` (D-090): render, record and register ONE assignment only -- the repo of
     attempt N+1 of a single stage (scripts/deliver_next_attempt.py); None keeps the whole-project
     behaviour. `gh`/`remote_base`/`confirm`/`conn` are injectable for tests; production leaves them
     None. `remote_base` replaces https://github.com (tests push to a local bare repo);
@@ -576,8 +579,14 @@ def run(*, student: str, attempt_no: int, project: str | None = None,
                         + "  (previous kept as .bak)")
             else:
                 _say(5, "roster: skipped (--no-roster)")
-            print(f"\nNext: python -m scripts.seed_data ; python -m scripts.collect ; "
-                  f"python -m scripts.grade_collected --student {student}")
+            # D-105: the old hint sent the reader to `grade_collected`, which runs the student's
+            # code on this PC unless VDEL_GRADING_SANDBOX=docker is set.
+            if next_hint != "":
+                print(next_hint or (
+                    f"\nNext: python -m scripts.seed_data ; python -m scripts.collect ; then the "
+                    f"scheduled task, or `python -m scripts.run_cycle --student {student}` with "
+                    f"VDEL_GRADING_SANDBOX=docker set (never run grade_collected by hand outside "
+                    f"the Docker sandbox)."))
             return out
         finally:
             _remove_tree(tmp)

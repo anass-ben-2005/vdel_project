@@ -1,30 +1,36 @@
-# Core runtime. Floors, not pins: the previous hard pins (psycopg2-binary==2.9.9,
-# scipy==1.11.4) have no wheels for Python 3.13 and made `pip install` unresolvable.
-psycopg2-binary>=2.9.10
-pydantic>=2.9
-pyyaml>=6.0.2
-python-dotenv>=1.0.1
-requests>=2.32
-scipy>=1.14.1
-matplotlib>=3.9
+# Core runtime, pinned (D-105) to the versions installed on the development PC (Python 3.13.0,
+# Windows 11) on 2026-10-13, where the suite passed. Earlier versions of this file used floors
+# because the first hard pins (psycopg2-binary==2.9.9, scipy==1.11.4) had no wheels for Python 3.13;
+# every pin below is a version that was installed and run there, so each has one.
+psycopg2-binary==2.9.12
+pydantic==2.13.4
+pyyaml==6.0.2
+python-dotenv==1.2.1
+requests==2.32.3
+scipy==1.14.1
+matplotlib==3.9.2
 
-# M3's live providers (system/llm.py). Imported locally inside _call_anthropic /
-# _call_nvidia / _call_google, not at module top, so nothing else in the repo needs any of
-# them installed -- see the gateway's own docstring. Floor of 1.0 for openai: that's when the
-# `OpenAI()` client class and `chat.completions.create` shape this file calls against became
-# stable. Floor of 2.18 for google-genai: the version this branch's exact call shape
-# (client.models.generate_content with a typed GenerateContentConfig) was verified against
-# by installing and introspecting the real package, 2026-08-19 (D-032) -- not a guess.
-anthropic>=0.40
-openai>=1.0  # D-031: NVIDIA's endpoint is OpenAI-compatible, reuses this SDK
-google-genai>=2.18  # D-032: Google AI Studio / Gemini, supersedes D-023's removal
+# chardet is not used by this repo: sqlfluff pulls it in. requests 2.32.3 only accepts chardet < 6,
+# and a chardet 7.x (7.4.3 was installed here) prints "RequestsDependencyWarning: urllib3 ... or
+# chardet ... doesn't match a supported version" on every import of requests. Verified in a
+# throwaway venv with requests 2.32.3, urllib3 2.2.3, charset-normalizer 3.4.0, sqlfluff 4.2.2 and
+# chardet 5.2.0: `python -W error -c "import requests, sqlfluff"` is clean and `pip check` finds
+# nothing broken. On a machine that already has chardet 7: pip install "chardet<6".
+chardet>=5.2,<6
 
-# Deterministic tools used by V2 (engineering discipline) and, later, the Code Agent.
-ruff>=0.6
-sqlfluff>=3.1
+# M3's live providers (system/llm.py). Imported locally inside the provider handlers, so nothing
+# else in the repo needs any of them. google-genai 2.18 is the version the call shape was verified
+# against (D-032); openai is also used for NVIDIA's OpenAI-compatible endpoint (D-031).
+anthropic==0.121.0
+openai==3.3.0
+google-genai==2.18.1
+
+# Deterministic tools used by V2 (engineering discipline) and the Code Agent.
+ruff==0.16.1
+sqlfluff==4.2.2
 
 # Tests
-pytest>=8.3
+pytest==9.1.1
 
 # NOTE: Airflow is deliberately NOT here. It constrains Python to <3.12 and pins
 # conflicting versions of pydantic/psycopg2. See requirements-airflow.txt.

@@ -19,7 +19,7 @@ from agents import fake_llm as fl
 from scripts import llm_first_call as fc
 from system import db
 from system import llm as gateway
-from tests.support import ensure_variant
+from tests.support import ensure_variant, vdel_dir_state
 from tests.test_template_commit import ASG as TPL_ASG
 from tests.test_template_commit import S as TPL_STUDENT
 from tests.test_template_commit import delivered
@@ -248,6 +248,7 @@ def test_a_provider_failure_is_reported_not_raised(world):
 def test_it_writes_nothing_anywhere(world, tmp_path, monkeypatch):
     conn, cur, aid = world
     before = counts(cur)
+    vdel_before = vdel_dir_state()
     monkeypatch.chdir(tmp_path)
     go(cur, fake(), attempt_id=aid)
     go(cur, fl.FakeLLM([fl.invalid_json(), fl.invalid_json()]), attempt_id=aid)
@@ -255,7 +256,7 @@ def test_it_writes_nothing_anywhere(world, tmp_path, monkeypatch):
     cur.execute("SELECT count(*) FROM traces WHERE actor = 'coach'")
     assert cur.fetchone()[0] == 0
     assert list(tmp_path.iterdir()) == []                                 # no .vdel ledger, no file
-    assert not (Path(__file__).resolve().parent.parent / ".vdel").exists()
+    assert vdel_dir_state() == vdel_before        # a real ledger may exist; this run left it alone
     assert conn.get_transaction_status() is not None
 
 

@@ -25,6 +25,7 @@ from agents.budget import (
     model_counts,
 )
 from system import llm
+from tests.support import vdel_dir_state
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -199,10 +200,11 @@ def test_two_budget_objects_over_one_file_share_the_day(tmp_path):
 
 
 def test_the_default_ledger_path_is_gitignored_and_nothing_was_created_there():
+    before = vdel_dir_state()
     assert Path(".vdel") / "llm_usage.json" == DEFAULT_LEDGER_PATH
     lines = {ln.strip() for ln in (REPO / ".gitignore").read_text(encoding="utf-8").splitlines()}
     assert ".vdel/" in lines
-    assert not (REPO / ".vdel").exists()
+    assert vdel_dir_state() == before     # a real ledger may exist; this test changes nothing
 
 
 def test_summary_is_json():

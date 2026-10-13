@@ -145,6 +145,52 @@ def _count(cur, table: str, student_id: str) -> int:
     return cur.fetchone()[0]
 
 
+def roster_warnings(cur, student_id: str, repo_for: dict) -> list[str]:
+    """One line per OPEN attempt of the student that the roster cannot reach (D-105).
+
+    An open attempt (`submitted_at IS NULL`) whose repo is not in the roster is never collected
+    and so never graded: no error, no pending commit, no log line. That is how attempt 3 of
+    weather_etl_extract sat unnoticed after its delivery. Two cases are reported:
+      * no roster row for (student, assignment) at all;
+      * attempt 2 or later whose roster repo is not the one `deliver_next_attempt` names for that
+        attempt (the roster still points at an earlier attempt's repo). Attempt 1 is not compared:
+        its repo predates the delivery naming rule, so a mismatch there proves nothing.
+    Read-only. A report, never an error: a student can legitimately have an open attempt that has
+    not been delivered yet."""
+    from scripts.deliver_next_attempt import delivery_repo_name
+
+    cur.execute("SELECT assignment_id, attempt_no, project_id FROM attempts"
+                " WHERE student_id = %s AND submitted_at IS NULL"
+                " ORDER BY assignment_id, attempt_no", (student_id,))
+    lines = []
+    for assignment_id, attempt_no, project_id in cur.fetchall():
+        entry = repo_for.get((student_id, assignment_id))
+        if entry is None:
+            lines.append(f"open attempt {attempt_no} of {assignment_id} has no roster repo: "
+                         "nothing is collected or graded for it "
+                         "(not delivered yet, or scripts.roster_apply adds the row)")
+            continue
+        if attempt_no >= 2 and project_id:
+            expected = delivery_repo_name(project_id, student_id, assignment_id, attempt_no)
+            if entry[1] != expected:
+                lines.append(f"open attempt {attempt_no} of {assignment_id}: the roster repo is "
+                             f"{entry[0]}/{entry[1]} but the delivery names {expected}; commits "
+                             "pushed to the new repo are not collected until the roster is updated")
+    return lines
+
+
+def _warn_unrostered(conn, student_id: str, repo_for: dict, out) -> None:
+    try:
+        with _unit(conn, "roster_check") as c:
+            lines = roster_warnings(c.cursor(), student_id, repo_for)
+    except Exception as exc:  # noqa: BLE001 -- a diagnostic must never stop a cycle
+        out(f"  WARN      roster check could not run: {type(exc).__name__}: "
+            f"{str(exc).strip()[:200]}")
+        return
+    for line in lines:
+        out(f"  WARN      {line}")
+
+
 def _needs_features(cur, student_id: str) -> bool:
     """True when the student has activity and no learner_features row sits at its watermark.
 
@@ -569,6 +615,7 @@ def _run_student(sid, repos, repo_for, mem, conn, skip_network, dry_run,
     next stage still runs; nothing here can stop another student."""
     out(f"[{sid}]")
     res = StudentResult(sid)
+    _warn_unrostered(conn, sid, repo_for, out)
     stages = []
     if not skip_network:
         stages.append(("collect", lambda: _stage_collect(
