@@ -12,6 +12,8 @@ from pathlib import Path
 
 import yaml
 
+from config._loader import STATUSES, is_reviewed, read_versioned
+
 JUDGING_PATH = Path(__file__).resolve().parent / "judging.yaml"
 
 # The rubric's four criteria, in order. Duplicated from agents/prompts.py on purpose (config/ does
@@ -46,7 +48,7 @@ def _criteria(raw: object, where: str) -> tuple[str, ...]:
     return tuple(c for c in ALL_CRITERIA if c in raw)         # canonical order
 
 
-STATEMENT_STATUSES = ("draft", "reviewed")
+STATEMENT_STATUSES = STATUSES
 
 
 def _statement(raw: object, where: str) -> tuple[str | None, str | None, str | None]:
@@ -65,7 +67,7 @@ def _statement(raw: object, where: str) -> tuple[str | None, str | None, str | N
         raise JudgingError(f"{where}: statement text must be a non-empty string")
     if status not in STATEMENT_STATUSES:
         raise JudgingError(f"{where}: statement status must be one of {list(STATEMENT_STATUSES)}")
-    return (text.strip(), status, None) if status == "reviewed" else (None, status, text.strip())
+    return (text.strip(), status, None) if is_reviewed(status) else (None, status, text.strip())
 
 
 def _entry(raw: object, assignment_id: str | None, fallback: Judging | None) -> Judging:
@@ -81,9 +83,7 @@ def _entry(raw: object, assignment_id: str | None, fallback: Judging | None) -> 
 
 @lru_cache(maxsize=1)
 def _load(path: str) -> tuple[Judging, dict[str, Judging]]:
-    data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-    if data.get("version") != 1:
-        raise JudgingError("judging.yaml: version must be 1")
+    data = read_versioned(path, "judging.yaml", JudgingError)
     default = _entry(data.get("default") or {}, None, None)
     assignments = {aid: _entry(raw, aid, default)
                    for aid, raw in (data.get("assignments") or {}).items()}

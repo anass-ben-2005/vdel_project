@@ -18,10 +18,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-import yaml
+from config._loader import STATUSES, is_reviewed, read_versioned
 
 CHECKS_PATH = Path(__file__).resolve().parent / "checks.yaml"
-STATUSES = ("draft", "reviewed")
 MAX_DESCRIPTION_CHARS = 400
 
 # The stored form of a hidden test's name (assessment/test_runner.py::_normalise_test_name).
@@ -48,7 +47,7 @@ class Check:
 
     @property
     def reviewed(self) -> bool:
-        return self.status == "reviewed"
+        return is_reviewed(self.status)
 
 
 def description_problems(text: object) -> list[str]:
@@ -87,9 +86,7 @@ def _entry(assignment_id: str, raw: object) -> Check:
 
 @lru_cache(maxsize=1)
 def _load(path: str) -> dict[str, tuple[Check, ...]]:
-    data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-    if data.get("version") != 1:
-        raise ChecksError("checks.yaml: version must be 1")
+    data = read_versioned(path, "checks.yaml", ChecksError)
     out: dict[str, tuple[Check, ...]] = {}
     for assignment_id, rows in (data.get("assignments") or {}).items():
         if not isinstance(rows, list):
