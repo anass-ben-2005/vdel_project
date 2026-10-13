@@ -14,6 +14,8 @@ students:
   - student_id: anas
     github_username: CHANGE_ME        # your real GitHub login
     cohort: vdel-2026
+    # ai_notes: false                 # opt this student out of every AI note (docs/PILOT.md);
+    #                                   any value but true, or a missing key, is read as written there
 
 assignments:
   - assignment_id: CHANGE_ME          # e.g. kaggle-pipeline

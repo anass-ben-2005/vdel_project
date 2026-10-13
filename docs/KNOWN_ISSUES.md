@@ -207,7 +207,16 @@ read with a read-only `SELECT` on that day.
   `enabled: true` only if the gate opens.
 - **Recorded.** D-109.
 
-### 23. Fixed while writing this file
+### 23. The pilot role has never been executed, and consent is not written down
+- **Impact.** `sql/pilot/vdel_cycle_role.sql` is derived from the code and checked against it by a test, but no
+  PostgreSQL ever ran it, so a syntax or interpolation error would first show up when you apply it.
+  Consent, retention and deletion of what is sent to an AI provider are not written anywhere; the student
+  notice informs, it does not obtain consent. Students delivered before the notice existed were not shown it.
+- **Workaround.** Apply the role to a copy first (`docs/PILOT.md` section 2); have the notice wording and the
+  consent route confirmed by the course author and whoever owns data protection before a pilot of 3 to 5.
+- **Recorded.** D-110.
+
+### 24. Fixed while writing this file
 - `RequestsDependencyWarning` on every import: a stray `chardet` 7.x with `requests` 2.32.3.
   `requirements.txt` now pins `chardet>=5.2,<6`; on a machine that already has 7.x run
   `pip install "chardet<6"` (the environment was not changed by this work).

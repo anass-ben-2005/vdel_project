@@ -26,6 +26,9 @@ status. Decisions D-200 and up (the agents branch) are in
   with no correctness opinion and no reference; the benchmark keeps both), an instructor section "correct but
   approach <= 2" in `scripts/code_agent_report.py`, and the "Going further" section built, disabled and locked
   behind a benchmark-agreement gate that the one real result does not meet.
+- **D-110** Stage 6: a non-owner database role for the hourly task (a proposal, not applied), the student data
+  notice in every `ASSIGNMENT.md`, a fail-closed per-student opt-out (`ai_notes` in the roster), and the
+  `--ab-llm` experiment with a read-only `scripts/ab_report.py`; `docs/PILOT.md`.
 - Later stages of the branch (handoff documentation, authoring scaffolding, agents v2, pilot preparation)
   add their own entries; see [docs/FINALIZE_PROGRESS.md](docs/FINALIZE_PROGRESS.md).
 

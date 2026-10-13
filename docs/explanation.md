@@ -2238,6 +2238,15 @@ production` and `agent: code_agent_v4` only in that mode. `AgentsHook._code` wit
 `config.judging.post_review()` and the `summary.json` files of real benchmark runs); no other module imports
 it.
 
+### 7.26 Pilot preparation: `agents/ab.py`, the opt-out, the notice (D-110)
+
+`agents/ab.py` holds `arm_for` (a hash of attempt and commit) and `record_arm` (one `ab_assignment` trace per
+commit with a failing check, written through the memory door). `AgentsHook._feedback` calls it when `ab` is on
+and returns early for the control arm. `scripts/ab_report.py` scores each assigned commit by the graded pushes
+until the attempt froze. `rc.ai_opt_out(roster)` returns the students whose `ai_notes` is not `true`; the hook's
+`_gate` and the hourly feedback phase both honour it. `scripts/render_student_repo.DATA_NOTICE` is appended to
+`ASSIGNMENT.md`. `sql/pilot/vdel_cycle_role.sql` is read only by `tests/test_pilot.py`.
+
 ## 8. The twelve non-negotiable invariants
 
 From `CLAUDE.md` §7, and how each one is actually enforced (not just stated) in this

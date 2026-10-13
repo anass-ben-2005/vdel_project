@@ -125,7 +125,8 @@ def _plan(cur, attempt_id: int, sha: str, repo_for: dict, *, with_llm: bool, out
     return plan_issue_post(cur, attempt_id, sha, repo_for)
 
 
-def _refusal(with_llm: bool, with_code_agent: bool, env, agents_v2: bool = False) -> str | None:
+def _refusal(with_llm: bool, with_code_agent: bool, env, agents_v2: bool = False,
+             ab_llm: bool = False) -> str | None:
     """Why this run must not start, or None. Checked before the lock, the database or any work.
 
     * `--with-code-agent` needs `--with-llm` (the Code Agent is a second agent of the same hook).
@@ -136,6 +137,8 @@ def _refusal(with_llm: bool, with_code_agent: bool, env, agents_v2: bool = False
         return "--with-code-agent runs only together with --with-llm."
     if agents_v2 and not with_llm:
         return "--agents-v2 runs only together with --with-llm."
+    if ab_llm and not with_llm:
+        return "--ab-llm runs only together with --with-llm."
     if with_llm and not (env.get("LLM_PROVIDER") or "").strip():
         return ("--with-llm needs LLM_PROVIDER to be set (for the scheduled task: register it with "
                 "-WithLlm, which sets it for the task only). The gateway's default provider is not "
@@ -168,13 +171,15 @@ def _feedback_phase(roster: dict, *, write: bool, lookback_hours: int, gh, out,
         conn = db._open()
     try:
         cur = conn.cursor()
+        opted_out = rc.ai_opt_out(roster)               # D-110: no stored AI paragraph for them
         for student in students:
+            use_llm = with_llm and student not in opted_out
             todo = recent_unposted(cur, student, lookback_hours)
             if not todo:
                 out(f"[{student}] feedback: nothing new in the last {lookback_hours} h")
                 continue
             for attempt_id, sha in todo:
-                plan = _plan(cur, attempt_id, sha, repo_for, with_llm=with_llm, out=out,
+                plan = _plan(cur, attempt_id, sha, repo_for, with_llm=use_llm, out=out,
                              agents_v2=agents_v2)
                 label =f"[{student}] attempt {attempt_id} commit {sha[:10]} -> " \
                         f"{plan.owner}/{plan.repo}"
@@ -208,7 +213,7 @@ def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
         with_llm: bool = False, llm_run_cap: int = rc.DEFAULT_LLM_RUN_CAP,
         llm_daily_cap: int = rc.DEFAULT_LLM_DAILY_CAP, llm=None, ledger=None,
         with_code_agent: bool = False, code_prompt_cap: int = rc.DEFAULT_CODE_PROMPT_CAP,
-        env=None, agents_v2: bool = False) -> int:
+        env=None, agents_v2: bool = False, ab_llm: bool = False) -> int:
     """One hourly run. `collect` / `checkout` / `grade` / `gh` / `out` / `conn` are injectable for
     tests (`conn`: one caller-owned transaction used by the cycle and the feedback phase); so are
     `llm` and `ledger` (a `FakeLLM`, an in-memory `UsageLedger`) and `env` (the environment checked
@@ -228,9 +233,9 @@ def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
         out(f"run_hourly {now:%Y-%m-%d %H:%M} UTC  {'DRY-RUN' if dry_run else 'LIVE'}"
             f"{', network skipped' if skip_network else ''}"
             f"{', agents ON' if with_llm else ''}{' + Code Agent' if with_code_agent else ''}"
-            f"{' + v2' if agents_v2 else ''}")
+            f"{' + v2' if agents_v2 else ''}{' + A/B' if ab_llm else ''}")
         refusal = _refusal(with_llm, with_code_agent, os.environ if env is None else env,
-                           agents_v2)
+                           agents_v2, ab_llm)
         if refusal:
             out(f"REFUSED: {refusal}")
             out("Nothing was collected, graded or posted in this run, so nothing was half-done. "
@@ -268,6 +273,7 @@ def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
                                  conn=conn, with_llm=with_llm, llm_run_cap=llm_run_cap,
                                  llm_daily_cap=llm_daily_cap, llm=llm, ledger=ledger,
                                  with_code_agent=with_code_agent, agents_v2=agents_v2,
+                                 ab_llm=ab_llm,
                                  code_prompt_cap=code_prompt_cap, **injected)
             if cycle.exit_code in (rc.EXIT_DB_DOWN, rc.EXIT_LOCKED):
                 return EXIT_DB_DOWN if cycle.exit_code == rc.EXIT_DB_DOWN else EXIT_LOCKED
@@ -306,7 +312,7 @@ def main(argv: list[str] | None = None) -> int:
                lookback_hours=args.lookback_hours, with_llm=args.with_llm,
                llm_run_cap=args.llm_run_cap, llm_daily_cap=args.llm_daily_cap,
                with_code_agent=args.with_code_agent, code_prompt_cap=args.code_agent_max_chars,
-               agents_v2=args.agents_v2)
+               agents_v2=args.agents_v2, ab_llm=args.ab_llm)
 
 
 if __name__ == "__main__":

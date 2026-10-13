@@ -484,3 +484,13 @@ nothing**. `config/judging.yaml` has `post_review: {enabled: false, min_benchmar
 set `enabled: true` it refuses until a real benchmark result (section 13) reaches 80% exact agreement overall
 and on approach and readability. The result recorded on 2026-10-12 has 60% on approach, so it stays refused.
 Turning it on needs a person to write the posting step too: nothing calls the module today.
+
+## 17. Pilot preparation (D-110)
+
+`docs/PILOT.md` has the checklist, the database role (not applied), the student notice and opting a student out
+(`ai_notes: false` in the roster), and the A/B experiment:
+
+```powershell
+python -m scripts.run_hourly --with-llm --ab-llm     # half of the failing commits get the deterministic text alone
+python -m scripts.ab_report                          # read-only: commits-to-pass per arm, descriptive only
+```

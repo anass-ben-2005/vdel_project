@@ -230,10 +230,12 @@ class AgentsHook:
 
     def __init__(self, llm, budget: CallBudget, mem, out, daily_cap: int, *,
                  code_agent: bool = False, code_prompt_cap: int = DEFAULT_CODE_PROMPT_CAP,
-                 agents_v2: bool = False):
+                 agents_v2: bool = False, opt_out=frozenset(), ab: bool = False):
         self.llm, self.budget, self.mem, self.out, self.daily_cap = llm, budget, mem, out, daily_cap
         self.code_agent, self.code_prompt_cap = code_agent, code_prompt_cap
         self.agents_v2 = agents_v2             # D-108: the v2 agents
+        self.opt_out = frozenset(opt_out)      # D-110: students who asked for no AI notes
+        self.ab = ab                           # D-110: the A/B arms of the Feedback Agent
 
     def today(self) -> str:
         return f"calls today: {self.budget.ledger.day_total()}/{self.daily_cap}"
@@ -276,6 +278,8 @@ class AgentsHook:
 
     def _gate(self, cur, p, result) -> str | None:
         """The reason NO agent runs on this commit, or None."""
+        if p.student_id in self.opt_out:                      # D-110: nothing is sent, ever
+            return "student opted out of AI notes (ai_notes in the roster), no agent"
         if pf.is_template_commit(cur, p.sha):                 # D-098: not a student action
             return "template push, no agent"
         if not result.tests_total:
@@ -283,6 +287,14 @@ class AgentsHook:
         return None
 
     def _feedback(self, cur, p, repo_dir=None) -> None:
+        if self.ab:
+            from agents import ab
+            arm = ab.record_arm(self.mem, cur, p.student_id, p.assignment_id, p.attempt_id, p.sha)
+            if arm == ab.CONTROL:
+                return self._say(p, "ab arm=control: the deterministic text only, no agent, no "
+                                    "call")
+            if arm is not None:
+                self._say(p, f"ab arm={arm}")
         if self.agents_v2:
             return self._feedback_v2(cur, p, repo_dir)
         # No assignment and no code_path: the pipeline marks the Code Agent step `skipped` and makes
@@ -371,8 +383,19 @@ class AgentsHook:
                      f"({self.today()})")
 
 
+def ai_opt_out(roster: dict) -> frozenset:
+    """The students who must get NO AI note (D-110). A student listed in the roster with `ai_notes`
+    set to anything but `true` is opted out, and so is one whose value is a string like "off": the
+    switch FAILS CLOSED, because a value nobody understood must not send a student's code anywhere.
+    No `ai_notes` key means the instructor's settings apply (AI notes on, when the agents are)."""
+    return frozenset(s["student_id"] for s in (roster.get("students") or [])
+                     if isinstance(s, dict) and "ai_notes" in s and s["ai_notes"] is not True
+                     and s.get("student_id"))
+
+
 def _make_hook(llm, run_cap, daily_cap, ledger, mem, out, *, code_agent_on=False,
-               code_prompt_cap=DEFAULT_CODE_PROMPT_CAP, agents_v2=False) -> AgentsHook | None:
+               code_prompt_cap=DEFAULT_CODE_PROMPT_CAP, agents_v2=False, opt_out=frozenset(),
+               ab=False) -> AgentsHook | None:
     """None (with the reason printed) when the agents cannot be set up: the cycle goes on without
     them. A bad ledger file fails CLOSED: unknown usage means no spending."""
     try:
@@ -386,7 +409,8 @@ def _make_hook(llm, run_cap, daily_cap, ledger, mem, out, *, code_agent_on=False
             f"{str(exc).strip()[:200]})")
         return None
     return AgentsHook(llm, budget, mem, out, daily_cap, code_agent=code_agent_on,
-                      code_prompt_cap=code_prompt_cap, agents_v2=agents_v2)
+                      code_prompt_cap=code_prompt_cap, agents_v2=agents_v2, opt_out=opt_out,
+                      ab=ab)
 
 
 # --- plan mode ----------------------------------------------------------------------------------
@@ -592,7 +616,8 @@ def run_cycle(roster: dict, *, student: str | None = None, dry_run: bool = False
               out=print, llm_run_cap: int = DEFAULT_LLM_RUN_CAP,
               llm_daily_cap: int = DEFAULT_LLM_DAILY_CAP, llm=None, ledger=None,
               with_code_agent: bool = False, code_prompt_cap: int = DEFAULT_CODE_PROMPT_CAP,
-              plan: bool = False, env=None, agents_v2: bool = False) -> CycleResult:
+              plan: bool = False, env=None, agents_v2: bool = False,
+              ab_llm: bool = False) -> CycleResult:
     """Run one cycle over `roster`. Never raises for a single student's failure.
 
     `conn`: tests only (see `_unit`). `collect` / `checkout` / `grade` are injectable so the
@@ -601,8 +626,13 @@ def run_cycle(roster: dict, *, student: str | None = None, dry_run: bool = False
     `system.llm` and the `.vdel/llm_usage.json` file. `env`: the environment plan mode reports on
     (default `os.environ`).
 
-    `with_code_agent` (D-104) and `agents_v2` (D-108) are refused unless `with_llm` is also set.
-    `plan=True` reads and prints only (see `_plan_report`)."""
+    `with_code_agent` (D-104), `agents_v2` (D-108) and `ab_llm` (D-110) are refused unless
+    `with_llm` is also set. `plan=True` reads and prints only (see `_plan_report`)."""
+    if ab_llm and not with_llm:
+        msg = ("REFUSED: --ab-llm runs only together with --with-llm (it decides which commits get "
+               "the agent's paragraph). Nothing was done.")
+        out(msg)
+        return CycleResult(EXIT_REFUSED, message=msg)
     if agents_v2 and not with_llm:
         msg = ("REFUSED: --agents-v2 runs only together with --with-llm (it changes how the agents "
                "work, behind the same call caps). Nothing was done.")
@@ -643,7 +673,8 @@ def run_cycle(roster: dict, *, student: str | None = None, dry_run: bool = False
                            collect, checkout, grade, out,
                            {"llm": llm, "run_cap": llm_run_cap, "daily_cap": llm_daily_cap,
                             "ledger": ledger, "code_agent": with_code_agent,
-                            "code_prompt_cap": code_prompt_cap, "agents_v2": agents_v2})
+                            "code_prompt_cap": code_prompt_cap, "agents_v2": agents_v2,
+                            "ab": ab_llm, "opt_out": ai_opt_out(roster)})
     finally:
         lock_conn.close()                 # closing the session releases the advisory lock
 
@@ -701,11 +732,14 @@ def _run_locked(roster, student, dry_run, skip_network, with_llm, conn,
         hook = _make_hook(cfg.get("llm"), run_cap, daily_cap, cfg.get("ledger"), mem, out,
                           code_agent_on=cfg.get("code_agent", False),
                           code_prompt_cap=cfg.get("code_prompt_cap", DEFAULT_CODE_PROMPT_CAP),
-                          agents_v2=cfg.get("agents_v2", False))
+                          agents_v2=cfg.get("agents_v2", False),
+                          opt_out=cfg.get("opt_out", frozenset()), ab=cfg.get("ab", False))
         if hook is not None:
             out(f"llm: ON, run cap {run_cap}, daily cap {daily_cap} provider call(s) "
                 f"({hook.today()}); Code Agent {'ON' if hook.code_agent else 'off'}"
-                + ("; agents v2 ON" if hook.agents_v2 else ""))
+                + ("; agents v2 ON" if hook.agents_v2 else "")
+                + ("; A/B arms ON" if hook.ab else "")
+                + (f"; opted out: {', '.join(sorted(hook.opt_out))}" if hook.opt_out else ""))
     # The real ceiling (D-104): every provider handler is wrapped for the run, so the run cap and
     # what is left of the daily cap hold even when the gateway walks its fallback chain, which the
     # budget (it counts answers, not failed attempts) cannot see.
@@ -752,6 +786,10 @@ def add_llm_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--agents-v2", action="store_true",
                         help="use the v2 agents (OFF by default; needs --with-llm): the Feedback "
                              "Agent sees the student's own lines and gives a hint ladder")
+    parser.add_argument("--ab-llm", action="store_true",
+                        help="A/B experiment (OFF by default; needs --with-llm): half of the "
+                             "failing "
+                             "commits, chosen by a fixed hash, get the deterministic text alone")
     parser.add_argument("--code-agent-max-chars", type=int, default=DEFAULT_CODE_PROMPT_CAP,
                         help="skip the Code Agent when the judged lines plus context are longer "
                              "than this (default %(default)s)")
@@ -780,7 +818,7 @@ def main(argv: list[str] | None = None) -> int:
                        llm_run_cap=args.llm_run_cap, llm_daily_cap=args.llm_daily_cap,
                        with_code_agent=args.with_code_agent,
                        code_prompt_cap=args.code_agent_max_chars, plan=args.plan,
-                       agents_v2=args.agents_v2)
+                       agents_v2=args.agents_v2, ab_llm=args.ab_llm)
     return result.exit_code
 
 

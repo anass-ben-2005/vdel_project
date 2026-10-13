@@ -19,6 +19,7 @@ append-only log from which every belief can be rebuilt.
 | The **operator** (you run the hourly task for one or a few students) | [docs/INSTALL.md](docs/INSTALL.md), then [docs/OPERATIONS.md](docs/OPERATIONS.md) |
 | A **course author** (you write a project the students complete) | [docs/AUTHORING.md](docs/AUTHORING.md) |
 | A **developer** (you change the code) | [CONTRIBUTING.md](CONTRIBUTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Preparing a **pilot** (3 to 5 students) | [docs/PILOT.md](docs/PILOT.md) |
 | A **supervisor or reviewer** (you want to know what is claimed and what is proven) | [docs/DECISIONS.md](docs/DECISIONS.md), [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md), [CHANGELOG.md](CHANGELOG.md) |
 
 ## What it does, in one pass
