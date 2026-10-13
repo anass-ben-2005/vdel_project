@@ -28,7 +28,11 @@ class Judging:
     assignment_id: str | None       # None for the default
     criteria: tuple[str, ...]
     note: str
-    statement: str | None           # an assignment-level description, or None
+    statement: str | None           # a REVIEWED assignment-level description, or None
+    # D-107. A statement written as {text, status: draft} is kept here and nowhere else: `statement`
+    # stays None, so `compose_task` and every prompt behave as if it did not exist.
+    statement_status: str | None = None          # "draft" | "reviewed" | None
+    draft_statement: str | None = None
 
 
 def _criteria(raw: object, where: str) -> tuple[str, ...]:
@@ -42,17 +46,37 @@ def _criteria(raw: object, where: str) -> tuple[str, ...]:
     return tuple(c for c in ALL_CRITERIA if c in raw)         # canonical order
 
 
+STATEMENT_STATUSES = ("draft", "reviewed")
+
+
+def _statement(raw: object, where: str) -> tuple[str | None, str | None, str | None]:
+    """(reviewed text, status, draft text). `null` -> nothing; a plain string -> reviewed (the form
+    that existed before D-107); `{text, status}` -> reviewed text only when status is `reviewed`."""
+    if raw is None:
+        return None, None, None
+    if isinstance(raw, str):
+        if not raw.strip():
+            raise JudgingError(f"{where}: statement must be null or a non-empty string")
+        return raw.strip(), "reviewed", None
+    if not isinstance(raw, dict) or set(raw) != {"text", "status"}:
+        raise JudgingError(f"{where}: statement must be null, a string or {{text, status}}")
+    text, status = raw["text"], raw["status"]
+    if not (isinstance(text, str) and text.strip()):
+        raise JudgingError(f"{where}: statement text must be a non-empty string")
+    if status not in STATEMENT_STATUSES:
+        raise JudgingError(f"{where}: statement status must be one of {list(STATEMENT_STATUSES)}")
+    return (text.strip(), status, None) if status == "reviewed" else (None, status, text.strip())
+
+
 def _entry(raw: object, assignment_id: str | None, fallback: Judging | None) -> Judging:
     where = f"assignment {assignment_id!r}" if assignment_id else "default"
     if not isinstance(raw, dict):
         raise JudgingError(f"{where}: expected a mapping")
     criteria = (_criteria(raw["criteria"], where) if "criteria" in raw
                 else (fallback.criteria if fallback else ALL_CRITERIA))
-    statement = raw.get("statement")
-    if statement is not None and not (isinstance(statement, str) and statement.strip()):
-        raise JudgingError(f"{where}: statement must be null or a non-empty string")
+    statement, status, draft = _statement(raw.get("statement"), where)
     note = str(raw.get("note") or "").strip()
-    return Judging(assignment_id, criteria, note, statement.strip() if statement else None)
+    return Judging(assignment_id, criteria, note, statement, status, draft)
 
 
 @lru_cache(maxsize=1)
@@ -82,3 +106,39 @@ def compose_task(statement: str | None, instructions: list[str]) -> str:
     caller passes already in file order."""
     body = " ".join(instructions)
     return f"{statement}\n\n{body}".strip() if statement else body
+
+
+# --- the "Going further" gate (D-109) -----------------------------------------------------------
+
+@dataclass(frozen=True)
+class PostReview:
+    enabled: bool
+    min_benchmark_agreement: float
+
+
+DEFAULT_MIN_BENCHMARK_AGREEMENT = 0.80      # BUILD_PLAN 4.5 / M4 DoD: ">=80% exact agreement"
+
+
+def _post_review_entry(raw: object) -> PostReview:
+    if raw is None:
+        return PostReview(False, DEFAULT_MIN_BENCHMARK_AGREEMENT)
+    if not isinstance(raw, dict) or set(raw) - {"enabled", "min_benchmark_agreement"}:
+        raise JudgingError("post_review: expected {enabled, min_benchmark_agreement}")
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise JudgingError("post_review.enabled must be true or false")
+    minimum = raw.get("min_benchmark_agreement", DEFAULT_MIN_BENCHMARK_AGREEMENT)
+    if isinstance(minimum, bool) or not isinstance(minimum, (int, float)) or not 0 < minimum <= 1:
+        raise JudgingError("post_review.min_benchmark_agreement must be a number in (0, 1]")
+    return PostReview(enabled, float(minimum))
+
+
+@lru_cache(maxsize=1)
+def _load_post_review(path: str) -> PostReview:
+    data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    return _post_review_entry(data.get("post_review"))
+
+
+def post_review(path: Path | str = JUDGING_PATH) -> PostReview:
+    """The "Going further" switch and its threshold. Missing section = disabled."""
+    return _load_post_review(str(path))

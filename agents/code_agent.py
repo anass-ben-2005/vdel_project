@@ -103,6 +103,7 @@ from system import llm
 # causal forest stays continuous across the change.
 ACTOR = "code_agent"
 AGENT_ID = "code_agent_v3"
+AGENT_ID_PRODUCTION = "code_agent_v4"      # D-109: production mode (`--agents-v2`)
 
 # The criteria and their order. Identical to Echo's and validation's by test, not by import.
 CRITERIA = ("correctness", "approach", "readability", "idiomatic")
@@ -232,6 +233,17 @@ def find_verdict(conn, attempt_id: int, commit_sha: str) -> tuple[Verdict, int] 
     return Verdict.model_validate(payload), trace_id
 
 
+def find_attempt_verdict(conn, attempt_id: int) -> tuple[int, str | None] | None:
+    """`(trace_id, commit_sha)` of the first verdict stored for this ATTEMPT, whatever its commit,
+    or None. Read-only. The v2 Code Agent judges once per attempt (D-109)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT trace_id, payload->>'commit_sha' FROM traces WHERE actor = %s"
+            " AND kind = 'verdict' AND payload->>'attempt_id' = %s ORDER BY trace_id LIMIT 1",
+            (ACTOR, str(attempt_id)))
+        return cur.fetchone()
+
+
 def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
           profile_snapshot: dict[str, Any] | None = None,
           reference: str | None = None,
@@ -246,7 +258,8 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
           attempt_id: int | None = None,
           commit_sha: str | None = None,
           checkout_root: str | Path | None = None,
-          max_prompt_chars: int | None = None) -> tuple[Verdict, int, list | None]:
+          max_prompt_chars: int | None = None,
+          production: bool = False) -> tuple[Verdict, int, list | None]:
     """Judge one submission. Returns `(verdict, trace_id, evidence_failures or None)`.
 
     The signature Echo defined and M4 preserves. `conn` exists for the reason `memory.py`'s
@@ -267,6 +280,12 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
     `max_prompt_chars` (D-104: skip, with the reason, when the text that would go into the prompt
     -- the judged lines plus context, or the whole file -- is longer than this).
 
+    `production=True` (D-109, prompt v4, agent `code_agent_v4`) is the mode the cycle uses with
+    `--agents-v2`: the code has already passed its hidden checks, so the "correctness" criterion is
+    dropped (no `llm_correctness_opinion` is asked for or stored) and a reference solution is
+    refused (`ValueError`). Without it (the default, and what the benchmarks and the demo use) the
+    behaviour, the v3 prompt and the stored payload are exactly what they were.
+
     Raises `ValueError` if the assignment carries no `task`, `FileNotFoundError` if the submission
     is missing -- both are callers who forgot to supply the thing being graded, and both should fail
     loudly rather than emit a verdict about nothing -- and `SubmissionSkipped(reason)` when the file
@@ -282,6 +301,14 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
             "the caller supplies it (see this module's deviation 3)."
         )
     used = resolve_criteria(criteria, assignment)
+    if production:
+        if reference is not None:
+            raise ValueError("production mode never receives a reference solution: it is for "
+                             "the benchmark only")
+        used = tuple(c for c in used if c != "correctness")
+        if not used:
+            raise ValueError("production mode has no criterion left to judge: correctness is "
+                             "decided by the tests")
     if rubric_table is None:
         rubric_table = assignment.get("rubric") or None
     persisting = attempt_id is not None or commit_sha is not None
@@ -352,6 +379,7 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
         reference=reference,
         mastery_slice=mastery_slice,
         weakness_notes=weakness_notes,
+        production=production,
     )
 
     # ---- 3 JUDGE -------------------------------------------------------------------------------
@@ -390,8 +418,9 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
     # The payload never holds the student's file: a hash of it, and the quotes the judge chose.
     payload = {
         **verdict.model_dump(),
-        "agent": AGENT_ID,
-        "prompt_version": prompts.PROMPT_VERSION,
+        "agent": AGENT_ID_PRODUCTION if production else AGENT_ID,
+        "prompt_version": (prompts.PRODUCTION_PROMPT_VERSION if production
+                           else prompts.PROMPT_VERSION),
         "provider": record.provider,   # D-04X: which provider actually served this call --
         "model": record.model,         # may differ from LLM_PROVIDER if the fallback fired
         "criteria": list(used),
@@ -404,10 +433,12 @@ def grade(mem: Memory, student_id: str, assignment: dict, code_path: str, *,
                   if excerpt is not None else {"mode": "whole_file"}),
         "rejected": rejected,
         "flagged": flagged,
-        "research_only": ["scores.llm_correctness_opinion"],
+        "research_only": [] if production else ["scores.llm_correctness_opinion"],
         "tool_reports": [r.to_dict() for r in reports],
         "reference_supplied": reference is not None,
     }
+    if production:
+        payload["mode"] = "production"          # only here: a benchmark payload is unchanged
 
     trace_id = mem.log_trace(
         student_id, ACTOR, "verdict", payload,

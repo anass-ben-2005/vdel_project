@@ -298,6 +298,15 @@ class FeedbackResult:
     def used_llm(self) -> bool:
         return self.source == SOURCE_LLM
 
+    # D-108: what `agents.pipeline.persist_feedback` stores under. For v1 these are exactly what
+    # that function used before (`fa.AGENT`, `used_llm`), so nothing changes with the flag off;
+    # `agents.feedback_v2.FeedbackResultV2` overrides both.
+    agent_id = AGENT
+
+    @property
+    def storable(self) -> bool:
+        return self.used_llm
+
     def to_trace_payload(self, inp: FeedbackInput | None = None) -> dict[str, Any]:
         """What a caller would log (IR-3). Pure: builds a dict, writes nothing. Contains the
         validated output, never raw model text and never hidden source. `inp` defaults to the

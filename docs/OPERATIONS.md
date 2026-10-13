@@ -403,3 +403,94 @@ template push, gap lines not found, judged text above `--code-agent-max-chars` (
 The report marks a row `tests pass, approach <= 2`: every check passed and the judge scored the approach 2
 or lower. Those rows are the ones to read first. The Code Agent has not been measured against labels on
 `weather_etl` (there are none); do not act on a score.
+
+## 15. Is the machine ready? The doctor, and recording a delivery in the roster (D-105)
+
+```powershell
+# read-only: Python, Docker and the grader image, the database and its migrations, the GitHub token
+# (name) and its scopes, the roster, open attempts the roster cannot reach, which LLM keys exist
+# (names), the scheduled task and the flags it runs with
+python -m scripts.doctor
+python -m scripts.doctor --no-network      # skip the single GET /user that reads the token's scopes
+```
+
+`FAIL` means something stops the system (exit code 1); `WARN` is something to read. The doctor never
+prints a token or a key, only their names and the scope names GitHub returns.
+
+After `deliver_next_attempt --apply` the roster must point at the new repo, or the next cycle never sees
+it (the cycle now logs `WARN  open attempt N of A ...` when that happens). The delivery prints the exact
+command; run it WITHOUT `--yes` first to see the diff, then with it:
+
+```powershell
+python -m scripts.roster_apply --student X --assignment weather_etl_extract --owner OWNER --repo NEW_REPO
+python -m scripts.roster_apply --student X --assignment weather_etl_extract --owner OWNER --repo NEW_REPO --yes
+```
+
+It keeps `config\roster.yaml.<UTC time>.bak`, changes only that row's `owner` and `repo` (comments,
+line endings and `released_at` stay), and refuses an ambiguous target or a credential. A row that does not
+exist yet also needs `--released-at <the real date the work began>`.
+
+Before a new or changed master project is issued to anyone, run the read-only validator (D-107):
+
+```powershell
+python -m scripts.validate_master weather_etl            # markers, ids, tests, public descriptions, judging, resources
+python -m scripts.validate_master --require-reviewed     # drafts count as errors: the check before a pilot
+```
+
+## 16. The v2 agents: `--agents-v2` (D-108)
+
+Off by default, refused without `--with-llm`, and **not** a switch of `register_task.ps1`: use it by hand
+first. It changes the Feedback Agent only (stage 5 adds the Code Agent). Without the flag nothing changes,
+byte for byte.
+
+What a failing commit gets with it:
+
+- the student's own gap lines (plus three lines of context) go to the model, with the reviewed public
+  description of each failing check (`config/checks.yaml`, drafts never), how many pushes each check has
+  failed on, and a hint level chosen by code: 1 push -> the expected behaviour in words, 2 -> one quoted line of
+  their code, 3 or more -> a strategy in words. Never code.
+- a commit whose only failures are `NotImplementedError` stubs gets one fixed sentence ("Where to start") and
+  **no provider call**; so does a commit from which no lines of the student's can be cut out.
+- a reply is rejected (then one corrective call, then the deterministic text alone) unless it quotes the
+  student's code verbatim, writes no code, does not copy the reference solution and does not repeat the counts
+  or test names.
+
+```powershell
+$env:LLM_PROVIDER = "openai"
+python -m scripts.run_cycle --student anas --plan --with-llm --agents-v2        # reads only
+python -m scripts.run_cycle --student anas --with-llm --agents-v2 --llm-run-cap 10 --llm-daily-cap 20
+```
+
+In the cycle's log look for `agents v2 ON` and, per commit, `feedback_agent_v2=<source>, hint level N, K
+provider call(s)` with `<source>` one of `llm`, `deterministic_stub`, `deterministic_no_excerpt`,
+`deterministic_v0_fallback` (the model was tried and rejected; the reasons follow). The hourly task passes the
+flag too when run by hand (`python -m scripts.run_hourly --with-llm --agents-v2`) and then posts the v2
+paragraph under the deterministic text, or the v1 paragraph for a commit graded before the switch. Until the
+author marks the check descriptions `reviewed`, level 1 has no "Expected behaviour" sentence.
+
+### The Code Agent with `--agents-v2` (D-109)
+
+With the flag, the Code Agent changes in three ways: it judges **once per attempt**, on the commit that
+freezes it (all hidden checks passed), and never again for that attempt; its prompt (v4) asks **no correctness
+opinion** and carries **no reference solution** (the benchmark keeps both); and the stored verdict says
+`code_agent_v4` / `production`. Read it with the report, which now ends with an instructor section:
+
+```powershell
+python -m scripts.code_agent_report --student anas      # table, then "CORRECT BUT APPROACH <= 2"
+```
+
+The "Going further" note for students exists in `agents/going_further.py` but is **off and posted by
+nothing**. `config/judging.yaml` has `post_review: {enabled: false, min_benchmark_agreement: 0.80}`; even if you
+set `enabled: true` it refuses until a real benchmark result (section 13) reaches 80% exact agreement overall
+and on approach and readability. The result recorded on 2026-10-12 has 60% on approach, so it stays refused.
+Turning it on needs a person to write the posting step too: nothing calls the module today.
+
+## 17. Pilot preparation (D-110)
+
+`docs/PILOT.md` has the checklist, the database role (not applied), the student notice and opting a student out
+(`ai_notes: false` in the roster), and the A/B experiment:
+
+```powershell
+python -m scripts.run_hourly --with-llm --ab-llm     # half of the failing commits get the deterministic text alone
+python -m scripts.ab_report                          # read-only: commits-to-pass per arm, descriptive only
+```

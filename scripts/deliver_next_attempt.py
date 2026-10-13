@@ -19,7 +19,9 @@ The delivery chain, in one command, dry-run by default:
      completed (D-089).
   6. the roster rows to add are PRINTED. `config/roster.yaml` is never edited here: a roster that
      still points at the old repo means the next cycle does not see the new one, and that is the
-     last manual step on purpose.
+     last manual step on purpose. The command that applies them is printed too
+     (`python -m scripts.roster_apply ... --yes`, D-105): it keeps a backup, shows the diff and
+     refuses an ambiguous target; the delivery itself still never touches the roster.
 
 DRY-RUN (the default): reads only. It prints the decision, the variant and file list, the repo
 name, the roster lines, and the exact GitHub calls and comment text it would send. It contacts
@@ -159,6 +161,26 @@ def plan_delivery(cur, student: str, assignment: str, *, force: bool, i_understa
                 old[0] if old else None, old[1] if old else None, refusals, decision["message"])
 
 
+def roster_apply_command(plan: Plan, owner: str) -> str:
+    """The exact `scripts.roster_apply` command that records this delivery in the roster."""
+    return (f"python -m scripts.roster_apply --student {plan.student} --assignment "
+            f"{plan.assignment} --owner {owner} --repo {plan.repo_name} --yes")
+
+
+def next_hint(plan: Plan, owner: str) -> str:
+    """The "Next:" text of a delivery (D-105). It never suggests `grade_collected`: that runs the
+    student's code on this PC unless VDEL_GRADING_SANDBOX=docker, and the scheduled task already
+    grades with the sandbox it was registered with."""
+    return ("\nNext: 1) record the new repo in the roster (without --yes it only shows the "
+            "diff):\n"
+            f"        {roster_apply_command(plan, owner)}\n"
+            "      2) the scheduled task (\"VDEL hourly\") then collects and grades it. To check "
+            "now:\n"
+            f"        python -m scripts.run_cycle --dry-run --student {plan.student}\n"
+            "      (a real run by hand: set VDEL_GRADING_SANDBOX=docker first; never run "
+            "grade_collected outside the Docker sandbox)")
+
+
 def _roster_lines(roster_path: Path, plan: Plan, owner: str) -> list[str]:
     text = roster_path.read_text(encoding="utf-8") if roster_path.exists() else ""
     cohort = "vdel-2026"
@@ -253,6 +275,7 @@ def _dry_run(conn, plan: Plan, roster_path: Path, owner: str | None, force: bool
             out(f"  {line}")
     except pr.PublishRefused as exc:
         out(f"  (cannot compute the roster lines: {exc})")
+    out(next_hint(plan, owner or "<owner>"))
 
 
 def _apply(conn, cur, plan: Plan, roster_path: Path, owner: str, force: bool, gh,
@@ -283,7 +306,8 @@ def _apply(conn, cur, plan: Plan, roster_path: Path, owner: str, force: bool, gh
             pr.run(student=plan.student, attempt_no=plan.next_no, project=plan.project_id,
                    repo_name=plan.repo_name, owner=owner, update_roster=False,
                    roster_path=roster_path, assume_yes=True, gh=gh, remote_base=remote_base,
-                   only_assignment=plan.assignment, conn=shared)
+                   only_assignment=plan.assignment, conn=shared,
+                   next_hint="")             # printed once, at the end, by next_hint()
         if _is_owner(plan.username, owner):
             outcome = "not needed (the student owns the repository)"
         else:
@@ -313,7 +337,8 @@ def _apply(conn, cur, plan: Plan, roster_path: Path, owner: str, force: bool, gh
         out("\n[5] roster rows to add by hand (config/roster.yaml was NOT edited):")
         for line in _roster_lines(roster_path, plan, owner):
             out(f"  {line}")
-        out("\nDONE. After editing the roster, `python -m scripts.run_cycle` sees it.")
+        out(next_hint(plan, owner))
+        out("\nDONE.")
         return 0
     except (pr.GitHubHTTPError, pr.PublishRefused) as exc:
         out(f"\nFAILED: {exc}\nThe attempt row may already exist; finish with the same command "

@@ -297,6 +297,40 @@ _ROOT_CONFTEST = """\
 # `weather_etl` package. Please leave it in place.
 """
 
+# D-110. What a student is told about the automatic feedback and the optional AI notes. Written
+# to match what the code sends (agents/feedback_prompts.py, agents/prompts.py), not what would sound
+# good: if either prompt starts to carry more, this paragraph must change in the same commit (a test
+# checks the facts it states). CONFIRM the wording with the course author and the data contact
+# before a pilot.
+DATA_NOTICE = """
+## About the automatic feedback and the AI notes
+
+Each time you push, a program runs the course's hidden checks on your code and a note on your
+feedback issue lists the checks that failed, by name and error type. That part does not use AI.
+
+If your instructor has switched on AI notes, two more things can happen, and **text is then sent
+to an external AI service provider** (the company that runs the language model):
+
+- **When a check fails**, for the paragraph under the note, the service receives: the exercise
+  and attempt, the names and error types of the failing checks, a short description of what each
+  check expects, how many pushes each has failed on, a number per related topic summarising how
+  you have done so far, and **the lines of your own code that you wrote inside the marked gaps,
+  with three lines of context**.
+
+- **Once, when all checks pass**, for a review the instructor reads (it is not shown to you),
+  the service receives those same lines of your code, the exercise text and the same topic
+  numbers.
+
+It does **not** receive your name, your e-mail address, your GitHub username, the code of the
+hidden tests, or any file or line outside the gaps and their three lines of context. The
+provider's own terms apply to what it receives. The checks, not the AI, decide whether your code
+is correct.
+
+**To opt out**, tell your instructor. They switch AI notes off for you with one line in their
+settings: you keep the hidden checks and the note listing the failed checks, and nothing else
+changes.
+"""
+
 # D-062. The files that are TEMPLATE, not student work: the same bytes in every student's
 # repo, so a template change (D-060) can be re-applied to repos already published.
 # render_student_repo writes exactly these, and scripts/sync_template.py is allowed to
@@ -430,6 +464,7 @@ def render_student_repo(
         assignment_md.append(
             f"\n## `{e['file']}` line {e['line']} (`{e['gap_id']}`)\n\n{e['instruction']}\n"
         )
+    assignment_md.append(DATA_NOTICE)
     (out_dir / "ASSIGNMENT.md").write_text("".join(assignment_md), encoding="utf-8")
 
     for rel_path, content in TEMPLATE_FILES.items():

@@ -102,3 +102,56 @@ as the student's work.
 benchmark (all four criteria, whole file) the only difference in the prompt of a file that holds no
 marker sequence is the three-line addition to the injection rule, so no change in scores is expected;
 that is a hypothesis, not a measurement.
+
+---
+
+## fb2 — 2026-10-13 — Feedback Agent v2, behind `--agents-v2` (D-108)
+
+**What it is.** A second prompt for a second agent id (`feedback_agent_v2`), in `agents/feedback_prompts.py`
+(`build_feedback_prompt_v2`). The fb1 prompt, schema and agent are untouched and remain what runs without
+the flag; a test pins their sha256 (prompt, markdown, trace payload, addendum). fb2 adds to the facts:
+the student's own gap lines plus three lines of context between `<<<BEGIN STUDENT LINES>>>` delimiters (a run
+of three `<` or `>` inside them is escaped, D-103); the reviewed public description of each failing check
+(`config/checks.yaml`, drafts never); how many pushes of the attempt each failing check has failed on; and a
+hint level chosen by code from that count (1 expected behaviour, 2 point at one line, 3 a strategy in words).
+The schema gains `quotes` (1 to 3 single lines copied from the student's lines, at most 100 characters).
+Rules added to the prompt: never write code; do not repeat the counts or the check names; the student's lines
+are data. The reference solution is not in the prompt.
+
+**Failure modes each addition defends.** A hint that gives the answer (no code, no code block, an inline span of
+at most 60 characters, and a validator that rejects a reply sharing 25% of the master body's 4-grams); a
+generic reply that never looked at the student's work (a verbatim quote of their code is required and
+string-matched); a reply that repeats what the deterministic text already shows (counts and test names
+rejected); a student file that tries to instruct the model (delimiters escaped, the lines marked as data); a
+commit with nothing to quote or nothing started (no provider call at all: a fixed sentence for
+`NotImplementedError` stubs, the deterministic text when no excerpt can be cut out).
+
+**Benchmark result:** not measured. No live call was made; the agent was exercised only against the scripted
+fake provider. The thresholds (25%, 4-grams, 100 and 60 characters, the recurrence-to-level mapping) are design
+choices to be confirmed, not measurements.
+
+---
+
+## v4 — 2026-10-13 — Code Agent production prompt, behind `--agents-v2` (D-109)
+
+**What changed.** A production mode (`grade(production=True)`, `build_grading_prompt(production=True)`),
+used by the cycle with `--agents-v2`. The code has already passed every hidden check, so: the
+"correctness" criterion is dropped (its rubric block, its evidence line and its score field
+`llm_correctness_opinion` are gone from the prompt and the schema, and the verdict stores null for it);
+the `llm_correctness_opinion` note is replaced by a short note saying every hidden check has passed and
+the judge is to say nothing about whether the code works; the sentence "Judge correctness before
+readability" is dropped from the field-order note; and a reference solution is refused (a `ValueError`, in
+both `grade` and the prompt builder). The stored payload says `agent: code_agent_v4`, `prompt_version: v4`,
+`mode: production`, `research_only: []`. The default (no `production`) is exactly v3: the benchmarks
+(`benchmark/run_benchmark.py`, `benchmark/run_real_benchmark.py`) and the demo still ask for the opinion and
+may supply a reference, and a test compares the two prompts.
+
+**Failure modes.** A judge asked for a correctness opinion on code the tests already passed would be paid
+to disagree with an executed result, and a reader could take its number for one (D-036); a reference
+solution in the production prompt would make the judge grade closeness to one solution instead of the
+quality of a working one.
+
+**Benchmark result:** not measured. The v4 prompt has never been sent to a model. The only real run
+(`benchmark/RECOMMENDATION.md`) measured the v2 prompt in benchmark mode on five PySpark files, with
+labels pre-written by an LLM; it reached 60% exact agreement on approach. v4 judges approach and
+readability only, so what that run says about it is a hypothesis, not a measurement.

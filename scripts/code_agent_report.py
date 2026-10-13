@@ -51,6 +51,15 @@ def _tests(cur, attempt_id, commit_sha) -> tuple[int, int] | None:
     return (passed, total) if total else None
 
 
+def _approach_note(payload: dict) -> str | None:
+    """The judge's first quote and reason for the approach score, shortened. Internal use only."""
+    items = ((payload.get("evidence") or {}).get("approach") or [])
+    if not items or not isinstance(items[0], dict):
+        return None
+    quote, why = str(items[0].get("quote", "")).strip(), str(items[0].get("why", "")).strip()
+    return f"{quote[:80]!r}: {why[:140]}" if (quote or why) else None
+
+
 def rows(cur, *, student: str | None = None, limit: int = 50,
          rejected: bool | None = None) -> list[dict]:
     """The report rows, newest first. `rejected`: True/False to filter, None for all."""
@@ -76,6 +85,7 @@ def rows(cur, *, student: str | None = None, limit: int = 50,
             "rejected": is_rejected, "tests": tests,
             "prompt_version": payload.get("prompt_version"),
             "model": payload.get("model"),
+            "approach_note": _approach_note(payload),
             "marked": bool(all_pass and approach is not None and approach <= 2),
         })
         if len(out) >= limit:
@@ -105,6 +115,34 @@ def render(report_rows: list[dict], database: str) -> list[str]:
     return lines
 
 
+INSTRUCTOR_TITLE = "CORRECT BUT APPROACH <= 2"
+
+
+def instructor_section(report_rows: list[dict]) -> list[str]:
+    """For the instructor (D-109): working code the judge finds weak, one entry each, with the
+    judge's own reason. Only rows where every check of the commit passed, the approach is 2 or lower
+    AND no evidence failure was found; a rejected row is counted, not shown (its quotes did not
+    check out). Still an unmeasured judge: a list of places to LOOK, not a mark for anyone."""
+    marked = [r for r in report_rows if r["marked"]]
+    shown = [r for r in marked if not r["rejected"]]
+    lines = ["", f"=== {INSTRUCTOR_TITLE} (instructor only: working code the judge finds weak; "
+                 "read these first) ==="]
+    if not shown:
+        lines.append("none" + (f" ({len(marked)} rejected row(s) not listed)" if marked else ""))
+    for r in shown:
+        s = r["scores"]
+        lines.append(f"- trace {r['trace_id']}  {r['student']}  {r['assignment']}  attempt "
+                     f"{r['attempt_id'] or '-'}  commit {r['commit'] or '-'}  approach "
+                     f"{_score(s, 'approach')}  readability {_score(s, 'readability')}  tests "
+                     f"{r['tests'][0]}/{r['tests'][1]}  prompt {r['prompt_version'] or '-'}")
+        if r.get("approach_note"):
+            lines.append(f"    judge: {r['approach_note']}")
+    if shown and len(marked) > len(shown):
+        lines.append(f"({len(marked) - len(shown)} rejected row(s) not listed)")
+    lines.append(f"=== end of {INSTRUCTOR_TITLE} ===")
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--student", help="only this student_id")
@@ -120,8 +158,10 @@ def main(argv: list[str] | None = None) -> int:
         cur.execute("SELECT current_database()")
         database = cur.fetchone()[0]
         flag = True if args.rejected else (False if args.accepted else None)
-        for line in render(rows(cur, student=args.student, limit=args.limit, rejected=flag),
-                           database):
+        found = rows(cur, student=args.student, limit=args.limit, rejected=flag)
+        for line in render(found, database):
+            print(line)
+        for line in instructor_section(found):
             print(line)
     finally:
         conn.rollback()

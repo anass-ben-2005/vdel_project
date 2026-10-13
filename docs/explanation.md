@@ -2187,6 +2187,66 @@ docstring, not just asserted self-consistent with the code.
 
 ---
 
+### 7.23 The finalisation tooling (D-105, D-107)
+
+Added on the `v1-finalize` branch; each is a small script with its own test file.
+
+- **`scripts/doctor.py`** (`tests/test_doctor.py`). Read-only OK/WARN/FAIL checks. Each check is a function
+  that takes its probe as a parameter (the subprocess runner, the database opener, an HTTP getter, the
+  environment), so the tests run with mocks and the test module forbids `requests`. The database session is
+  `readonly=True`. "Migrations current" reads `sql/*.sql` with two regular expressions (`CREATE TABLE`,
+  `ADD COLUMN`) and compares them with `information_schema`. The one network call is `GET /user` for the
+  token's scopes, made only without `--no-network`. The scheduled task is read with `Get-ScheduledTask` and
+  its `-EncodedCommand` is decoded (UTF-16LE base64) to report the flags it runs with.
+- **`scripts/roster_apply.py`** (`tests/test_roster_apply.py`). Edits one roster row through
+  `publish_repo.update_roster_text`: unified diff, `--yes` required, a timestamped `.bak`, an atomic replace.
+  `check_unambiguous` refuses two rows for one (student, assignment), a row with other than one `owner:` or
+  `repo:` line, a student twice, an unparsable file; `refuse_credentials` refuses credential-shaped text.
+- **`scripts/run_cycle.roster_warnings`** logs `WARN` for an open attempt the roster cannot reach (no row, or
+  attempt >= 2 whose roster repo is not `delivery_repo_name(...)`). It is called once per student at the start
+  of `_run_student`, so `run_hourly` shows it too.
+- **`config/checks.yaml` + `config/checks.py`** (`tests/test_checks_and_drafts.py`). A public description per
+  hidden test. `entries()` and `description_for()` return reviewed entries only; `include_drafts=True` is for
+  the validator and tests. `description_problems` refuses code-shaped or over-long text.
+- **`config/judging.py`** gained the `statement: {text, status}` form; `Judging.statement` is set only when
+  the status is `reviewed`, `draft_statement` holds a draft, so `compose_task` and every prompt are unchanged by
+  a draft.
+- **`scripts/validate_master.py`** (`tests/test_validate_master.py`). Static checks of a master project: marker
+  syntax and concepts through `parse_master`, gap ids unique across the curriculum, hidden tests read with
+  `ast` (gap markers, coverage), `checks.yaml` coverage, `judging.yaml` entry, resources per concept.
+
+### 7.24 `agents/feedback_v2.py` and `--agents-v2` (D-108)
+
+The Feedback Agent v2, a separate module and prompt (`fb2`) so that v1 stays byte-identical with the flag off.
+`gather_input_v2` adds to the v1 facts the recurrence (`failure_counts`), the reviewed check descriptions
+(`config/checks.py`), the focus check and hint level, and the student's excerpt (`agents/scope.py`). The
+reference solution is read by `master_bodies` for the validator only. `validate_output_v2` runs every v1 rule
+and then the quote, code, solution-overlap and repetition rules. `run_feedback_agent_v2` makes no provider call
+for a stub-only commit or when there is no excerpt. `FeedbackResultV2` overrides `agent_id`, `storable`,
+`addendum_markdown` and `to_trace_payload`; `agents.pipeline.persist_feedback` reads those, which for a v1
+result give exactly the old values. In `scripts/run_cycle.py`, `AgentsHook(agents_v2=True)` routes `_feedback` to
+`_feedback_v2`; `scripts/run_hourly.py` passes the flag to the cycle and to the poster's addendum lookup.
+
+### 7.25 The Code Agent in production mode, and `agents/going_further.py` (D-109)
+
+`code_agent.grade(production=True)` and `prompts.build_grading_prompt(production=True)` give the v4 prompt:
+no correctness criterion, no opinion note, no reference (both refuse one). The payload gains `mode:
+production` and `agent: code_agent_v4` only in that mode. `AgentsHook._code` with `agents_v2` requires
+`result.frozen` and no earlier verdict for the attempt (`code_agent.find_attempt_verdict`) and passes
+`production=True`. `scripts/code_agent_report.instructor_section` lists working code with approach <= 2.
+`agents/going_further.py` holds the disabled "Going further" section and its gate (`check_gate` reads
+`config.judging.post_review()` and the `summary.json` files of real benchmark runs); no other module imports
+it.
+
+### 7.26 Pilot preparation: `agents/ab.py`, the opt-out, the notice (D-110)
+
+`agents/ab.py` holds `arm_for` (a hash of attempt and commit) and `record_arm` (one `ab_assignment` trace per
+commit with a failing check, written through the memory door). `AgentsHook._feedback` calls it when `ab` is on
+and returns early for the control arm. `scripts/ab_report.py` scores each assigned commit by the graded pushes
+until the attempt froze. `rc.ai_opt_out(roster)` returns the students whose `ai_notes` is not `true`; the hook's
+`_gate` and the hourly feedback phase both honour it. `scripts/render_student_repo.DATA_NOTICE` is appended to
+`ASSIGNMENT.md`. `sql/pilot/vdel_cycle_role.sql` is read only by `tests/test_pilot.py`.
+
 ## 8. The twelve non-negotiable invariants
 
 From `CLAUDE.md` §7, and how each one is actually enforced (not just stated) in this

@@ -7,9 +7,12 @@
 # TASK TEXT. The text the judge is told the student was set is built from the assignment's gap
 # instructions (the `# @instruct:` lines of the master), in FILE order (gaps.line_start), not in
 # alphabetical gap_id order as before. `statement`, when set, is put in front of them: an
-# assignment-level description of the exercise. It is left null below because nobody has written one
-# yet; TODO(author): the course author's statement for each weather_etl stage. Nothing is invented
-# here.
+# assignment-level description of the exercise. It is either null, a plain string (reviewed text), or
+#   statement: {text: "...", status: draft | reviewed}
+# (D-107). ONLY A REVIEWED STATEMENT IS EVER USED: config/judging.py ignores a `draft` one, so it reaches no
+# prompt. The four weather_etl statements below are DRAFTS written by an assistant from the master files;
+# TODO(author): read each against its stage and change `draft` to `reviewed` (or rewrite it).
+# `sales_analyzer_*` has no entry at all. Nothing else is invented here.
 #
 # CRITERIA. The rubric (agents/prompts.py) has four criteria. The default keeps all four: the PySpark
 # benchmark is judged with all four. An assignment lists the subset that applies to it.
@@ -28,10 +31,47 @@ assignments:
       datetime), there is no DataFrame or SQL to be idiomatic about, and the anchors of that
       criterion speak of collect(), partitioning and the DataFrame API. Left in, the judge would
       score a rubric that does not describe the exercise.
-    statement: null
+    statement:
+      text: >-
+        Fetch the current weather from a web API and reduce the JSON answer to the three readings
+        the pipeline needs. The fetch must survive a flaky network by retrying a few times before it
+        gives up, and the reduction must cope with readings that are missing from the answer.
+      status: draft
   weather_etl_transform:
     <<: *weather_etl
+    statement:
+      text: >-
+        Prepare a list of weather readings for loading: drop the readings that have no temperature,
+        convert Celsius to Fahrenheit, and attach an ISO timestamp that falls back to the current
+        time when the raw one is missing or cannot be parsed.
+      status: draft
   weather_etl_load:
     <<: *weather_etl
+    statement:
+      text: >-
+        Store weather readings in a SQLite table with a parameterised multi-row insert that reports
+        how many rows it wrote, then read back the readings from a given timestamp on with a
+        parameterised query that returns them as dictionaries.
+      status: draft
   weather_etl_quality:
     <<: *weather_etl
+    statement:
+      text: >-
+        Write two data-quality checks for the weather readings: every required field must be
+        present and not None, and a numeric field must stay inside given bounds. A failing check
+        must say which record or value is wrong.
+      status: draft
+
+# D-109. The "Going further" section: a short note under the feedback of a student whose code passes every
+# check, built from the Code Agent's production verdict (agents/going_further.py). BUILT BUT DISABLED, and
+# never posted by anything in this repository. Two locks:
+#   enabled                  false. Turning it on is a decision for the course author, not a default.
+#   min_benchmark_agreement  the exact-agreement a real benchmark run (benchmark/results/<run>/summary.json)
+#                            must reach, overall AND on "approach" AND on "readability" (the two things
+#                            the section talks about), before the section can be produced even when
+#                            `enabled` is true. 0.80 is the project's own documented target (BUILD_PLAN 4.5,
+#                            M4 DoD: ">=80% exact agreement"), not a new number. CONFIRM.
+# If `enabled` is true and no result file meets the threshold, the gate REFUSES (agents/going_further.py).
+post_review:
+  enabled: false
+  min_benchmark_agreement: 0.80

@@ -145,6 +145,52 @@ def _count(cur, table: str, student_id: str) -> int:
     return cur.fetchone()[0]
 
 
+def roster_warnings(cur, student_id: str, repo_for: dict) -> list[str]:
+    """One line per OPEN attempt of the student that the roster cannot reach (D-105).
+
+    An open attempt (`submitted_at IS NULL`) whose repo is not in the roster is never collected
+    and so never graded: no error, no pending commit, no log line. That is how attempt 3 of
+    weather_etl_extract sat unnoticed after its delivery. Two cases are reported:
+      * no roster row for (student, assignment) at all;
+      * attempt 2 or later whose roster repo is not the one `deliver_next_attempt` names for that
+        attempt (the roster still points at an earlier attempt's repo). Attempt 1 is not compared:
+        its repo predates the delivery naming rule, so a mismatch there proves nothing.
+    Read-only. A report, never an error: a student can legitimately have an open attempt that has
+    not been delivered yet."""
+    from scripts.deliver_next_attempt import delivery_repo_name
+
+    cur.execute("SELECT assignment_id, attempt_no, project_id FROM attempts"
+                " WHERE student_id = %s AND submitted_at IS NULL"
+                " ORDER BY assignment_id, attempt_no", (student_id,))
+    lines = []
+    for assignment_id, attempt_no, project_id in cur.fetchall():
+        entry = repo_for.get((student_id, assignment_id))
+        if entry is None:
+            lines.append(f"open attempt {attempt_no} of {assignment_id} has no roster repo: "
+                         "nothing is collected or graded for it "
+                         "(not delivered yet, or scripts.roster_apply adds the row)")
+            continue
+        if attempt_no >= 2 and project_id:
+            expected = delivery_repo_name(project_id, student_id, assignment_id, attempt_no)
+            if entry[1] != expected:
+                lines.append(f"open attempt {attempt_no} of {assignment_id}: the roster repo is "
+                             f"{entry[0]}/{entry[1]} but the delivery names {expected}; commits "
+                             "pushed to the new repo are not collected until the roster is updated")
+    return lines
+
+
+def _warn_unrostered(conn, student_id: str, repo_for: dict, out) -> None:
+    try:
+        with _unit(conn, "roster_check") as c:
+            lines = roster_warnings(c.cursor(), student_id, repo_for)
+    except Exception as exc:  # noqa: BLE001 -- a diagnostic must never stop a cycle
+        out(f"  WARN      roster check could not run: {type(exc).__name__}: "
+            f"{str(exc).strip()[:200]}")
+        return
+    for line in lines:
+        out(f"  WARN      {line}")
+
+
 def _needs_features(cur, student_id: str) -> bool:
     """True when the student has activity and no learner_features row sits at its watermark.
 
@@ -183,9 +229,13 @@ class AgentsHook:
     (Code). The Code Agent's verdict is stored and nothing else: never posted, read by nothing."""
 
     def __init__(self, llm, budget: CallBudget, mem, out, daily_cap: int, *,
-                 code_agent: bool = False, code_prompt_cap: int = DEFAULT_CODE_PROMPT_CAP):
+                 code_agent: bool = False, code_prompt_cap: int = DEFAULT_CODE_PROMPT_CAP,
+                 agents_v2: bool = False, opt_out=frozenset(), ab: bool = False):
         self.llm, self.budget, self.mem, self.out, self.daily_cap = llm, budget, mem, out, daily_cap
         self.code_agent, self.code_prompt_cap = code_agent, code_prompt_cap
+        self.agents_v2 = agents_v2             # D-108: the v2 agents
+        self.opt_out = frozenset(opt_out)      # D-110: students who asked for no AI notes
+        self.ab = ab                           # D-110: the A/B arms of the Feedback Agent
 
     def today(self) -> str:
         return f"calls today: {self.budget.ledger.day_total()}/{self.daily_cap}"
@@ -215,7 +265,7 @@ class AgentsHook:
             if reason:
                 self._say(p, reason)
                 return
-            steps = [("feedback", lambda cur: self._feedback(cur, p))]
+            steps = [("feedback", lambda cur: self._feedback(cur, p, repo_dir))]
             if self.code_agent:
                 steps.append(("code_agent", lambda cur: self._code(cur, p, repo_dir, result)))
             errors = [(name, err) for name, fn in steps
@@ -228,13 +278,25 @@ class AgentsHook:
 
     def _gate(self, cur, p, result) -> str | None:
         """The reason NO agent runs on this commit, or None."""
+        if p.student_id in self.opt_out:                      # D-110: nothing is sent, ever
+            return "student opted out of AI notes (ai_notes in the roster), no agent"
         if pf.is_template_commit(cur, p.sha):                 # D-098: not a student action
             return "template push, no agent"
         if not result.tests_total:
             return "no test rows, no agent"
         return None
 
-    def _feedback(self, cur, p) -> None:
+    def _feedback(self, cur, p, repo_dir=None) -> None:
+        if self.ab:
+            from agents import ab
+            arm = ab.record_arm(self.mem, cur, p.student_id, p.assignment_id, p.attempt_id, p.sha)
+            if arm == ab.CONTROL:
+                return self._say(p, "ab arm=control: the deterministic text only, no agent, no "
+                                    "call")
+            if arm is not None:
+                self._say(p, f"ab arm={arm}")
+        if self.agents_v2:
+            return self._feedback_v2(cur, p, repo_dir)
         # No assignment and no code_path: the pipeline marks the Code Agent step `skipped` and makes
         # no call (the Code Agent is run by `_code`, below, in its own savepoint). The Feedback
         # Agent reads only test_results, the diagnosis and the mastery slice.
@@ -251,6 +313,22 @@ class AgentsHook:
         self._say(p, ", ".join(parts) + (f", coach trace {trace}" if trace else ", no trace")
                   + f"  ({self.today()})")
 
+    def _feedback_v2(self, cur, p, repo_dir) -> None:
+        """The Feedback Agent v2 (D-108): the student's lines, the reviewed check descriptions, the
+        recurrence and a hint level go in; a stub-only commit or one with no excerpt makes no call.
+        Stored as ONE coach/intervention trace (agent `feedback_agent_v2`) when it is an LLM answer
+        or the fixed stub sentence."""
+        from agents import feedback_v2 as fv2
+        result = fv2.build_feedback_v2(cur, p.attempt_id, p.sha, self.llm, self.budget,
+                                       repo_dir=repo_dir, memory=self.mem)
+        trace = agents_pipeline.persist_feedback(self.mem, cur, p.student_id, p.assignment_id,
+                                                 result)
+        why = f" ({'; '.join(result.reasons)})" if result.reasons else ""
+        self._say(p, f"feedback_agent_v2={result.source}, hint level {result.hint_level}, "
+                     f"{result.calls_made} provider call(s){why}"
+                     + (f", coach trace {trace}" if trace else ", no trace")
+                     + f"  ({self.today()})")
+
     def _code(self, cur, p, repo_dir, result) -> None:
         """The Code Agent for ONE commit whose checks all passed. Every refusal is a logged
         `skipped, reason`; nothing here can fail the grading."""
@@ -261,6 +339,17 @@ class AgentsHook:
         if failed:
             return skip(f"{failed} of {result.tests_total} check(s) failed: a failing commit gets "
                         "the Feedback Agent, never the Code Agent")
+        if self.agents_v2:
+            # D-109: ONCE PER ATTEMPT, on the commit that freezes it. A later passing commit is not
+            # graded after a freeze (D-069), and an attempt that already has a verdict (from any
+            # commit, from either version) is never judged a second time.
+            if not result.frozen:
+                return skip("v2 judges once per attempt, on the commit that freezes it, and "
+                            "this commit did not freeze the attempt")
+            found_any = code_agent.find_attempt_verdict(cur.connection, p.attempt_id)
+            if found_any is not None:
+                return self._say(p, f"code_agent already judged this attempt (trace "
+                                    f"{found_any[0]}): no call")
         assignment, file_path = agents_pipeline.load_assignment_inputs(cur, p.assignment_id)
         if not file_path:
             return skip("the assignment has no judgeable file (no file_path)")
@@ -277,7 +366,7 @@ class AgentsHook:
                 self.mem, p.student_id, assignment, str(repo_dir / file_path),
                 conn=cur.connection, llm_client=self.llm, budget=self.budget, scope=spec,
                 attempt_id=p.attempt_id, commit_sha=p.sha, checkout_root=repo_dir,
-                max_prompt_chars=self.code_prompt_cap)
+                max_prompt_chars=self.code_prompt_cap, production=self.agents_v2)
         except code_agent.SubmissionSkipped as exc:
             return skip(str(exc))
         except FileNotFoundError:
@@ -287,12 +376,26 @@ class AgentsHook:
         except SchemaValidationError:
             return skip("the judge's answer was not valid twice: nothing stored")
         used = len(code_agent.resolve_criteria(None, assignment))
+        if self.agents_v2:
+            used -= 1 if "correctness" in code_agent.resolve_criteria(None, assignment) else 0
         self._say(p, f"code_agent stored trace {trace_id} (rejected={bool(failures)}, "
-                     f"{used} criteria)  ({self.today()})")
+                     f"{used} criteria{', production v4' if self.agents_v2 else ''})  "
+                     f"({self.today()})")
+
+
+def ai_opt_out(roster: dict) -> frozenset:
+    """The students who must get NO AI note (D-110). A student listed in the roster with `ai_notes`
+    set to anything but `true` is opted out, and so is one whose value is a string like "off": the
+    switch FAILS CLOSED, because a value nobody understood must not send a student's code anywhere.
+    No `ai_notes` key means the instructor's settings apply (AI notes on, when the agents are)."""
+    return frozenset(s["student_id"] for s in (roster.get("students") or [])
+                     if isinstance(s, dict) and "ai_notes" in s and s["ai_notes"] is not True
+                     and s.get("student_id"))
 
 
 def _make_hook(llm, run_cap, daily_cap, ledger, mem, out, *, code_agent_on=False,
-               code_prompt_cap=DEFAULT_CODE_PROMPT_CAP) -> AgentsHook | None:
+               code_prompt_cap=DEFAULT_CODE_PROMPT_CAP, agents_v2=False, opt_out=frozenset(),
+               ab=False) -> AgentsHook | None:
     """None (with the reason printed) when the agents cannot be set up: the cycle goes on without
     them. A bad ledger file fails CLOSED: unknown usage means no spending."""
     try:
@@ -306,7 +409,8 @@ def _make_hook(llm, run_cap, daily_cap, ledger, mem, out, *, code_agent_on=False
             f"{str(exc).strip()[:200]})")
         return None
     return AgentsHook(llm, budget, mem, out, daily_cap, code_agent=code_agent_on,
-                      code_prompt_cap=code_prompt_cap)
+                      code_prompt_cap=code_prompt_cap, agents_v2=agents_v2, opt_out=opt_out,
+                      ab=ab)
 
 
 # --- plan mode ----------------------------------------------------------------------------------
@@ -512,7 +616,8 @@ def run_cycle(roster: dict, *, student: str | None = None, dry_run: bool = False
               out=print, llm_run_cap: int = DEFAULT_LLM_RUN_CAP,
               llm_daily_cap: int = DEFAULT_LLM_DAILY_CAP, llm=None, ledger=None,
               with_code_agent: bool = False, code_prompt_cap: int = DEFAULT_CODE_PROMPT_CAP,
-              plan: bool = False, env=None) -> CycleResult:
+              plan: bool = False, env=None, agents_v2: bool = False,
+              ab_llm: bool = False) -> CycleResult:
     """Run one cycle over `roster`. Never raises for a single student's failure.
 
     `conn`: tests only (see `_unit`). `collect` / `checkout` / `grade` are injectable so the
@@ -521,8 +626,18 @@ def run_cycle(roster: dict, *, student: str | None = None, dry_run: bool = False
     `system.llm` and the `.vdel/llm_usage.json` file. `env`: the environment plan mode reports on
     (default `os.environ`).
 
-    `with_code_agent` (D-104) is refused unless `with_llm` is also set. `plan=True` reads and prints
-    only (see `_plan_report`)."""
+    `with_code_agent` (D-104), `agents_v2` (D-108) and `ab_llm` (D-110) are refused unless
+    `with_llm` is also set. `plan=True` reads and prints only (see `_plan_report`)."""
+    if ab_llm and not with_llm:
+        msg = ("REFUSED: --ab-llm runs only together with --with-llm (it decides which commits get "
+               "the agent's paragraph). Nothing was done.")
+        out(msg)
+        return CycleResult(EXIT_REFUSED, message=msg)
+    if agents_v2 and not with_llm:
+        msg = ("REFUSED: --agents-v2 runs only together with --with-llm (it changes how the agents "
+               "work, behind the same call caps). Nothing was done.")
+        out(msg)
+        return CycleResult(EXIT_REFUSED, message=msg)
     if with_code_agent and not with_llm:
         msg = ("REFUSED: --with-code-agent runs only together with --with-llm (the Code Agent is a "
                "second agent of the same hook, behind the same call caps). Nothing was done.")
@@ -558,7 +673,8 @@ def run_cycle(roster: dict, *, student: str | None = None, dry_run: bool = False
                            collect, checkout, grade, out,
                            {"llm": llm, "run_cap": llm_run_cap, "daily_cap": llm_daily_cap,
                             "ledger": ledger, "code_agent": with_code_agent,
-                            "code_prompt_cap": code_prompt_cap})
+                            "code_prompt_cap": code_prompt_cap, "agents_v2": agents_v2,
+                            "ab": ab_llm, "opt_out": ai_opt_out(roster)})
     finally:
         lock_conn.close()                 # closing the session releases the advisory lock
 
@@ -569,6 +685,7 @@ def _run_student(sid, repos, repo_for, mem, conn, skip_network, dry_run,
     next stage still runs; nothing here can stop another student."""
     out(f"[{sid}]")
     res = StudentResult(sid)
+    _warn_unrostered(conn, sid, repo_for, out)
     stages = []
     if not skip_network:
         stages.append(("collect", lambda: _stage_collect(
@@ -614,10 +731,15 @@ def _run_locked(roster, student, dry_run, skip_network, with_llm, conn,
         run_cap, daily_cap = cfg.get("run_cap", 0), cfg.get("daily_cap", 0)
         hook = _make_hook(cfg.get("llm"), run_cap, daily_cap, cfg.get("ledger"), mem, out,
                           code_agent_on=cfg.get("code_agent", False),
-                          code_prompt_cap=cfg.get("code_prompt_cap", DEFAULT_CODE_PROMPT_CAP))
+                          code_prompt_cap=cfg.get("code_prompt_cap", DEFAULT_CODE_PROMPT_CAP),
+                          agents_v2=cfg.get("agents_v2", False),
+                          opt_out=cfg.get("opt_out", frozenset()), ab=cfg.get("ab", False))
         if hook is not None:
             out(f"llm: ON, run cap {run_cap}, daily cap {daily_cap} provider call(s) "
-                f"({hook.today()}); Code Agent {'ON' if hook.code_agent else 'off'}")
+                f"({hook.today()}); Code Agent {'ON' if hook.code_agent else 'off'}"
+                + ("; agents v2 ON" if hook.agents_v2 else "")
+                + ("; A/B arms ON" if hook.ab else "")
+                + (f"; opted out: {', '.join(sorted(hook.opt_out))}" if hook.opt_out else ""))
     # The real ceiling (D-104): every provider handler is wrapped for the run, so the run cap and
     # what is left of the daily cap hold even when the gateway walks its fallback chain, which the
     # budget (it counts answers, not failed attempts) cannot see.
@@ -661,6 +783,13 @@ def add_llm_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--with-code-agent", action="store_true",
                         help="ALSO run the Code Agent on a commit whose checks all passed (OFF by "
                              "default; needs --with-llm; its verdict is stored, never posted)")
+    parser.add_argument("--agents-v2", action="store_true",
+                        help="use the v2 agents (OFF by default; needs --with-llm): the Feedback "
+                             "Agent sees the student's own lines and gives a hint ladder")
+    parser.add_argument("--ab-llm", action="store_true",
+                        help="A/B experiment (OFF by default; needs --with-llm): half of the "
+                             "failing "
+                             "commits, chosen by a fixed hash, get the deterministic text alone")
     parser.add_argument("--code-agent-max-chars", type=int, default=DEFAULT_CODE_PROMPT_CAP,
                         help="skip the Code Agent when the judged lines plus context are longer "
                              "than this (default %(default)s)")
@@ -688,7 +817,8 @@ def main(argv: list[str] | None = None) -> int:
                        skip_network=args.skip_network, with_llm=args.with_llm,
                        llm_run_cap=args.llm_run_cap, llm_daily_cap=args.llm_daily_cap,
                        with_code_agent=args.with_code_agent,
-                       code_prompt_cap=args.code_agent_max_chars, plan=args.plan)
+                       code_prompt_cap=args.code_agent_max_chars, plan=args.plan,
+                       agents_v2=args.agents_v2, ab_llm=args.ab_llm)
     return result.exit_code
 
 
