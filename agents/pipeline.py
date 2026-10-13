@@ -117,17 +117,20 @@ def persist_feedback(mem: Any, cur: Any, student_id: str, assignment_id: str | N
     transaction (no SQL INSERT here, no commit; invariant 2). The payload also carries
     `addendum_markdown`, the model-only paragraph the hourly phase may post under the
     deterministic text; it is stored already redacted and checked against the hidden tests."""
-    if not result.used_llm or result.input is None:
+    if not result.storable or result.input is None:
         return None
     inp = result.input
     cur.execute("SELECT 1 FROM traces WHERE actor = 'coach' AND kind = 'intervention'"
                 " AND payload->>'agent' = %s AND payload->>'commit_sha' = %s"
-                " AND (payload->>'attempt_id')::bigint = %s", (fa.AGENT, inp.commit_sha,
+                " AND (payload->>'attempt_id')::bigint = %s", (result.agent_id, inp.commit_sha,
                                                               inp.attempt_id))
     if cur.fetchone() is not None:
         return None
     payload = result.to_trace_payload()
-    payload["addendum_markdown"] = checked_addendum(inp, result.output)
+    # v2 results build their own paragraph (level line + model words); v1 is unchanged (D-108).
+    payload["addendum_markdown"] = (result.addendum_markdown()
+                                    if hasattr(result, "addendum_markdown")
+                                    else checked_addendum(inp, result.output))
     return mem.log_trace(student_id, "coach", "intervention", payload,
                          assignment_id=assignment_id, concept_ids=list(inp.concepts),
                          conn=cur.connection)
@@ -146,8 +149,24 @@ def checked_addendum(inp: fa.FeedbackInput, out: fa.FeedbackOutput | None) -> st
     return text
 
 
-def find_feedback_addendum(cur: Any, attempt_id: int, commit_sha: str) -> str | None:
-    """The stored LLM paragraph for one (attempt, commit), or None. Read-only."""
+def find_feedback_addendum(cur: Any, attempt_id: int, commit_sha: str, *,
+                           agents_v2: bool = False) -> str | None:
+    """The stored LLM paragraph for one (attempt, commit), or None. Read-only.
+
+    `agents_v2` (D-108): look first for a `feedback_agent_v2` row (an LLM answer or the fixed stub
+    sentence), then fall back to the v1 row, so a commit graded before the flag was switched on
+    keeps its paragraph. Off (the default) the query is exactly the one that existed before."""
+    if agents_v2:
+        from agents import feedback_v2 as fv2  # only now: flag off never imports it
+        cur.execute("SELECT payload->>'addendum_markdown' FROM traces"
+                    " WHERE actor = 'coach' AND kind = 'intervention'"
+                    " AND payload->>'agent' = %s AND payload->>'commit_sha' = %s"
+                    " AND (payload->>'attempt_id')::bigint = %s AND payload->>'source' = ANY(%s)"
+                    " ORDER BY trace_id DESC LIMIT 1",
+                    (fv2.AGENT_V2, commit_sha, attempt_id, [fa.SOURCE_LLM, fv2.SOURCE_STUB]))
+        row = cur.fetchone()
+        if row and row[0]:
+            return row[0]
     cur.execute("SELECT payload->>'addendum_markdown' FROM traces"
                 " WHERE actor = 'coach' AND kind = 'intervention'"
                 " AND payload->>'agent' = %s AND payload->>'commit_sha' = %s"

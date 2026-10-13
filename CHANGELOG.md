@@ -19,6 +19,9 @@ status. Decisions D-200 and up (the agents branch) are in
   `config/checks.py` and a `statement` form in `config/judging.yaml` that ignore drafts,
   `scripts/validate_master.py` (markers, ids across the curriculum, test coverage, descriptions, judging,
   resources).
+- **D-108** Stage 4: `--agents-v2` and the Feedback Agent v2 (prompt `fb2`): the student's own lines, reviewed
+  check descriptions, recurrence, a three-level hint ladder, a stricter validator, no provider call for a stub-only
+  commit or when there is nothing to quote.
 - Later stages of the branch (handoff documentation, authoring scaffolding, agents v2, pilot preparation)
   add their own entries; see [docs/FINALIZE_PROGRESS.md](docs/FINALIZE_PROGRESS.md).
 

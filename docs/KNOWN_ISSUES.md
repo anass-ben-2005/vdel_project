@@ -185,7 +185,18 @@ read with a read-only `SELECT` on that day.
   leftover by hand.
 - **Recorded.** D-107 (gate), this file.
 
-### 21. Fixed while writing this file
+### 21. The v2 Feedback Agent has never met a real model
+- **Impact.** `--agents-v2` (D-108) is tested only against the scripted fake provider. How often a real model
+  passes its validator (quotes, no code, no copy of the solution, no repeated counts) is unknown; every
+  rejection costs one more call and ends in the deterministic text. The thresholds (100 and 60 characters,
+  4-grams at 25%, 4000 characters of excerpt, the 1/2/3 ladder) are design choices, not measurements. While the
+  fifteen check descriptions are `draft`, level 1 has no expected-behaviour sentence.
+- **Workaround.** Try it by hand on one student (`docs/OPERATIONS.md` section 16) and read the log lines
+  `feedback_agent_v2=...`; a high share of `deterministic_v0_fallback` means the thresholds or the prompt
+  need to move. Review the descriptions in `config/checks.yaml`.
+- **Recorded.** D-108.
+
+### 22. Fixed while writing this file
 - `RequestsDependencyWarning` on every import: a stray `chardet` 7.x with `requests` 2.32.3.
   `requirements.txt` now pins `chardet>=5.2,<6`; on a machine that already has 7.x run
   `pip install "chardet<6"` (the environment was not changed by this work).

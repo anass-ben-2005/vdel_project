@@ -2215,6 +2215,18 @@ Added on the `v1-finalize` branch; each is a small script with its own test file
   syntax and concepts through `parse_master`, gap ids unique across the curriculum, hidden tests read with
   `ast` (gap markers, coverage), `checks.yaml` coverage, `judging.yaml` entry, resources per concept.
 
+### 7.24 `agents/feedback_v2.py` and `--agents-v2` (D-108)
+
+The Feedback Agent v2, a separate module and prompt (`fb2`) so that v1 stays byte-identical with the flag off.
+`gather_input_v2` adds to the v1 facts the recurrence (`failure_counts`), the reviewed check descriptions
+(`config/checks.py`), the focus check and hint level, and the student's excerpt (`agents/scope.py`). The
+reference solution is read by `master_bodies` for the validator only. `validate_output_v2` runs every v1 rule
+and then the quote, code, solution-overlap and repetition rules. `run_feedback_agent_v2` makes no provider call
+for a stub-only commit or when there is no excerpt. `FeedbackResultV2` overrides `agent_id`, `storable`,
+`addendum_markdown` and `to_trace_payload`; `agents.pipeline.persist_feedback` reads those, which for a v1
+result give exactly the old values. In `scripts/run_cycle.py`, `AgentsHook(agents_v2=True)` routes `_feedback` to
+`_feedback_v2`; `scripts/run_hourly.py` passes the flag to the cycle and to the poster's addendum lookup.
+
 ## 8. The twelve non-negotiable invariants
 
 From `CLAUDE.md` §7, and how each one is actually enforced (not just stated) in this

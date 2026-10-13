@@ -436,3 +436,34 @@ Before a new or changed master project is issued to anyone, run the read-only va
 python -m scripts.validate_master weather_etl            # markers, ids, tests, public descriptions, judging, resources
 python -m scripts.validate_master --require-reviewed     # drafts count as errors: the check before a pilot
 ```
+
+## 16. The v2 agents: `--agents-v2` (D-108)
+
+Off by default, refused without `--with-llm`, and **not** a switch of `register_task.ps1`: use it by hand
+first. It changes the Feedback Agent only (stage 5 adds the Code Agent). Without the flag nothing changes,
+byte for byte.
+
+What a failing commit gets with it:
+
+- the student's own gap lines (plus three lines of context) go to the model, with the reviewed public
+  description of each failing check (`config/checks.yaml`, drafts never), how many pushes each check has
+  failed on, and a hint level chosen by code: 1 push -> the expected behaviour in words, 2 -> one quoted line of
+  their code, 3 or more -> a strategy in words. Never code.
+- a commit whose only failures are `NotImplementedError` stubs gets one fixed sentence ("Where to start") and
+  **no provider call**; so does a commit from which no lines of the student's can be cut out.
+- a reply is rejected (then one corrective call, then the deterministic text alone) unless it quotes the
+  student's code verbatim, writes no code, does not copy the reference solution and does not repeat the counts
+  or test names.
+
+```powershell
+$env:LLM_PROVIDER = "openai"
+python -m scripts.run_cycle --student anas --plan --with-llm --agents-v2        # reads only
+python -m scripts.run_cycle --student anas --with-llm --agents-v2 --llm-run-cap 10 --llm-daily-cap 20
+```
+
+In the cycle's log look for `agents v2 ON` and, per commit, `feedback_agent_v2=<source>, hint level N, K
+provider call(s)` with `<source>` one of `llm`, `deterministic_stub`, `deterministic_no_excerpt`,
+`deterministic_v0_fallback` (the model was tried and rejected; the reasons follow). The hourly task passes the
+flag too when run by hand (`python -m scripts.run_hourly --with-llm --agents-v2`) and then posts the v2
+paragraph under the deterministic text, or the v1 paragraph for a commit graded before the switch. Until the
+author marks the check descriptions `reviewed`, level 1 has no "Expected behaviour" sentence.

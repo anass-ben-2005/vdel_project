@@ -107,13 +107,16 @@ def rotate_logs(log_dir: Path, now: datetime, keep_days: int = LOG_KEEP_DAYS) ->
     return removed
 
 
-def _plan(cur, attempt_id: int, sha: str, repo_for: dict, *, with_llm: bool, out):
+def _plan(cur, attempt_id: int, sha: str, repo_for: dict, *, with_llm: bool, out,
+          agents_v2: bool = False):
     """The post plan: deterministic text, plus the stored LLM paragraph under it when `with_llm`.
     Any problem with the paragraph (none stored, hidden source in it, a read error) gives the
     deterministic plan alone; the LLM text can add to a comment, never remove or block one."""
     if with_llm:
         try:
-            addendum = find_feedback_addendum(cur, attempt_id, sha)
+            # the keyword only when the flag is on: flag off, the call is exactly what it was
+            extra = {"agents_v2": True} if agents_v2 else {}
+            addendum = find_feedback_addendum(cur, attempt_id, sha, **extra)
             if addendum:
                 return plan_issue_post(cur, attempt_id, sha, repo_for, addendum=addendum)
         except HiddenSourceLeak:
@@ -122,7 +125,7 @@ def _plan(cur, attempt_id: int, sha: str, repo_for: dict, *, with_llm: bool, out
     return plan_issue_post(cur, attempt_id, sha, repo_for)
 
 
-def _refusal(with_llm: bool, with_code_agent: bool, env) -> str | None:
+def _refusal(with_llm: bool, with_code_agent: bool, env, agents_v2: bool = False) -> str | None:
     """Why this run must not start, or None. Checked before the lock, the database or any work.
 
     * `--with-code-agent` needs `--with-llm` (the Code Agent is a second agent of the same hook).
@@ -131,6 +134,8 @@ def _refusal(with_llm: bool, with_code_agent: bool, env) -> str | None:
       it is imported, so a value there counts."""
     if with_code_agent and not with_llm:
         return "--with-code-agent runs only together with --with-llm."
+    if agents_v2 and not with_llm:
+        return "--agents-v2 runs only together with --with-llm."
     if with_llm and not (env.get("LLM_PROVIDER") or "").strip():
         return ("--with-llm needs LLM_PROVIDER to be set (for the scheduled task: register it with "
                 "-WithLlm, which sets it for the task only). The gateway's default provider is not "
@@ -152,7 +157,7 @@ def _announce_provider(env, out) -> None:
 
 
 def _feedback_phase(roster: dict, *, write: bool, lookback_hours: int, gh, out,
-                    conn=None, with_llm: bool = False) -> int:
+                    conn=None, with_llm: bool = False, agents_v2: bool = False) -> int:
     """Comment on the recently graded commits. Returns the number of failures. `conn`: a caller's
     transaction (tests), never committed, rolled back or closed here."""
     repo_for = roster_repo_for(roster)
@@ -169,7 +174,8 @@ def _feedback_phase(roster: dict, *, write: bool, lookback_hours: int, gh, out,
                 out(f"[{student}] feedback: nothing new in the last {lookback_hours} h")
                 continue
             for attempt_id, sha in todo:
-                plan = _plan(cur, attempt_id, sha, repo_for, with_llm=with_llm, out=out)
+                plan = _plan(cur, attempt_id, sha, repo_for, with_llm=with_llm, out=out,
+                             agents_v2=agents_v2)
                 label =f"[{student}] attempt {attempt_id} commit {sha[:10]} -> " \
                         f"{plan.owner}/{plan.repo}"
                 if not write:
@@ -202,7 +208,7 @@ def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
         with_llm: bool = False, llm_run_cap: int = rc.DEFAULT_LLM_RUN_CAP,
         llm_daily_cap: int = rc.DEFAULT_LLM_DAILY_CAP, llm=None, ledger=None,
         with_code_agent: bool = False, code_prompt_cap: int = rc.DEFAULT_CODE_PROMPT_CAP,
-        env=None) -> int:
+        env=None, agents_v2: bool = False) -> int:
     """One hourly run. `collect` / `checkout` / `grade` / `gh` / `out` / `conn` are injectable for
     tests (`conn`: one caller-owned transaction used by the cycle and the feedback phase); so are
     `llm` and `ledger` (a `FakeLLM`, an in-memory `UsageLedger`) and `env` (the environment checked
@@ -221,8 +227,10 @@ def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
             out(f"log rotation: removed {name}")
         out(f"run_hourly {now:%Y-%m-%d %H:%M} UTC  {'DRY-RUN' if dry_run else 'LIVE'}"
             f"{', network skipped' if skip_network else ''}"
-            f"{', agents ON' if with_llm else ''}{' + Code Agent' if with_code_agent else ''}")
-        refusal = _refusal(with_llm, with_code_agent, os.environ if env is None else env)
+            f"{', agents ON' if with_llm else ''}{' + Code Agent' if with_code_agent else ''}"
+            f"{' + v2' if agents_v2 else ''}")
+        refusal = _refusal(with_llm, with_code_agent, os.environ if env is None else env,
+                           agents_v2)
         if refusal:
             out(f"REFUSED: {refusal}")
             out("Nothing was collected, graded or posted in this run, so nothing was half-done. "
@@ -259,7 +267,7 @@ def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
             cycle = rc.run_cycle(roster, dry_run=dry_run, skip_network=skip_network, out=out,
                                  conn=conn, with_llm=with_llm, llm_run_cap=llm_run_cap,
                                  llm_daily_cap=llm_daily_cap, llm=llm, ledger=ledger,
-                                 with_code_agent=with_code_agent,
+                                 with_code_agent=with_code_agent, agents_v2=agents_v2,
                                  code_prompt_cap=code_prompt_cap, **injected)
             if cycle.exit_code in (rc.EXIT_DB_DOWN, rc.EXIT_LOCKED):
                 return EXIT_DB_DOWN if cycle.exit_code == rc.EXIT_DB_DOWN else EXIT_LOCKED
@@ -268,7 +276,8 @@ def run(*, roster_path: str | Path | None = None, dry_run: bool = False,
             out("")
             out(f"feedback by issue: {'WRITES ON' if write else 'writes off'}")
             failures = _feedback_phase(roster, write=write, lookback_hours=lookback_hours, gh=gh,
-                                       out=out, conn=conn, with_llm=with_llm)
+                                       out=out, conn=conn, with_llm=with_llm,
+                                       agents_v2=agents_v2)
             code = EXIT_FAILED if (cycle.exit_code or failures) else EXIT_OK
             out(f"run_hourly done: cycle exit {cycle.exit_code}, feedback failures {failures} "
                 f"-> exit {code}")
@@ -296,7 +305,8 @@ def main(argv: list[str] | None = None) -> int:
     return run(roster_path=args.roster, dry_run=args.dry_run, skip_network=args.skip_network,
                lookback_hours=args.lookback_hours, with_llm=args.with_llm,
                llm_run_cap=args.llm_run_cap, llm_daily_cap=args.llm_daily_cap,
-               with_code_agent=args.with_code_agent, code_prompt_cap=args.code_agent_max_chars)
+               with_code_agent=args.with_code_agent, code_prompt_cap=args.code_agent_max_chars,
+               agents_v2=args.agents_v2)
 
 
 if __name__ == "__main__":
