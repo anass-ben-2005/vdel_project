@@ -15,7 +15,7 @@ never staged by a stage that does not own them.
 | Stage | Status | Commit | Decisions |
 |---|---|---|---|
 | 1 Hygiene | DONE (1410 passed, 3 skipped, 1 xfailed; baseline identical; ruff clean) | see `git log` | D-105 |
-| 2 Handoff documentation | not started | - | |
+| 2 Handoff documentation | DONE (docs only; 1410 passed, 3 skipped, 1 xfailed; baseline identical; ruff clean) | see `git log` | D-106 |
 | 3 Authoring scaffolding | not started | - | |
 | 4 Feedback Agent v2 (`--agents-v2`) | not started | - | |
 | 5 Code Agent v2 (`--agents-v2`) | not started | - | |
@@ -35,8 +35,11 @@ Taken before stage 1 (`python -m scripts.baseline --full`, 42 lines): attempts 1
 - D-105 2: `pip install "chardet<6"` is the user's to run; the suite under chardet 5.2 was not run.
 - D-105 3: `.env.example` has optional variables commented out; `LLM_MODEL` removed (unused).
 - D-105 5, 6: `roster_apply` exit code 2 without `--yes`; the default hint of `publish_repo`'s CLI changed.
+- D-106 c: prompt names. Feedback Agent v2 = `fb2`, Code Agent v2 = `v4` (the brief says "v4 / v3"); CONFIRM before stage 4.
 - D-105 8: "formula v9" and "3 unattributed commits" (the database has 4) need the user's answer.
 
 ## Blocked / skipped commands
 
-None so far.
+- Stage 1 follow-up: creating a Python 3.11 venv and installing `requirements.txt` into it (to check the pins
+  install on the Python version CI uses) was denied by a permission rule; not redone another way. Recorded in
+  D-105 and `docs/INSTALL.md` as not verified.

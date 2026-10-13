@@ -141,7 +141,8 @@ read with a read-only `SELECT` on that day.
 ### 15. The scheduler scripts are Windows-only
 - **Impact.** `scripts/windows/register_task.ps1` registers a Task Scheduler task; there is no cron or
   systemd equivalent in the repository. The PC must be on, logged in and running Docker.
-- **Workaround.** Run `python -m scripts.run_hourly` from cron by hand (`docs/INSTALL.md`, once written).
+- **Workaround.** Run `python -m scripts.run_hourly` from cron; `docs/INSTALL.md` section 11 gives the line
+  (not verified).
 - **Recorded.** D-091, `docs/OPERATIONS.md` section 10.
 
 ### 16. Airflow has never run here

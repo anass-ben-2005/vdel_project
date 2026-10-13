@@ -1,67 +1,85 @@
-# VDEL — Student-Side AI Intelligence Layer
+# VDEL: the student-side AI layer
 
-Watches students work via GitHub, maintains an event-sourced model of each student, and
-uses it to grade submissions with explainable agents and coach students who are stuck.
+VDEL is a Virtual Data Engineering Lab (UiTM, with the industry partner AntsBees) that teaches Python,
+SQL, PySpark and Airflow. This repository is its **student-side intelligence layer**. It watches what a
+student pushes to GitHub, keeps a private, continuously updated model of that student, and uses it to
+**grade** the work with executed tests and to **coach** the student with feedback on the failing checks.
 
-> Auditability is a functional requirement. A grade we cannot explain is not a grade we
-> can defend.
+> Auditability is a functional requirement. A grade we cannot explain is not a grade we can defend.
 
-## Quick start
+That sentence decides the design: correctness comes from hidden tests that really run, never from a
+language model; every score an LLM does give carries a verbatim quote from the code, checked by string
+match; mastery is an interpretable model (BKT), not a neural one; and the record of what happened is an
+append-only log from which every belief can be rebuilt.
+
+## Who it is for
+
+| You are | Start with |
+|---|---|
+| The **operator** (you run the hourly task for one or a few students) | [docs/INSTALL.md](docs/INSTALL.md), then [docs/OPERATIONS.md](docs/OPERATIONS.md) |
+| A **course author** (you write a project the students complete) | [docs/AUTHORING.md](docs/AUTHORING.md) |
+| A **developer** (you change the code) | [CONTRIBUTING.md](CONTRIBUTING.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| A **supervisor or reviewer** (you want to know what is claimed and what is proven) | [docs/DECISIONS.md](docs/DECISIONS.md), [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md), [CHANGELOG.md](CHANGELOG.md) |
+
+## What it does, in one pass
+
+1. A course author writes a **master project** with `# @gap:` markers; each marked block is something a
+   student must write. Hidden tests grade it.
+2. For each student and attempt the system **renders a repository** with some gaps blanked (which ones is
+   chosen deterministically from the student's mastery) and **publishes it** as a private GitHub repo.
+3. Every hour a task **collects** the student's commits and CI runs, **grades each new commit** by running
+   the hidden tests (in a Docker container if configured), updates the **mastery model** and the seven-plus
+   variables, and **comments on a GitHub issue** with what failed and what to check next.
+4. Optionally (off by default, capped, never decisive) two LLM agents help: a **Feedback Agent** words the
+   diagnosis, a **Code Agent** reads working code and scores approach and readability for the instructor.
+
+## A five-minute tour (nothing here writes anywhere)
 
 ```bash
-cp .env.example .env                # PG_DSN is pre-filled; add GITHUB_TOKEN
-docker compose up -d                # PostgreSQL 16 + pgvector, on host port 5433
+cp .env.example .env                  # fill PG_DSN and GITHUB_TOKEN (names only in the example)
+docker compose up -d                  # PostgreSQL 16 + pgvector on host port 5433
 pip install -r requirements.txt && pip install -e .
-python -m scripts.init_db           # idempotent; re-running is a no-op
-python -m scripts.smoke_test        # tables present + traces is append-only
-pytest -q
+python -m scripts.init_db             # idempotent: creates the schema
+python -m scripts.doctor --no-network # OK/WARN/FAIL for the machine; read-only
+python -m scripts.baseline --full     # a read-only fingerprint of the database
+VDEL_REQUIRE_DB=1 python -m pytest -q # the suite, on its own throwaway database
 ```
 
-Host port is **5433**, not 5432 — a native PostgreSQL service commonly owns 5432 and
-shadows the container silently, surfacing only as "password authentication failed".
+The host port is **5433**, not 5432: a native PostgreSQL commonly owns 5432 and shadows the container,
+which then shows up only as "password authentication failed". On a fresh clone `doctor` reports the
+missing roster as a failure; that is expected until the next step.
 
-## Collecting real telemetry
+To add a real student, copy `config/roster.example.yaml` to `config/roster.yaml`, fill in real values,
+and follow [docs/INSTALL.md](docs/INSTALL.md): seed, collect, then
+`python -m scripts.run_cycle --dry-run` (what one cycle would do, touching nothing) and the real cycle.
 
-```bash
-cp config/roster.example.yaml config/roster.yaml   # your real repos and start dates
-python -m scripts.seed_data
-python -m scripts.collect                          # backfill
-python -m scripts.collect                          # re-run: almost no API calls
-python -m features.compute_features
+## Where things are
+
+```
+assessment/   gap parser and generator, the hidden-test runner, scope check, diagnosis
+agents/       Feedback Agent, Code Agent, validation, prompts, budget, fake LLM for tests
+collectors/   GitHub collector and CI error classifier
+config/       concepts.yaml (the taxonomy), judging.yaml, resources.csv, roster example
+curriculum/   master projects (weather_etl, sales_analyzer) with hidden and visible tests
+features/     the variables computed from the raw tables
+memory/       the only door to traces and the learner profile
+scripts/      every command (run_cycle, run_hourly, doctor, deliver_next_attempt, ...)
+sql/          the schema, applied in order by scripts/init_db.py
+system/       the database door and the LLM gateway
+variables/    the formulas V1 to V6
+docs/         operations, decisions, architecture, authoring, known issues
 ```
 
-Nothing is seeded by default. `released_at` starts the Learning Pace clock, so a
-made-up date makes V4 meaningless.
-
-## Where the code comes from
-
-The formulas are **transcribed**, not designed. `variables/*.py`,
-`collectors/*.py` and the schema come from `VDEL_Modules_1_2_Build.md`; each file names
-its source in the module docstring and marks any addition inline. Files held
-character-for-character against the document are exempted from cosmetic lint rules in
-`pyproject.toml` so a diff against the source stays empty.
-
-| Module | Variable | Method |
-|---|---|---|
-| `variables/mastery.py` | V1 Concept Mastery | BKT + KT-IDEM + Beta posterior |
-| `variables/habits.py` | V2 Discipline · V3 Effort | Cronbach α gate · burstiness |
-| `variables/pace.py` | V4 Learning Pace | survival analysis, censoring-aware |
-| `variables/error_response.py` | V5 Error Response | Jadud/Watwin + wheel-spinning |
-| `variables/error_frequency.py` | V6 Error Frequency | opportunity-normalised |
-| — | V7 Help-Seeking | seam only; needs the coach (M7) |
-
-## Architecture
-
-- **Land raw first.** Formulas change and carry a `formula_ver`; history is only
-  recomputable if the raw events were kept.
-- **Event sourcing.** `traces` is append-only — enforced by a database rule, not by
-  convention. `learner_profile` is derived and can be rebuilt from it.
-- **Fast path / slow path.** Deterministic per-event updates; one weekly LLM reflection.
+A module-by-module map with a diagram is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the vocabulary
+is in [docs/GLOSSARY.md](docs/GLOSSARY.md).
 
 ## Status
 
-M0 (foundations) and M1 (telemetry + features) are built. M2 memory, M3 LLM gateway and
-M4 Code Agent are next; see `BUILD_PLAN.md`.
+Built and running for one student (`anas`) and tested end to end: telemetry and features, the
+event-sourced memory, hidden-test grading with a Docker sandbox, per-commit feedback by GitHub issue,
+delivery of the next attempt, the hourly Windows task, and the two agents behind flags. Not built:
+differential testing, the Reviewer and orchestrator, the Coach, the knowledge graph. What is unproven or
+wrong is listed in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md); in particular **the Code Agent is an
+unmeasured judge and its verdict is never shown to students**.
 
-Known open questions are marked `TODO(verify)` in the code, and one worked-example
-discrepancy is recorded as a strict `xfail` in `tests/test_sara.py`.
+Authors: Anas (intern, student side); collaborator Hanafi (tutor side); supervisor Dr. Ezzatul Akmal.
