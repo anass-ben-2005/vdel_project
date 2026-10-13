@@ -43,7 +43,8 @@ EXECUTION.md
 #   reading/             compressed reads, valid "until the code changes"
 #   *OVERNIGHT_REPORT.md batch reports kept local on purpose (agents branch, v1 batch)
 #   design/              the redesign document, listed as "not meant for the public repo" above
-# docs/FINALIZE_PROGRESS.md is deliberately NOT here: it is how a new session resumes the work.
+# docs/FINALIZE_PROGRESS.md, docs/CLEANUP_PLAN.md, docs/DOCS_TRIAGE.md, STATUS.md and the AI-assistant
+# policy documents now live in private/ (below), not in docs/.
 docs/STATUS.md
 docs/FRAMEWORK_STATUS.md
 docs/HANDOFF.md
@@ -84,3 +85,7 @@ backups/
 
 # run_hourly.py logs (scripts/run_hourly.py, D-091): one file per day, 14 days kept
 logs/
+
+# The author's private working files (session logs, evidence, analyses, assistant policy). They stay
+# on disk inside the repository folder and are never tracked or delivered.
+private/
