@@ -28,28 +28,28 @@ assignments:
       description: >-
         When the first request to the weather service fails with a connection error and a later
         request succeeds, fetch_weather keeps trying and returns the data from the successful
-        response. Once a request has succeeded it makes no further requests.
-      status: draft
+        response.
+      status: reviewed
     - test: tests/hidden/test_extract.py::test_fetch_weather_raises_after_max_attempts
       gap: g_ext_retry
       description: >-
         When every request fails with a connection error, fetch_weather stops after the allowed
         number of attempts and lets the connection error reach the caller instead of hiding it or
         returning something else.
-      status: draft
+      status: reviewed
     - test: tests/hidden/test_extract.py::test_parse_response_missing_key_returns_none
       gap: g_ext_parse
       description: >-
         When the response has a "current" section that lacks some of the readings, parse_response
         returns the readings that are present with their values and None for each one that is
         missing, without raising an error.
-      status: draft
+      status: reviewed
     - test: tests/hidden/test_extract.py::test_parse_response_missing_current_key_entirely
       gap: g_ext_parse
       description: >-
         When the response has no "current" section at all, parse_response returns all three
-        readings (temperature, humidity, wind speed) as None instead of failing with a KeyError.
-      status: draft
+        readings (temperature, humidity, wind speed) as None without raising an error.
+      status: reviewed
 
   weather_etl_transform:
     - test: tests/hidden/test_transform.py::test_clean_readings_drops_null_temp
