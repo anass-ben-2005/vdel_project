@@ -499,7 +499,7 @@ the two files can't silently drift apart.
 > §7.1–§7.7 are the variables themselves. §7.8–§7.10 are what consumes them:
 > `compute_features.py`, the DAG, and now `memory/memory.py`. The section numbering is
 > kept as-is rather than promoting §7.10 to a top-level section, because `§11` (the
-> verification block) is cited from `DEVELOPMENT_MAP.md`, `HANDOFF.md`, `STATUS.md` and
+> verification block) is cited from `docs/archive/DEVELOPMENT_MAP.md`, `HANDOFF.md`, `STATUS.md` and
 > `SETUP.md`, and renumbering would invalidate dated evidence in `STATUS.md`.
 
 **This is the mathematical core of the project.** Every module here is a
@@ -1270,7 +1270,7 @@ one each fail exactly their own test.
 Rule-based, no LLM, no network, no cost. It judges a submission from one fact — the CI
 conclusion — and its real product is not the judgement but **the interface**: the `grade()`
 signature that M4's `agents/code_agent.py` must preserve so that milestone is an internals
-swap and not a refactor. `DEVELOPMENT_MAP.md` D.3 names this as one of the three integration
+swap and not a refactor. `docs/archive/DEVELOPMENT_MAP.md` D.3 names this as one of the three integration
 seams, and the reason it is worth a whole file is that the seam would otherwise be defined by
 whoever writes M4 first, under deadline.
 

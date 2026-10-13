@@ -527,17 +527,17 @@ Defence:     "Invariant 6 is written to defend against hallucinated quotes. My r
 Date:        2026-08-12
 Status:      DECIDED
 Context:     `BUILD_PLAN.md`'s M3 header reads "parallelisable with M1–M2 (split with
-             Hanafi)", and `DEVELOPMENT_MAP.md` §C.5/§D.4 build on that assumption — Hanafi
+             Hanafi)", and `docs/archive/DEVELOPMENT_MAP.md` §C.5/§D.4 build on that assumption — Hanafi
              running some benchmark candidates in parallel with Anas. That split is not
              happening: Anas runs every candidate himself.
 Decision:    M3's benchmark work (3.1–3.3: `system/llm.py`, the five submissions, the 3-runs
              protocol) is solo. Recorded here as a scope correction — what actually happens,
              not a change to how M3 is done or what it measures. `BUILD_PLAN.md`'s M3 header
-             and `DEVELOPMENT_MAP.md` §C.5/§D.4 still describe the old assumption and are
+             and `docs/archive/DEVELOPMENT_MAP.md` §C.5/§D.4 still describe the old assumption and are
              *not* corrected by this entry — flagged in `HANDOFF.md` as a check before M3
              starts, left for a deliberate pass rather than an incidental one.
 Alternative: Leave the record as-is and treat the split informally as "not happening this
-             time". Rejected — `DEVELOPMENT_MAP.md` §C.5 uses the split as part of its
+             time". Rejected — `docs/archive/DEVELOPMENT_MAP.md` §C.5 uses the split as part of its
              argued reasoning for M3's ordering ("BUILD_PLAN flags it as the natural split
              point with Hanafi"), so a silently wrong assumption sits inside a defended
              argument, not just a schedule.
@@ -727,7 +727,7 @@ Decision:    `_call_anthropic` sends `temperature=0.0` explicitly on models that
              at a substituted value the caller never asked for.
 Alternative: (a) Send `temperature=0` unconditionally, matching the document verbatim, and let
              the default-tier judging path 400 in production. Rejected — this is exactly the
-             failure class `DEVELOPMENT_MAP.md §0` names as the project's recurring risk: code
+             failure class `docs/archive/DEVELOPMENT_MAP.md §0` names as the project's recurring risk: code
              that runs, looks plausible, and is wrong in a way nothing catches until it's
              executed for real. (b) Roll the default tier back to `claude-sonnet-4-6`, which
              still accepts an explicit 0, and leave Sonnet 5 out of `MODEL_TIERS` until this is
@@ -803,7 +803,7 @@ Decision:    No agent, now or later, executes submitted code. The tool stage is 
              promoted from an implicit design property to explicit invariant **12**,
              numbered alongside the eleven in `CLAUDE.md` §7, and propagated everywhere the
              invariant count is stated: `CLAUDE.md` itself (§7, the doc-contract table, the
-             sub-agent list), `docs/explanation.md` §8, `docs/DEVELOPMENT_MAP.md`, and both
+             sub-agent list), `docs/explanation.md` §8, `docs/archive/DEVELOPMENT_MAP.md`, and both
              `.claude/agents/reviewer.md` and `.claude/commands/commit.md`, which now check
              and cite "twelve invariants," not eleven.
 Alternative: (a) Leave it as an unstated design property, inferred from what the tool stage
@@ -861,7 +861,7 @@ Alternative: (a) Real Spark execution (a throwaway venv, per the earlier discuss
              production system is permanently forbidden from using, so a pass there would
              prove less about the actual Code Agent than the pandas translation does. (b) No
              execution-shaped check at all — trust the docstrings' claims as written.
-             Rejected — this project's own history (`DEVELOPMENT_MAP.md` §0: the BKT sign bug,
+             Rejected — this project's own history (`docs/archive/DEVELOPMENT_MAP.md` §0: the BKT sign bug,
              the fabricated `duration_s`) is three separate incidents of code that read as
              correct and wasn't; a translation that's actually run and diffed catches the
              same class of error a linter or a read-through can miss.
@@ -1280,7 +1280,7 @@ Authority:   Anas
 Context:     `CLAUDE.md` is untracked via `.gitignore` (commit `acffca6`, 2026-08-04): "kept
              locally as the authority every formula in `variables/` is transcribed from...
              but not meant for the public repo," bundled with `BUILD_PLAN.md`, the four
-             `VDEL_*` module docs, and `explanation.md`. `DEVELOPMENT_MAP.md` (2026-08-10,
+             `VDEL_*` module docs, and `explanation.md`. `docs/archive/DEVELOPMENT_MAP.md` (2026-08-10,
              six days later) describes `CLAUDE.md` as the permanent, auto-loaded Tier-1
              document and recommends `docs/explanation.md` be tracked — without revisiting
              the earlier gitignore rule. Investigated per this session's Step 3 (`git blame`
@@ -1290,10 +1290,10 @@ Decision:    Keep `.gitignore` as it is. `CLAUDE.md`, `BUILD_PLAN.md`, the four 
              module docs, and `explanation.md` all stay untracked and local-only.
 Alternative: Narrow the rule to exclude only the proprietary module docs, tracking
              `CLAUDE.md` (and/or `explanation.md`) going forward, matching
-             `DEVELOPMENT_MAP.md`'s framing. Considered, not taken.
-Cost:        The tension this entry records stays open: `DEVELOPMENT_MAP.md` describes
+             `docs/archive/DEVELOPMENT_MAP.md`'s framing. Considered, not taken.
+Cost:        The tension this entry records stays open: `docs/archive/DEVELOPMENT_MAP.md` describes
              `CLAUDE.md` and `explanation.md` in language that implies they're tracked
-             project artifacts, but they are not. Anyone relying on `DEVELOPMENT_MAP.md`'s
+             project artifacts, but they are not. Anyone relying on `docs/archive/DEVELOPMENT_MAP.md`'s
              description without checking `.gitignore` first would be wrong about that.
 Defence:     "I found the real, deliberate reason `CLAUDE.md` is untracked, flagged that a
              later document's framing doesn't quite match it, and asked rather than changing
@@ -4342,10 +4342,10 @@ Tests:       tests/test_run_real_benchmark.py (23, fake LLM only, handlers block
 ### D-103 -- the Code Agent hardened: delimiters, private-copy linters, per-assignment config, gap-line scope, real persistence
 Date:        2026-10-12
 Status:      DECIDED and implemented. Not committed. The Code Agent is still NOT wired into the hook or anything that runs on a schedule (a test keeps that true): this task made it safe and storable, not active.
-Authority:   Anas (the request, starting from docs/code_agent_flow.md). The numbers and names marked CONFIRM are mine.
-Before:      THE WHOLE FILE went into the prompt: `agents/code_agent.py:167` (`code = path.read_text(...)`) fed `agents/prompts.py:233` (`{code}`) at commit eb9727c. No gap range was used by the Code Agent (docs/code_agent_flow.md section 7), the ruff findings were not gap-scoped either (`agents/tools.py:133-144` at that commit), and the master's own code, present in every file, was judged as the student's.
+Authority:   Anas (the request, starting from docs/archive/code_agent_flow.md). The numbers and names marked CONFIRM are mine.
+Before:      THE WHOLE FILE went into the prompt: `agents/code_agent.py:167` (`code = path.read_text(...)`) fed `agents/prompts.py:233` (`{code}`) at commit eb9727c. No gap range was used by the Code Agent (docs/archive/code_agent_flow.md section 7), the ruff findings were not gap-scoped either (`agents/tools.py:133-144` at that commit), and the master's own code, present in every file, was judged as the student's.
 1 Delimiters:  `prompts.escape_markers`: every run of 3+ `<` or `>` (and the full-width forms) in the submission AND in the linter findings built from it becomes `[LT3]` / `[GT3]`, visibly, so the only delimiters in a prompt are ours; the injection rule says so. `PROMPT_VERSION` v2 -> v3 (changelog entry), payload `agent` `code_agent_v3`. A quote of a line that held a marker is accepted in its original or its escaped form. With all four criteria and a clean file the only prompt difference is the three-line addition to the injection rule; the rubric table is byte-identical (its sha256 is pinned in a test). Not covered: other homoglyphs; a marker we do not use.
-2 Tools:      `agents/tools.py`. `vet_source` refuses (a `skipped` report from the tools, `SubmissionSkipped` from `grade`; never a lint) a missing file, a non-file, a symbolic link or Windows junction (the file, or any directory between `checkout_root` and it), a path outside `checkout_root` (lexically and after `resolve()`), and a file above `MAX_FILE_BYTES` = 200000 (CONFIRM: a chosen number, not a measurement). Only that file is copied, as `submission.py` / `submission.sql`, into a fresh empty temp directory, and the tool runs there (`cwd=`). ruff: `--isolated --no-cache --select E4,E7,E9,F` (the defaults, now explicit). sqlfluff: `--ignore-local-config --config <ours>`, dialect `ansi`, templater `raw` (no jinja, so no `library_path`). FOUND while testing, with a positive control for each: ruff 0.16.1 DOES obey a student's `ruff.toml`, `.ruff.toml` and `pyproject.toml` placed beside the file (F401 disappears), which closes the "not verified" of docs/code_agent_flow.md section 3; and sqlfluff 4.2.2 DOES import and run the Python module that a student's `.sqlfluff`, `tox.ini`, `setup.cfg` or `pyproject.toml` names in `library_path` (the control writes a marker file). Both are now blocked, and the tests prove it with a marker file that must not appear and findings identical to a clean directory's. The private empty directory is the PRIMARY barrier; `--isolated` and `--ignore-local-config` additionally keep out the operator's own user-level config, and only a structural test catches their removal (a mutation test showed the behavioural tests do not). `assessment/lint_scope.py` (V2) uses the same functions: same rules, now explicit.
+2 Tools:      `agents/tools.py`. `vet_source` refuses (a `skipped` report from the tools, `SubmissionSkipped` from `grade`; never a lint) a missing file, a non-file, a symbolic link or Windows junction (the file, or any directory between `checkout_root` and it), a path outside `checkout_root` (lexically and after `resolve()`), and a file above `MAX_FILE_BYTES` = 200000 (CONFIRM: a chosen number, not a measurement). Only that file is copied, as `submission.py` / `submission.sql`, into a fresh empty temp directory, and the tool runs there (`cwd=`). ruff: `--isolated --no-cache --select E4,E7,E9,F` (the defaults, now explicit). sqlfluff: `--ignore-local-config --config <ours>`, dialect `ansi`, templater `raw` (no jinja, so no `library_path`). FOUND while testing, with a positive control for each: ruff 0.16.1 DOES obey a student's `ruff.toml`, `.ruff.toml` and `pyproject.toml` placed beside the file (F401 disappears), which closes the "not verified" of docs/archive/code_agent_flow.md section 3; and sqlfluff 4.2.2 DOES import and run the Python module that a student's `.sqlfluff`, `tox.ini`, `setup.cfg` or `pyproject.toml` names in `library_path` (the control writes a marker file). Both are now blocked, and the tests prove it with a marker file that must not appear and findings identical to a clean directory's. The private empty directory is the PRIMARY barrier; `--isolated` and `--ignore-local-config` additionally keep out the operator's own user-level config, and only a structural test catches their removal (a mutation test showed the behavioural tests do not). `assessment/lint_scope.py` (V2) uses the same functions: same rules, now explicit.
 3 Config:     `config/judging.yaml` + `config/judging.py` (not in the database). Per assignment: `criteria` (the subset that applies), `note` (why) and `statement` (an assignment-level description; null). The four weather_etl assignments drop "idiomatic" (Idiomatic Spark/SQL) and say why in the config; the default, and so the PySpark benchmark, keeps all four. The task text is now the gap instructions in FILE order (`ORDER BY line_start`; in extract.py the retry loop comes first but `g_ext_parse` sorts before `g_ext_retry`), through `agents/pipeline.load_assignment_inputs`. `grade(criteria=, rubric_table=)`: the criteria asked reach the rubric text, the output schema block, the evidence rule and the schema the GATEWAY enforces (`verdict_model`, a dynamic subclass that requires exactly those scores, so a judge that omits one is retried and then rejected as before). A dropped criterion is stored as null; evidence filed under one is `unknown_criterion`. CONFIRM: `statement` is null for every weather_etl assignment (TODO(author): nothing is invented); `sales_analyzer_*` has no entry, so it keeps all four criteria, because it was not asked for.
 4 Scope:      `agents/scope.py`. `grade(scope=ScopeSpec(master_text, hide_gap_ids))` judges only the lines the student wrote inside the gaps plus `CONTEXT_LINES` = 3 (CONFIRM: chosen) on each side, found with the existing machinery: `render_student_file_with_ranges` for the released ranges and `scope_check.in_gap_submitted_ranges` to map them onto the submitted file. Lines left out are marked `[... n line(s) not shown ...]`; a quote must come from a shown line (not the marker, not a hidden line); the ruff findings are filtered to the student's lines (invariant 14) with `scope_check.filter_lint_findings`. If the lines cannot be extracted (master unparsable, no gap, the variant hides none, the stub left unchanged or the gap deleted, another master version) the call is skipped with the reason, with NO fallback to the whole file. `scope_spec_for_attempt(cur, attempt_id)` reads the variant's gaps and the master the way `lint_scope.record` does. Without `scope` the call is the old whole-file one (what the benchmark and the demo do).
 5 Persistence: `grade(attempt_id=, commit_sha=, conn=)` (all three together, else `ValueError`) stores ONE `code_agent`/`verdict` trace through `Memory.log_trace` (memory.py unchanged) with `attempt_id`, `commit_sha`, `submission_sha256` (a hash, never the file), `prompt_version`, `provider`, `model`, `criteria`, `scope`, the scores, the evidence quotes (excerpts the judge chose), the tool reports, `rejected`, `flagged` and `research_only`. Before judging it looks for a verdict with the same (attempt, commit) and returns it without a provider call: a second call writes nothing and asks nobody. `rejected` is true when there is ANY evidence failure (CONFIRM: stricter than `flagged`, which keeps its older meaning, a fabricated quote); a rejected verdict is stored, not dropped (invariant 5). `run_agents_for_commit(persist_code_verdict=True)` does this in the caller's transaction; `persist=True` still raises `IntegrationPending` (a test pins it). Nothing schedules either, so no verdict is written by any automatic path. A skipped file is a `skipped` pipeline step, not a failure.
