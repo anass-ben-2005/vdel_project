@@ -148,12 +148,6 @@ def _fetch_failure_log(owner, repo, run_id):
         return None, type(exc).__name__
 
 
-def _failure_log(owner, repo, run_id):
-    """The log text, or None when it could not be downloaded (kept for callers/tests that
-    only want the text)."""
-    return _fetch_failure_log(owner, repo, run_id)[0]
-
-
 def _log_needs_work(error_class, attempts, reason) -> bool:
     """Does a STORED failed run still need its log downloaded? Never for a run that already
     has a real classification (D-067: before, every cycle re-downloaded every failed run's
