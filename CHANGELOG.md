@@ -22,6 +22,10 @@ status. Decisions D-200 and up (the agents branch) are in
 - **D-108** Stage 4: `--agents-v2` and the Feedback Agent v2 (prompt `fb2`): the student's own lines, reviewed
   check descriptions, recurrence, a three-level hint ladder, a stricter validator, no provider call for a stub-only
   commit or when there is nothing to quote.
+- **D-109** Stage 5: the Code Agent v2 under `--agents-v2` (once per attempt, on the freezing commit; prompt v4
+  with no correctness opinion and no reference; the benchmark keeps both), an instructor section "correct but
+  approach <= 2" in `scripts/code_agent_report.py`, and the "Going further" section built, disabled and locked
+  behind a benchmark-agreement gate that the one real result does not meet.
 - Later stages of the branch (handoff documentation, authoring scaffolding, agents v2, pilot preparation)
   add their own entries; see [docs/FINALIZE_PROGRESS.md](docs/FINALIZE_PROGRESS.md).
 

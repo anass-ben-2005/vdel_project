@@ -327,6 +327,17 @@ class AgentsHook:
         if failed:
             return skip(f"{failed} of {result.tests_total} check(s) failed: a failing commit gets "
                         "the Feedback Agent, never the Code Agent")
+        if self.agents_v2:
+            # D-109: ONCE PER ATTEMPT, on the commit that freezes it. A later passing commit is not
+            # graded after a freeze (D-069), and an attempt that already has a verdict (from any
+            # commit, from either version) is never judged a second time.
+            if not result.frozen:
+                return skip("v2 judges once per attempt, on the commit that freezes it, and "
+                            "this commit did not freeze the attempt")
+            found_any = code_agent.find_attempt_verdict(cur.connection, p.attempt_id)
+            if found_any is not None:
+                return self._say(p, f"code_agent already judged this attempt (trace "
+                                    f"{found_any[0]}): no call")
         assignment, file_path = agents_pipeline.load_assignment_inputs(cur, p.assignment_id)
         if not file_path:
             return skip("the assignment has no judgeable file (no file_path)")
@@ -343,7 +354,7 @@ class AgentsHook:
                 self.mem, p.student_id, assignment, str(repo_dir / file_path),
                 conn=cur.connection, llm_client=self.llm, budget=self.budget, scope=spec,
                 attempt_id=p.attempt_id, commit_sha=p.sha, checkout_root=repo_dir,
-                max_prompt_chars=self.code_prompt_cap)
+                max_prompt_chars=self.code_prompt_cap, production=self.agents_v2)
         except code_agent.SubmissionSkipped as exc:
             return skip(str(exc))
         except FileNotFoundError:
@@ -353,8 +364,11 @@ class AgentsHook:
         except SchemaValidationError:
             return skip("the judge's answer was not valid twice: nothing stored")
         used = len(code_agent.resolve_criteria(None, assignment))
+        if self.agents_v2:
+            used -= 1 if "correctness" in code_agent.resolve_criteria(None, assignment) else 0
         self._say(p, f"code_agent stored trace {trace_id} (rejected={bool(failures)}, "
-                     f"{used} criteria)  ({self.today()})")
+                     f"{used} criteria{', production v4' if self.agents_v2 else ''})  "
+                     f"({self.today()})")
 
 
 def _make_hook(llm, run_cap, daily_cap, ledger, mem, out, *, code_agent_on=False,

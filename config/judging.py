@@ -106,3 +106,39 @@ def compose_task(statement: str | None, instructions: list[str]) -> str:
     caller passes already in file order."""
     body = " ".join(instructions)
     return f"{statement}\n\n{body}".strip() if statement else body
+
+
+# --- the "Going further" gate (D-109) -----------------------------------------------------------
+
+@dataclass(frozen=True)
+class PostReview:
+    enabled: bool
+    min_benchmark_agreement: float
+
+
+DEFAULT_MIN_BENCHMARK_AGREEMENT = 0.80      # BUILD_PLAN 4.5 / M4 DoD: ">=80% exact agreement"
+
+
+def _post_review_entry(raw: object) -> PostReview:
+    if raw is None:
+        return PostReview(False, DEFAULT_MIN_BENCHMARK_AGREEMENT)
+    if not isinstance(raw, dict) or set(raw) - {"enabled", "min_benchmark_agreement"}:
+        raise JudgingError("post_review: expected {enabled, min_benchmark_agreement}")
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise JudgingError("post_review.enabled must be true or false")
+    minimum = raw.get("min_benchmark_agreement", DEFAULT_MIN_BENCHMARK_AGREEMENT)
+    if isinstance(minimum, bool) or not isinstance(minimum, (int, float)) or not 0 < minimum <= 1:
+        raise JudgingError("post_review.min_benchmark_agreement must be a number in (0, 1]")
+    return PostReview(enabled, float(minimum))
+
+
+@lru_cache(maxsize=1)
+def _load_post_review(path: str) -> PostReview:
+    data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    return _post_review_entry(data.get("post_review"))
+
+
+def post_review(path: Path | str = JUDGING_PATH) -> PostReview:
+    """The "Going further" switch and its threshold. Missing section = disabled."""
+    return _load_post_review(str(path))

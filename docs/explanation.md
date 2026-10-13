@@ -2227,6 +2227,17 @@ for a stub-only commit or when there is no excerpt. `FeedbackResultV2` overrides
 result give exactly the old values. In `scripts/run_cycle.py`, `AgentsHook(agents_v2=True)` routes `_feedback` to
 `_feedback_v2`; `scripts/run_hourly.py` passes the flag to the cycle and to the poster's addendum lookup.
 
+### 7.25 The Code Agent in production mode, and `agents/going_further.py` (D-109)
+
+`code_agent.grade(production=True)` and `prompts.build_grading_prompt(production=True)` give the v4 prompt:
+no correctness criterion, no opinion note, no reference (both refuse one). The payload gains `mode:
+production` and `agent: code_agent_v4` only in that mode. `AgentsHook._code` with `agents_v2` requires
+`result.frozen` and no earlier verdict for the attempt (`code_agent.find_attempt_verdict`) and passes
+`production=True`. `scripts/code_agent_report.instructor_section` lists working code with approach <= 2.
+`agents/going_further.py` holds the disabled "Going further" section and its gate (`check_gate` reads
+`config.judging.post_review()` and the `summary.json` files of real benchmark runs); no other module imports
+it.
+
 ## 8. The twelve non-negotiable invariants
 
 From `CLAUDE.md` §7, and how each one is actually enforced (not just stated) in this

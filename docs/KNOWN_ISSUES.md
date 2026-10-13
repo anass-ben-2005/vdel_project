@@ -196,7 +196,18 @@ read with a read-only `SELECT` on that day.
   need to move. Review the descriptions in `config/checks.yaml`.
 - **Recorded.** D-108.
 
-### 22. Fixed while writing this file
+### 22. The v2 Code Agent's prompt is not what the benchmark measured
+- **Impact.** `--agents-v2` judges with the production prompt (v4: no correctness, no reference); the only real
+  benchmark measured the benchmark-mode prompt (v2 at the time) on five PySpark files with labels pre-written
+  by an LLM, and reached 60% exact agreement on approach. Nothing measures the production prompt, and nothing
+  measures the Code Agent on `weather_etl`. The "Going further" note is therefore locked (`post_review`), and
+  even a run that passes would certify the benchmark mode, not v4.
+- **Workaround.** Read the instructor section as places to look, never as marks. Before enabling the note:
+  label `weather_etl` submissions by hand, add a production mode to the benchmark runner, run it, and set
+  `enabled: true` only if the gate opens.
+- **Recorded.** D-109.
+
+### 23. Fixed while writing this file
 - `RequestsDependencyWarning` on every import: a stray `chardet` 7.x with `requests` 2.32.3.
   `requirements.txt` now pins `chardet>=5.2,<6`; on a machine that already has 7.x run
   `pip install "chardet<6"` (the environment was not changed by this work).

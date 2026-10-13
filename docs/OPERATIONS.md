@@ -467,3 +467,20 @@ provider call(s)` with `<source>` one of `llm`, `deterministic_stub`, `determini
 flag too when run by hand (`python -m scripts.run_hourly --with-llm --agents-v2`) and then posts the v2
 paragraph under the deterministic text, or the v1 paragraph for a commit graded before the switch. Until the
 author marks the check descriptions `reviewed`, level 1 has no "Expected behaviour" sentence.
+
+### The Code Agent with `--agents-v2` (D-109)
+
+With the flag, the Code Agent changes in three ways: it judges **once per attempt**, on the commit that
+freezes it (all hidden checks passed), and never again for that attempt; its prompt (v4) asks **no correctness
+opinion** and carries **no reference solution** (the benchmark keeps both); and the stored verdict says
+`code_agent_v4` / `production`. Read it with the report, which now ends with an instructor section:
+
+```powershell
+python -m scripts.code_agent_report --student anas      # table, then "CORRECT BUT APPROACH <= 2"
+```
+
+The "Going further" note for students exists in `agents/going_further.py` but is **off and posted by
+nothing**. `config/judging.yaml` has `post_review: {enabled: false, min_benchmark_agreement: 0.80}`; even if you
+set `enabled: true` it refuses until a real benchmark result (section 13) reaches 80% exact agreement overall
+and on approach and readability. The result recorded on 2026-10-12 has 60% on approach, so it stays refused.
+Turning it on needs a person to write the posting step too: nothing calls the module today.

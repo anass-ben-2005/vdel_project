@@ -61,3 +61,17 @@ assignments:
         present and not None, and a numeric field must stay inside given bounds. A failing check
         must say which record or value is wrong.
       status: draft
+
+# D-109. The "Going further" section: a short note under the feedback of a student whose code passes every
+# check, built from the Code Agent's production verdict (agents/going_further.py). BUILT BUT DISABLED, and
+# never posted by anything in this repository. Two locks:
+#   enabled                  false. Turning it on is a decision for the course author, not a default.
+#   min_benchmark_agreement  the exact-agreement a real benchmark run (benchmark/results/<run>/summary.json)
+#                            must reach, overall AND on "approach" AND on "readability" (the two things
+#                            the section talks about), before the section can be produced even when
+#                            `enabled` is true. 0.80 is the project's own documented target (BUILD_PLAN 4.5,
+#                            M4 DoD: ">=80% exact agreement"), not a new number. CONFIRM.
+# If `enabled` is true and no result file meets the threshold, the gate REFUSES (agents/going_further.py).
+post_review:
+  enabled: false
+  min_benchmark_agreement: 0.80

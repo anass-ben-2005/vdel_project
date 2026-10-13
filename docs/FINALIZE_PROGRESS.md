@@ -18,7 +18,7 @@ never staged by a stage that does not own them.
 | 2 Handoff documentation | DONE (docs only; 1410 passed, 3 skipped, 1 xfailed; baseline identical; ruff clean) | see `git log` | D-106 |
 | 3 Authoring scaffolding | DONE (1461 passed, 3 skipped, 1 xfailed on the second full run; the first had 1 flaky Docker test, KNOWN_ISSUES 20; baseline identical; ruff clean) | see `git log` | D-107 |
 | 4 Feedback Agent v2 (`--agents-v2`) | DONE (1506 passed, 3 skipped, 1 xfailed; baseline identical; ruff clean; 8/8 mutants caught) | see `git log` | D-108 |
-| 5 Code Agent v2 (`--agents-v2`) | not started | - | |
+| 5 Code Agent v2 (`--agents-v2`) | DONE (1545 passed, 3 skipped, 1 xfailed; baseline identical; ruff clean; 7/8 mutants caught, the 8th equivalent) | see `git log` | D-109 |
 | 6 Pilot preparation | not started | - | |
 
 ## Baseline reference
@@ -37,6 +37,7 @@ Taken before stage 1 (`python -m scripts.baseline --full`, 42 lines): attempts 1
 - D-105 5, 6: `roster_apply` exit code 2 without `--yes`; the default hint of `publish_repo`'s CLI changed.
 - D-106 c: prompt names. Feedback Agent v2 = `fb2`, Code Agent v2 = `v4` (the brief says "v4 / v3"); CONFIRM before stage 4.
 - D-108: ladder mapping (1/2/3+), thresholds (100 / 60 chars, 4-grams, 25%, 4000), the quote shown only at level 2, the stub rule, `fb2` vs the brief's `v4`.
+- D-109: `min_benchmark_agreement` 0.80 (the documented target) and the three criteria it must hold on; re-running the real benchmark in a production mode before enabling the note.
 - D-107 1, 2: the 15 check descriptions and the 4 judging statements are DRAFTS by the assistant; the author reviews them. `sales_analyzer` has none (17 validator errors).
 - D-105 8: "formula v9" and "3 unattributed commits" (the database has 4) need the user's answer.
 
