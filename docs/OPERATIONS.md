@@ -494,3 +494,23 @@ Turning it on needs a person to write the posting step too: nothing calls the mo
 python -m scripts.run_hourly --with-llm --ab-llm     # half of the failing commits get the deterministic text alone
 python -m scripts.ab_report                          # read-only: commits-to-pass per arm, descriptive only
 ```
+
+## 18. Looking at the data (read-only)
+
+Three `SELECT`s that show what the collector and the feature computation stored. They change nothing; run them
+whenever you want to see a student's raw activity or the computed variables.
+
+```powershell
+# the newest commits the collector has seen
+docker exec -it vdel-postgres psql -U vdel -d vdel -c "SELECT student_id, assignment_id, committed_at, additions, deletions, files_changed FROM raw_commits ORDER BY committed_at DESC LIMIT 20;"
+
+# the newest CI runs and how each failure was classified
+docker exec -it vdel-postgres psql -U vdel -d vdel -c "SELECT student_id, assignment_id, conclusion, error_class, concept_id, started_at FROM raw_workflow_runs ORDER BY started_at DESC LIMIT 20;"
+
+# the latest computed variables (expanded display, because they are JSONB columns)
+docker exec -it vdel-postgres psql -U vdel -d vdel -c "\x" -c "SELECT student_id, computed_at, window_days, mastery, engineering_discipline, effort_regulation, pace, error_response, error_frequency FROM learner_features ORDER BY computed_at DESC LIMIT 1;"
+```
+
+To rebuild the features from the raw tables run `python -m features.compute_features` (idempotent; it writes one new
+row only for a student with new activity). Never empty `raw_commits` or `raw_workflow_runs` to "start again" on a
+database that holds real students: the collector's cursor and the attempt history depend on them.
