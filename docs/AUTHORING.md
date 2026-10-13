@@ -144,19 +144,45 @@ number; it writes only with `--apply --dsn ...`. Give every concept a project te
 
 ## 7. Public check descriptions (`config/checks.yaml`)
 
-*Added in stage 3 of the finalisation branch; this section is completed there.* The idea: the student sees a
-test by its name, so each hidden test gets a **public description** of the behaviour it checks, in words, with
-no test code and no expected literal. An entry is only used once its `status` is reviewed; a `draft` entry
-never reaches a prompt or a student.
+A student sees a failing check by its name and the exception type only (D-077). `config/checks.yaml` gives
+every hidden test a **public description**: one or two sentences saying what behaviour the test checks, so
+feedback can say what must hold instead of only naming a test.
+
+```yaml
+assignments:
+  weather_etl_extract:
+    - test: tests/hidden/test_extract.py::test_fetch_weather_raises_after_max_attempts
+      gap: g_ext_retry
+      description: >-
+        When every request fails with a connection error, fetch_weather stops after the allowed
+        number of attempts and lets the connection error reach the caller.
+      status: draft
+```
+
+- `test` is the stored name, `tests/hidden/<file>.py::<test>` (`Class::test` for a class); `gap` must be the
+  gap the test is marked with.
+- The description is **prose about behaviour**: the situation (the inputs) and what must be observed. No test
+  code, no `assert`, no `==`, no code block, no more than 400 characters (`config/checks.py` refuses them), and
+  no literal expected value unless it is trivial. Say *what* must happen, not *how* to write it: it will be
+  shown to students.
+- **`status: draft` entries are never used.** `config/checks.py` ignores them: `description_for` and `entries`
+  return a description only when the status is `reviewed`, so a draft can reach neither a prompt nor a student.
+  The fifteen entries for the four `weather_etl` assignments were drafted by an assistant from the hidden
+  tests; **the course author must read each against its test and change `draft` to `reviewed`** (or reword it).
+- Every hidden test needs exactly one entry; `scripts/validate_master.py` reports a missing one, an entry for
+  a test that does not exist, and a gap that disagrees with the test's marker.
 
 ## 8. What the judge is told (`config/judging.yaml`)
 
 The optional Code Agent judges working code against a rubric of four criteria (correctness, approach,
 readability, idiomatic). `config/judging.yaml` says, per assignment, which criteria apply (`weather_etl` drops
 "idiomatic" because it is plain Python, not Spark or SQL), a `note` saying why, and a `statement`: one to three
-sentences describing the exercise, put in front of the gap instructions. Today the statements are `null` for
-`weather_etl` (the course author's to write, D-104 CONFIRM 2) and `sales_analyzer_*` has no entry, so it is
-judged on all four. The task text is otherwise the gap instructions in **file order**.
+sentences describing the exercise, put in front of the gap instructions. A statement is `null`, a plain string
+(taken as reviewed), or `{text: "...", status: draft | reviewed}`; **only a reviewed one is used**
+(`config/judging.py` ignores a draft). The four `weather_etl` statements are drafts written by an assistant
+from the master files (D-107): read each and mark it `reviewed`. `sales_analyzer_*` has no entry, so it is
+judged on all four criteria with no statement. The task text is otherwise the gap instructions in **file
+order**.
 
 ## 9. Registering a project
 
@@ -182,17 +208,38 @@ validator.
 
 ## 11. The validator
 
-*Added in stage 3 of the finalisation branch (`scripts/validate_master.py`); this section is completed there.*
-Until then `parse_master` (section 2) is the check that runs at seeding time.
+```bash
+python -m scripts.validate_master weather_etl            # one project, or no argument for all
+python -m scripts.validate_master --require-reviewed     # drafts become errors: run this before a pilot
+```
+
+Read-only (no database, no network). Per stage it reports `ERROR`, `WARN` and `INFO` lines for:
+
+1. marker syntax (`parse_master`: nesting, missing `id=` or `concepts=`, an unclosed gap, no `@instruct`, an
+   empty body), one message per file;
+2. gap ids unique **across the whole curriculum** (see section 2);
+3. every concept in the taxonomy;
+4. every gap covered by at least one hidden test with `@pytest.mark.gap("<id>")`;
+5. hidden tests with no gap marker (a warning) or a marker naming a gap the stage does not define (an error);
+6. every hidden test has a `checks.yaml` entry whose gap agrees, and no entry names a missing test;
+7. an entry for the assignment in `judging.yaml`;
+8. at least one resource in `config/resources.csv` for every concept the project uses.
+
+`draft` check descriptions and judging statements are notes (`INFO`) unless `--require-reviewed` is given.
+The exit code is 1 when any `ERROR` remains. The files are read with `ast`: nothing is imported or run.
+`parse_master` also runs at seeding time, but only the validator catches a duplicate id across files, a gap
+no test covers, or a hidden test with no public description.
 
 ## 12. A checklist
 
 - [ ] The solution is complete and every gap body is non-empty; the whole master passes its own hidden tests.
 - [ ] Every gap has a unique id, a real concept, an honest difficulty and a clear `@instruct`.
 - [ ] Every gap is covered by at least one hidden test marked with its id; no test is unmarked.
+- [ ] Every hidden test has a public description in `config/checks.yaml`, reviewed.
 - [ ] No test name, instruction or description gives the answer away.
 - [ ] The visible tests run standalone.
 - [ ] Every concept the project uses has at least one resource.
 - [ ] `config/judging.yaml` has an entry and a reviewed statement for each stage.
 - [ ] New packages are in the project's `requirements.txt` and `docker/grader-requirements.txt`.
+- [ ] `python -m scripts.validate_master <project>` reports no error, and `--require-reviewed` too before a pilot.
 - [ ] `python -m scripts.seed_data` runs clean and the suite is green.

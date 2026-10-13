@@ -28,7 +28,11 @@ class Judging:
     assignment_id: str | None       # None for the default
     criteria: tuple[str, ...]
     note: str
-    statement: str | None           # an assignment-level description, or None
+    statement: str | None           # a REVIEWED assignment-level description, or None
+    # D-107. A statement written as {text, status: draft} is kept here and nowhere else: `statement`
+    # stays None, so `compose_task` and every prompt behave as if it did not exist.
+    statement_status: str | None = None          # "draft" | "reviewed" | None
+    draft_statement: str | None = None
 
 
 def _criteria(raw: object, where: str) -> tuple[str, ...]:
@@ -42,17 +46,37 @@ def _criteria(raw: object, where: str) -> tuple[str, ...]:
     return tuple(c for c in ALL_CRITERIA if c in raw)         # canonical order
 
 
+STATEMENT_STATUSES = ("draft", "reviewed")
+
+
+def _statement(raw: object, where: str) -> tuple[str | None, str | None, str | None]:
+    """(reviewed text, status, draft text). `null` -> nothing; a plain string -> reviewed (the form
+    that existed before D-107); `{text, status}` -> reviewed text only when status is `reviewed`."""
+    if raw is None:
+        return None, None, None
+    if isinstance(raw, str):
+        if not raw.strip():
+            raise JudgingError(f"{where}: statement must be null or a non-empty string")
+        return raw.strip(), "reviewed", None
+    if not isinstance(raw, dict) or set(raw) != {"text", "status"}:
+        raise JudgingError(f"{where}: statement must be null, a string or {{text, status}}")
+    text, status = raw["text"], raw["status"]
+    if not (isinstance(text, str) and text.strip()):
+        raise JudgingError(f"{where}: statement text must be a non-empty string")
+    if status not in STATEMENT_STATUSES:
+        raise JudgingError(f"{where}: statement status must be one of {list(STATEMENT_STATUSES)}")
+    return (text.strip(), status, None) if status == "reviewed" else (None, status, text.strip())
+
+
 def _entry(raw: object, assignment_id: str | None, fallback: Judging | None) -> Judging:
     where = f"assignment {assignment_id!r}" if assignment_id else "default"
     if not isinstance(raw, dict):
         raise JudgingError(f"{where}: expected a mapping")
     criteria = (_criteria(raw["criteria"], where) if "criteria" in raw
                 else (fallback.criteria if fallback else ALL_CRITERIA))
-    statement = raw.get("statement")
-    if statement is not None and not (isinstance(statement, str) and statement.strip()):
-        raise JudgingError(f"{where}: statement must be null or a non-empty string")
+    statement, status, draft = _statement(raw.get("statement"), where)
     note = str(raw.get("note") or "").strip()
-    return Judging(assignment_id, criteria, note, statement.strip() if statement else None)
+    return Judging(assignment_id, criteria, note, statement, status, draft)
 
 
 @lru_cache(maxsize=1)

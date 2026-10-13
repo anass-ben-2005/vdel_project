@@ -1,0 +1,123 @@
+# config/checks.yaml -- the PUBLIC description of each hidden test (D-107).
+#
+# A student sees a failing check by its name and the exception type, never the test's code, its
+# assertion text or its expected values (D-077). This file gives each hidden test a sentence saying WHAT
+# BEHAVIOUR it checks, in words, so feedback can say "the retry check is failing: when every request
+# fails, the error must reach the caller" instead of only a test name. It is read by config/checks.py.
+#
+# RULES FOR AN ENTRY
+#   test         the stored test name: tests/hidden/<file>.py::<test> (what test_results.test_name holds)
+#   gap          the gap_id the test is marked with (@pytest.mark.gap) -- the validator checks it
+#   description  one or two sentences: the situation (inputs) and the observable behaviour expected.
+#                NOT test code, no `assert`, no code block, no literal expected value unless it is trivial.
+#                It must not hand over the solution: say what must happen, not how to write it.
+#   status       draft | reviewed.   ONLY `reviewed` ENTRIES ARE EVER USED. A `draft` is ignored by the
+#                loader (config/checks.py) and so can reach neither a prompt nor a student. The entries
+#                below were drafted from the hidden tests by the assistant; a person (the course author)
+#                must read each against its test and change `draft` to `reviewed`.
+#
+# Keys are assignment ids. Every hidden test of an assignment should have exactly one entry
+# (scripts/validate_master.py reports a missing one).
+
+version: 1
+
+assignments:
+  weather_etl_extract:
+    - test: tests/hidden/test_extract.py::test_fetch_weather_retries_then_succeeds
+      gap: g_ext_retry
+      description: >-
+        When the first request to the weather service fails with a connection error and a later
+        request succeeds, fetch_weather keeps trying and returns the data from the successful
+        response. Once a request has succeeded it makes no further requests.
+      status: draft
+    - test: tests/hidden/test_extract.py::test_fetch_weather_raises_after_max_attempts
+      gap: g_ext_retry
+      description: >-
+        When every request fails with a connection error, fetch_weather stops after the allowed
+        number of attempts and lets the connection error reach the caller instead of hiding it or
+        returning something else.
+      status: draft
+    - test: tests/hidden/test_extract.py::test_parse_response_missing_key_returns_none
+      gap: g_ext_parse
+      description: >-
+        When the response has a "current" section that lacks some of the readings, parse_response
+        returns the readings that are present with their values and None for each one that is
+        missing, without raising an error.
+      status: draft
+    - test: tests/hidden/test_extract.py::test_parse_response_missing_current_key_entirely
+      gap: g_ext_parse
+      description: >-
+        When the response has no "current" section at all, parse_response returns all three
+        readings (temperature, humidity, wind speed) as None instead of failing with a KeyError.
+      status: draft
+
+  weather_etl_transform:
+    - test: tests/hidden/test_transform.py::test_clean_readings_drops_null_temp
+      gap: g_tf_clean
+      description: >-
+        Records whose temperature is None are removed by clean_readings; the records that do have a
+        temperature are kept, in their original order.
+      status: draft
+    - test: tests/hidden/test_transform.py::test_to_fahrenheit_known_values
+      gap: g_tf_convert
+      description: >-
+        to_fahrenheit gives the correct Fahrenheit value for two well-known reference temperatures,
+        the freezing point and the boiling point of water.
+      status: draft
+    - test: tests/hidden/test_transform.py::test_enrich_with_timestamp_malformed_input
+      gap: g_tf_timestamp
+      description: >-
+        When the raw timestamp is not a valid ISO date, enrich_with_timestamp does not raise; the
+        record still ends up with a timestamp.
+      status: draft
+    - test: tests/hidden/test_transform.py::test_enrich_with_timestamp_none_input
+      gap: g_tf_timestamp
+      description: >-
+        When no raw timestamp is given at all (None), enrich_with_timestamp does not raise; the
+        record still ends up with a timestamp.
+      status: draft
+    - test: tests/hidden/test_transform.py::test_enrich_with_timestamp_valid_iso
+      gap: g_tf_timestamp
+      description: >-
+        When the raw timestamp is a valid ISO date, the record keeps that date as its timestamp
+        instead of being given the current time.
+      status: draft
+
+  weather_etl_load:
+    - test: tests/hidden/test_load.py::test_insert_readings_returns_count
+      gap: g_ld_insert
+      description: >-
+        insert_readings stores the records it is given in the readings table and returns the number
+        of rows it inserted.
+      status: draft
+    - test: tests/hidden/test_load.py::test_readings_since_filters_correctly
+      gap: g_ld_select
+      description: >-
+        readings_since returns only the readings whose timestamp is on or after the given value, as
+        records that can be read by column name, and leaves out the earlier ones.
+      status: draft
+
+  weather_etl_quality:
+    - test: tests/hidden/test_quality.py::test_assert_no_nulls_passes_on_clean_data
+      gap: g_qa_nulls
+      description: >-
+        assert_no_nulls accepts data in which every required field is present and not None; it
+        does not raise.
+      status: draft
+    - test: tests/hidden/test_quality.py::test_assert_no_nulls_raises_on_missing_field
+      gap: g_qa_nulls
+      description: >-
+        assert_no_nulls raises an AssertionError when a required field of a record is None.
+      status: draft
+    - test: tests/hidden/test_quality.py::test_assert_reasonable_range_passes
+      gap: g_qa_range
+      description: >-
+        assert_reasonable_range accepts a value that lies inside the allowed bounds; it does not
+        raise.
+      status: draft
+    - test: tests/hidden/test_quality.py::test_assert_reasonable_range_raises_out_of_bounds
+      gap: g_qa_range
+      description: >-
+        assert_reasonable_range raises an AssertionError when a value lies outside the allowed
+        bounds.
+      status: draft

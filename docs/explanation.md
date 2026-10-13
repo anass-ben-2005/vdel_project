@@ -2187,6 +2187,34 @@ docstring, not just asserted self-consistent with the code.
 
 ---
 
+### 7.23 The finalisation tooling (D-105, D-107)
+
+Added on the `v1-finalize` branch; each is a small script with its own test file.
+
+- **`scripts/doctor.py`** (`tests/test_doctor.py`). Read-only OK/WARN/FAIL checks. Each check is a function
+  that takes its probe as a parameter (the subprocess runner, the database opener, an HTTP getter, the
+  environment), so the tests run with mocks and the test module forbids `requests`. The database session is
+  `readonly=True`. "Migrations current" reads `sql/*.sql` with two regular expressions (`CREATE TABLE`,
+  `ADD COLUMN`) and compares them with `information_schema`. The one network call is `GET /user` for the
+  token's scopes, made only without `--no-network`. The scheduled task is read with `Get-ScheduledTask` and
+  its `-EncodedCommand` is decoded (UTF-16LE base64) to report the flags it runs with.
+- **`scripts/roster_apply.py`** (`tests/test_roster_apply.py`). Edits one roster row through
+  `publish_repo.update_roster_text`: unified diff, `--yes` required, a timestamped `.bak`, an atomic replace.
+  `check_unambiguous` refuses two rows for one (student, assignment), a row with other than one `owner:` or
+  `repo:` line, a student twice, an unparsable file; `refuse_credentials` refuses credential-shaped text.
+- **`scripts/run_cycle.roster_warnings`** logs `WARN` for an open attempt the roster cannot reach (no row, or
+  attempt >= 2 whose roster repo is not `delivery_repo_name(...)`). It is called once per student at the start
+  of `_run_student`, so `run_hourly` shows it too.
+- **`config/checks.yaml` + `config/checks.py`** (`tests/test_checks_and_drafts.py`). A public description per
+  hidden test. `entries()` and `description_for()` return reviewed entries only; `include_drafts=True` is for
+  the validator and tests. `description_problems` refuses code-shaped or over-long text.
+- **`config/judging.py`** gained the `statement: {text, status}` form; `Judging.statement` is set only when
+  the status is `reviewed`, `draft_statement` holds a draft, so `compose_task` and every prompt are unchanged by
+  a draft.
+- **`scripts/validate_master.py`** (`tests/test_validate_master.py`). Static checks of a master project: marker
+  syntax and concepts through `parse_master`, gap ids unique across the curriculum, hidden tests read with
+  `ast` (gap markers, coverage), `checks.yaml` coverage, `judging.yaml` entry, resources per concept.
+
 ## 8. The twelve non-negotiable invariants
 
 From `CLAUDE.md` §7, and how each one is actually enforced (not just stated) in this

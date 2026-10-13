@@ -429,3 +429,10 @@ python -m scripts.roster_apply --student X --assignment weather_etl_extract --ow
 It keeps `config\roster.yaml.<UTC time>.bak`, changes only that row's `owner` and `repo` (comments,
 line endings and `released_at` stay), and refuses an ambiguous target or a credential. A row that does not
 exist yet also needs `--released-at <the real date the work began>`.
+
+Before a new or changed master project is issued to anyone, run the read-only validator (D-107):
+
+```powershell
+python -m scripts.validate_master weather_etl            # markers, ids, tests, public descriptions, judging, resources
+python -m scripts.validate_master --require-reviewed     # drafts count as errors: the check before a pilot
+```

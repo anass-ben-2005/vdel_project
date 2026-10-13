@@ -117,8 +117,9 @@ read with a read-only `SELECT` on that day.
 - **Impact.** `statement` is null for the four `weather_etl` assignments, so the judge is told only the
   gap instructions. `sales_analyzer_*` has no entry and is judged on all four criteria, including
   "Idiomatic Spark/SQL".
-- **Workaround.** The course author's statements (Dr. Ezzatul or Hanafi). Stage 3 of the finalisation
-  adds DRAFT statements that never reach a prompt until they are reviewed.
+- **Workaround.** The course author's statements (Dr. Ezzatul or Hanafi). `config/judging.yaml` now holds
+  DRAFT statements for the four `weather_etl` stages (D-107); a draft is ignored by the loader, so nothing
+  changes until a person marks one `reviewed`.
 - **Recorded.** D-103 item 3, D-104 (CONFIRM 2).
 
 ### 13. LLM budgets are counts of calls, not money, and the ledger has no lock
@@ -165,7 +166,26 @@ read with a read-only `SELECT` on that day.
 - A template-push column on `raw_commits` was proposed instead of recognising it by message (D-098).
 - Hanafi's hints (D-077) are not wired.
 
-### 19. Fixed while writing this file
+### 19. A duplicate gap id in another file silently re-points a gap
+- **Impact.** `gaps.gap_id` is the primary key and the seeder upserts with `ON CONFLICT (gap_id) DO UPDATE`,
+  while the parser only rejects a duplicate id inside one file. Two stages (or projects) sharing an id would
+  leave one gap pointing at the wrong assignment, with no error. No such duplicate exists today.
+- **Workaround.** `python -m scripts.validate_master` checks ids across the whole curriculum (D-107); run it
+  before seeding a new master.
+- **Recorded.** D-106 finding (a), D-107.
+
+### 20. One Docker test failed once in a full run
+- **Impact.** In the stage-3 gate, `tests/test_grading_container.py::test_an_infinite_loop_times_out_and_the_container_is_killed`
+  failed once in a full suite run (`leftover_containers()` found `vdel-grade-513b8dc2ed196cb8`), then passed in
+  the rerun of that file (24 passed) and in a second full run (1461 passed). No container was left afterwards
+  (`docker ps -a --filter name=vdel-grade-` empty). My reading, not verified: the check ran while Docker was
+  still removing the killed container (`assessment/test_runner.py` kills it, then `docker rm -f`), under the
+  load of a full run. If the code path ever leaves a container behind, the symptom is the same.
+- **Workaround.** Rerun the file; after any failure look at `docker ps -a --filter name=vdel-grade-` and remove a
+  leftover by hand.
+- **Recorded.** D-107 (gate), this file.
+
+### 21. Fixed while writing this file
 - `RequestsDependencyWarning` on every import: a stray `chardet` 7.x with `requests` 2.32.3.
   `requirements.txt` now pins `chardet>=5.2,<6`; on a machine that already has 7.x run
   `pip install "chardet<6"` (the environment was not changed by this work).

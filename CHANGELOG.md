@@ -14,6 +14,11 @@ status. Decisions D-200 and up (the agents branch) are in
   the delivery "Next:" hint no longer points at an unsandboxed `grade_collected`; `run_cycle` and
   `run_hourly` warn about an open attempt the roster cannot reach; `docs/KNOWN_ISSUES.md`; three tests
   that failed once a real LLM call had created `.vdel/` now compare state instead of absence.
+- **D-106** Stage 2: README rewritten, INSTALL, ARCHITECTURE, AUTHORING, CONTRIBUTING, CHANGELOG, GLOSSARY.
+- **D-107** Stage 3: `config/checks.yaml` (a public description per hidden test, all `draft`),
+  `config/checks.py` and a `statement` form in `config/judging.yaml` that ignore drafts,
+  `scripts/validate_master.py` (markers, ids across the curriculum, test coverage, descriptions, judging,
+  resources).
 - Later stages of the branch (handoff documentation, authoring scaffolding, agents v2, pilot preparation)
   add their own entries; see [docs/FINALIZE_PROGRESS.md](docs/FINALIZE_PROGRESS.md).
 
