@@ -101,7 +101,7 @@ is in [docs/GLOSSARY.md](docs/GLOSSARY.md).
 | [docs/ROADMAP.md](docs/ROADMAP.md) | The open work, and the open ownership and licence question. |
 | [docs/DATA_PROTECTION.md](docs/DATA_PROTECTION.md) | What student data is held, what leaves the machine, what is not yet decided. |
 | [docs/RELEASE_AND_UPGRADE.md](docs/RELEASE_AND_UPGRADE.md) | Versions, schema and formula upgrades, and how to check an upgrade. |
-| [CLAUDE.md](CLAUDE.md) | The condensed rules for the code: scope, architecture, schemas, the 16 invariants (also what an AI coding assistant reads). |
+| [CLAUDE.md](CLAUDE.md) | The condensed rules for the code: scope, architecture, schemas, the 16 invariants. |
 | [docs/design/](docs/design/README.md) | The sanitized module and redesign documents the code cites. |
 | [docs/archive/](docs/archive/README.md) | Dated analyses kept for their reasoning, not as current references. |
 
@@ -125,12 +125,6 @@ Version 1.0 is the tip of `main` at hand-over ([docs/RELEASE_AND_UPGRADE.md](doc
 **Open:** the next steps are in [docs/ROADMAP.md](docs/ROADMAP.md) and what is wrong today in
 [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md). Not built: differential testing, the Reviewer and orchestrator, the
 Coach, the knowledge graph. **The Code Agent is an unmeasured judge and its verdict is never shown to students.**
-
-## Development note
-
-<!-- CONFIRM: wording of this paragraph -->
-This project was developed with the assistance of AI coding tools. The author reviewed, tested and merged all
-changes, and [docs/DECISIONS.md](docs/DECISIONS.md) records the reasoning behind each design choice.
 
 Authors: Anass BENBELLA (intern, student side), with a tutor-side collaborator, under the supervisor.
 

@@ -129,5 +129,5 @@ what CI evidences, is not mastery evidence; D-018 whether invariant 6 binds a de
 
 D-001 a verification pass before M2; D-002 benchmark authoring pulled forward; D-003 the Sara `spark.joins`
 discrepancy stays a strict `xfail`; D-004 V4 and V2's alpha gate are structurally degenerate at a cohort of one;
-D-005 the Claude Code setup built around specification verification; D-006 GitHub collection deferred (D-087
+D-005 the development setup built around specification verification; D-006 GitHub collection deferred (D-087
 adds an addendum).
