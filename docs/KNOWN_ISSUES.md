@@ -225,3 +225,16 @@ read with a read-only `SELECT` on that day.
   (`tests/support.vdel_dir_state`).
 - An open attempt with no matching roster repo was silent (attempt 3 of `weather_etl_extract`). `run_cycle`
   and `run_hourly` now log a `WARN` line for it.
+
+### 25. `python -m scripts.<name> --help` is not safe for four scripts
+- **Impact.** `scripts/init_db.py`, `scripts/seed_data.py`, `scripts/smoke_test.py` and
+  `scripts/normalise_test_names.py` have no `argparse` (the last one reads `sys.argv` for `--apply` only), so `--help` does not
+  print help: the script runs. `init_db` and `seed_data` write to the database named by `PG_DSN`, idempotently
+  (`CREATE ... IF NOT EXISTS`, `ON CONFLICT DO UPDATE`); `smoke_test` only reads and checks that `traces` rejects
+  `UPDATE` and `DELETE`; `normalise_test_names` runs its default dry run and writes only with `--apply`. Running
+  them against the real database by mistake changed nothing observable once (the baseline stayed identical), but
+  `seed_data` also needs the roster and can stop half way.
+- **Workaround.** Read the file's docstring instead of asking for help, and run `python -m scripts.baseline --full`
+  before and after if you did run one by mistake. The other scripts under `scripts/` and `benchmark/` do use
+  `argparse`.
+- **Recorded.** `docs/ROADMAP.md` item 9; the four files above.

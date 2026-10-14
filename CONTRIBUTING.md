@@ -73,6 +73,7 @@ A real call is a deliberate, manual, capped act: `scripts/llm_first_call.py` and
 - **Never edit the real `config/roster.yaml` from code or a test.** Use `scripts/roster_apply.py`, by hand, or
   a temporary copy in a test.
 - **Secrets stay in `.env`.** Print their names, never their values; `.env.example` lists names only.
+- **`python -m scripts.<name> --help` runs `init_db`, `seed_data`, `smoke_test` and `normalise_test_names` instead of printing help** (no `argparse`; the first two write to the database, idempotently): read the docstring instead (`docs/KNOWN_ISSUES.md` item 25).
 
 ## Prompts are code
 

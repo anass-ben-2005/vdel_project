@@ -47,9 +47,12 @@ What has been proven is in [VALIDATION.md](VALIDATION.md); what is wrong today i
 7. **Designed but not built** (each has a named seam and trigger in `CLAUDE.md` section 3 and
    `docs/ARCHITECTURE.md` section 8): the Reviewer and orchestrator, the Coach, the knowledge graph and retrieval
    from the tutor side, differential testing (D-036), an Airflow run (KNOWN_ISSUES item 16).
-8. **A per-project manifest.** Replace the hard-wired registration in `scripts/seed_data.py` `main()` (and its copy in
-   `tests/conftest.py`) by a small manifest per project (stages, order), so adding a project needs no code edit
-   (`docs/HOWTO_EXTEND.md` section 1, step 8).
+8. **A per-project manifest.** Replace BOTH hard-wired registrations, `scripts/seed_data.py` `main()` (lines 304-323)
+   and the test database setup in `tests/conftest.py` (lines 191-199), by a small manifest per project (stages,
+   order) that both read, so adding a project needs no code edit (`docs/HOWTO_EXTEND.md` section 1, step 8).
+9. **Harmless `--help`.** Give `scripts/init_db.py`, `scripts/seed_data.py`, `scripts/smoke_test.py` and
+   `scripts/normalise_test_names.py` an `argparse` parser, so `--help` prints help instead of running the script
+   (KNOWN_ISSUES item 25). Their behaviour without arguments must stay the same.
 
 ## 2. Ownership and licence (open question)
 
