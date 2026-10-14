@@ -7,7 +7,7 @@ tagged with.
 
 Contents: 1 The layout · 2 The gap markers · 3 Concepts · 4 The hidden tests · 5 The visible tests ·
 6 Resources · 7 Public check descriptions (`checks.yaml`) · 8 What the judge is told (`judging.yaml`) ·
-9 Registering a project · 10 Changing a master afterwards · 11 The validator · 12 A checklist
+9 Registering a project · 10 Change an existing assignment · 11 The validator · 12 A checklist
 
 Worked examples to copy from: `curriculum/master/weather_etl/` (four stages) and
 `curriculum/master/sales_analyzer/`.
@@ -196,15 +196,87 @@ order**.
    and 15).
 5. Run the validator (section 11) and the suite.
 
-## 10. Changing a master afterwards
+## 10. Change an existing assignment
 
-`master_version` is part of every gap, variant and attempt (invariant 15), and gap **line numbers are valid for
-one master version only**. Editing a stage file changes its hash, so: the gaps are re-seeded against the new
-version, but attempts already issued stay pinned to the old one, and their line ranges no longer match the new
-file. Treat a released master as **frozen content**: the repository's ruff configuration even excludes
-`curriculum/` so that a restyle cannot silently invalidate the ranges. To fix a mistake, prefer a new stage or
-a new project over an edit; if you must edit, do it before anyone is issued the stage, and re-run the
-validator.
+What happens depends on WHAT you change. Read the row for your change before you touch a file that students already
+use.
+
+| You change | Takes effect | What it does to work in progress |
+|---|---|---|
+| a stage file's text (code, a marker, a gap's lines) | after `seed_data` re-seeds it | **new `master_version`**; see "Editing a master" below |
+| a hidden test | at once, at the next grading | grading of unfinished attempts changes; **no version changes** |
+| a visible test | for repositories published afterwards | nothing for repositories already published |
+| a check description (`checks.yaml`) or a task statement (`judging.yaml`) | at the next cycle | nothing stored changes |
+| the concepts or the resources | see "Concepts and resources" below | nothing stored changes |
+
+### Editing a master (a stage file) that students already use
+
+- **`master_version` changes.** It is a hash over the stage files only, each file's content keyed by its name
+  (`scripts/seed_data.py:36-54`, `_tree_version`). Any edit to a stage file, a marker included, gives the project a new
+  version. Hidden tests, visible tests and the config are **not** in the hash.
+- **Re-seeding rewrites the gaps in place.** `seed_data` upserts every gap by `gap_id` with its new line range and the new
+  `master_version` (`scripts/seed_data.py:162-181`); it never deletes a gap, so a gap you removed from the file stays in the
+  `gaps` table. The line ranges of a gap are valid for **one** master version only (invariant 15), and after the upsert only
+  the new one is stored.
+- **Attempts already issued stay pinned to the old version**: an attempt's variant row keeps the `master_version` it
+  was rendered from. The student's repository files do not change, so a student keeps working on the file they
+  were given. What the system can no longer do for that attempt, because the variant's version differs from the project's:
+  - the out-of-scope measurement (V9) is skipped and `out_of_scope_lines` is left unset
+    (`assessment/test_runner.py:917-929`);
+  - the gap-scoped lint measurement (V2 cleanliness) is skipped (`assessment/lint_scope.py:98-100`);
+  - the agents that read the student's own gap lines (Feedback Agent v2, Code Agent) cannot rebuild the released file and
+    skip it (`agents/scope.py:134-136`).
+
+  Grading itself does not check the version: hidden-test results, the freeze and the mastery observations depend on the
+  hidden tests and the gap ids (and, for mastery, the `difficulty` currently stored on the gap).
+- **A new attempt after the edit** gets a new variant, because the variant id hashes the master version
+  (`assessment/gap_generator.py:81-92`). Students who start after the change work on the new text.
+- **Hidden tests change without a version bump.** An edit to `tests/hidden/test_<stage>.py` is picked up by the very next
+  grading run, for every unfinished attempt, and nothing records that the tests changed. A commit already graded is not
+  graded again (the cycle skips commits that already have results), so only new commits are judged by the new test.
+  Change a hidden test only when the old one was wrong, and say so in a decision entry.
+
+**When to deliver a new attempt, or a new stage, instead of editing.** Prefer a new stage or a new project to an edit, and
+edit a stage file at all only before anyone has been issued it. If a mistake is found in a stage that students are
+already working on: fix it in the master, re-seed, and let students who have not started use the new version; for a
+student in progress, either leave them on the old text (they lose only the measurements above) or deliver a fresh attempt
+once the current one is frozen (`python -m scripts.deliver_next_attempt`, `docs/OPERATIONS.md` section 20). `--force`
+starts the next attempt although the current one is not frozen and leaves the old one open (D-072); avoid it.
+
+**Commands to run, in this order**
+
+```bash
+python -m scripts.validate_master <project>     # read-only: markers, gap ids across the curriculum, test coverage
+VDEL_REQUIRE_DB=1 python -m pytest -q           # on its own database; the master's own tests must still pass
+python -m scripts.baseline --full > before.txt  # keep the fingerprint of the real database
+# back up the database first (docs/OPERATIONS.md section 9), then:
+python -m scripts.seed_data                     # re-seeds projects, assignments and gaps; idempotent
+python -m scripts.baseline --full > after.txt && diff before.txt after.txt
+python -m scripts.run_cycle --dry-run --student <id>
+```
+
+The only expected differences in the baseline are the project's `master_version` line and the gap rows. A hidden-test or
+visible-test change needs no re-seed. Record the change in `docs/DECISIONS.md`.
+
+### Changing a check description or a task statement
+
+Edit the entry in `config/checks.yaml` (one per hidden test) or the `statement` in `config/judging.yaml`. A new or edited
+text starts as `status: draft`: **only `reviewed` entries are ever used**, and a draft reaches neither a prompt nor a
+student (`config/checks.py`, D-107). Read it against its test, then set `reviewed`. Nothing is re-seeded and no stored
+verdict changes: the files are read when a cycle starts (`config/checks.py` `_load` caches per process), so the
+next hourly run uses the new text. Check with `python -m scripts.validate_master <project>`; add `--require-reviewed` to
+turn remaining drafts into errors before a pilot.
+
+### Changing concepts or resources
+
+- **Concepts.** Ids are schema: add a concept to `config/concepts.yaml`, never rename or reuse one, because they are
+  stored in gaps, traces and the profile. A gap whose marker names a concept needs that concept to exist or `parse_master` fails.
+  Changing the concepts of an existing gap means editing the marker in the stage file, which is an edit of the master
+  (above). `assignments.concepts` is derived from the gaps by `seed_data`, never by hand.
+- **Resources.** Edit `config/resources.csv`, check it with `python -m scripts.load_resources config/resources.csv` (a
+  dry run that lists every error with its row), then write it to the database with `--apply --dsn ... --allow-real-db`
+  (`scripts/load_resources.py --help`); the agents read the `resources` table, not the file (`agents/resources.py:59`).
+  Every concept used by a gap needs at least two resources at more than one level (`tests/test_resources_seed.py`).
 
 ## 11. The validator
 

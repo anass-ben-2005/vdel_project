@@ -167,8 +167,11 @@ $env:VDEL_ALLOW_GITHUB_WRITE = "1"
 python -m scripts.deliver_next_attempt --student X --assignment weather_etl_extract --apply
 Remove-Item Env:VDEL_ALLOW_GITHUB_WRITE
 
-# c) the command PRINTS the roster rows; edit config\roster.yaml by hand (it never does),
-#    then check the cycle sees the new repo:
+# c) record the new repo in the roster with roster_apply (section 15). Without --yes it only
+#    shows the diff; read it, then apply. Never edit config\roster.yaml by hand.
+python -m scripts.roster_apply --student X --assignment <assignment_id> --owner <owner> --repo <repo>
+python -m scripts.roster_apply --student X --assignment <assignment_id> --owner <owner> --repo <repo> --yes
+#    then check the cycle sees the new repo (see also section 20):
 python -m scripts.run_cycle --dry-run --student X
 ```
 
@@ -514,3 +517,75 @@ docker exec -it vdel-postgres psql -U vdel -d vdel -c "\x" -c "SELECT student_id
 To rebuild the features from the raw tables run `python -m features.compute_features` (idempotent; it writes one new
 row only for a student with new activity). Never empty `raw_commits` or `raw_workflow_runs` to "start again" on a
 database that holds real students: the collector's cursor and the attempt history depend on them.
+
+## 19. Start from an empty database
+
+For a new installation or a clean practice database. Do it against a database you can lose; on one that holds real
+students take a backup first (section 9). `docs/INSTALL.md` has the machine side (the token, the key, the container).
+
+1. **The database.** `docker compose up -d`, wait for `(healthy)`, and put its connection string in `.env` as `PG_DSN`
+   (`docs/INSTALL.md` sections 3 and 4).
+2. **The schema.** `python -m scripts.init_db` applies `sql/01` to `sql/10` in order and is idempotent; then
+   `python -m scripts.smoke_test` checks that the tables exist and that `traces` rejects `UPDATE` and `DELETE`.
+3. **The roster.** `cp config/roster.example.yaml config/roster.yaml` and edit it (the file is git-ignored):
+   - in `students:` one block per student: `student_id`, a **real** `github_username`, `cohort`; an `ai_notes: false`
+     line opts a student out of AI notes (`docs/PILOT.md`);
+   - replace the example `assignments:` rows by `assignments: []`. A fresh installation has none: `publish_repo` writes the
+     rows after it has pushed a repository (step 5 below). Keep the key, because `seed_data` reads it when it prints its summary
+     (`scripts/seed_data.py:405-407`); any row left as `CHANGE_ME` is refused, and so is a note in `released_at`
+     (`scripts/seed_data.py:222-253, 273-293`).
+4. **Seed.** `python -m scripts.seed_data`. It prints one `seeded curriculum: ...` line per project (`weather_etl` and
+   `sales_analyzer`, `scripts/seed_data.py:304-323`) and then `seeded N student(s), 0 assignment(s), ...`. It writes the
+   curriculum first, in its own transaction, so a roster error stops it after the curriculum is already in place.
+5. **Check.** `python -m scripts.doctor` (a missing roster is a `FAIL`),
+   then `python -m scripts.baseline --full > baseline_empty.txt` as the reference for later changes.
+6. **Add a student later.** Add a block under `students:` and run `python -m scripts.seed_data` again (it upserts), or use
+   `python -m scripts.roster_apply --student X --assignment A --owner O --repo R --github-username LOGIN --cohort C`
+   for a student not yet in the roster (`--yes` to write; a timestamped backup is made first). Then give the student
+   a repository (next section).
+
+## 20. Deliver and change what a student works on
+
+**The first attempt: `publish_repo`.** It renders the project for one student and puts it on GitHub, for all the stages
+of the project at once:
+
+```powershell
+python -m scripts.publish_repo --student X --attempt 1 --project weather_etl --dry-run   # renders, contacts nothing
+python -m scripts.publish_repo --student X --attempt 1 --project weather_etl             # asks for confirmation
+```
+
+The real run needs a token with the `workflow` scope (`docs/INSTALL.md` section 5). It creates a private repository
+owned by the roster's owner or, failing that, the token's account, pushes it, and only then writes the roster rows. It
+**invites nobody** (`scripts/publish_repo.py` has no invitation step; only `deliver_next_attempt` invites,
+`scripts/deliver_next_attempt.py:314`): add the student as a collaborator with write access in the repository's settings and
+have them accept the invitation.
+
+**Another attempt at a stage: `deliver_next_attempt`.** Which stage gets another attempt is your decision; the command does
+not choose, it takes `--assignment`. The current attempt must be frozen (its hidden tests reached 100 % on a pushed
+commit); `--force` with `--i-understand` overrides that and leaves the old attempt open, which is why you should not use it
+(D-072).
+
+```powershell
+python -m scripts.deliver_next_attempt --student X --assignment weather_etl_extract            # the plan; contacts nothing
+$env:VDEL_ALLOW_GITHUB_WRITE = "1"
+python -m scripts.deliver_next_attempt --student X --assignment weather_etl_extract --apply    # creates, pushes, invites
+Remove-Item Env:VDEL_ALLOW_GITHUB_WRITE
+```
+
+It creates a new private repository for that one stage, invites the student, comments the link on the old repository, and
+prints the roster rows to record. A delivery that stopped half way is finished with the same command plus `--resume`.
+
+**Record it in the roster: `roster_apply`.** `deliver_next_attempt` does not edit `config/roster.yaml`. Run the command
+that `deliver_next_attempt` printed, first without `--yes` (it shows the diff and writes nothing), then with it:
+
+```powershell
+python -m scripts.roster_apply --student X --assignment weather_etl_extract --owner O --repo R
+python -m scripts.roster_apply --student X --assignment weather_etl_extract --owner O --repo R --yes
+python -m scripts.run_cycle --dry-run --student X      # the cycle must now see the new repository
+```
+
+Until the roster has the row, the cycle logs `open attempt ... has no roster repo` and collects nothing for it.
+
+**Changing what a student works on.** Moving a student on means choosing the next attempt or stage and delivering it as
+above. Changing the exercise itself (a stage file, a hidden test, a check description) is a different operation with
+consequences for students already working on it: `docs/AUTHORING.md` section 10.
