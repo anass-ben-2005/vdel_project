@@ -73,7 +73,7 @@ RECOMMENDATION_PATH = Path(__file__).resolve().parent / "RECOMMENDATION.md"
 STUDENT = "_benchmark"
 LEVELS = (0, 2, 4)
 ATTEMPTS_PER_JUDGE = 2                     # the first call and ONE corrective retry (llm.judge)
-TARGET_EXACT = 0.80                        # BUILD_PLAN 4.5 / M4 DoD: ">=80% exact agreement"
+TARGET_EXACT = 0.80                        # D-102 / M4 DoD: ">=80% exact agreement"
 EXIT_OK, EXIT_REFUSED, EXIT_CAPPED = 0, 2, 3
 BANNER = "REAL RUN: billed provider calls, hard cap, nothing written to the database or GitHub"
 
@@ -322,7 +322,7 @@ def render_recommendation(summary: dict) -> str:
             f"agreement {_pct(overall['exact_n'], overall['n'])}, within one level "
             f"{_pct(overall['within_one_n'], overall['n'])}. It {verdict} the one documented "
             "target "
-            f"({TARGET_EXACT:.0%} exact, BUILD_PLAN 4.5) on this benchmark."
+            f"({TARGET_EXACT:.0%} exact, D-102) on this benchmark."
             + (f" Criteria below the target: {', '.join(weak)}." if weak
                else " No criterion is below the target."),
             "* This run measured ONE provider. It is not a comparison between models: repeat it "
@@ -342,9 +342,9 @@ def render_recommendation(summary: dict) -> str:
               "written "
               "at the top of each benchmark file), so a judge can read the answer instead of "
               "finding it. One docstring is also wrong (PySpark has a `groupby` alias).",
-              "* **`benchmark/TASK.md` is missing.** The task given to the judge is the paraphrase "
-              "held in `benchmark/run_benchmark.py` (`TASK`); the original file the paraphrase "
-              "refers to cannot be checked.",
+              "* **The task given to the judge is a hand-kept paraphrase,** held in "
+              "`benchmark/run_benchmark.py` and not re-parsed at run time from "
+              "`benchmark/submissions/TASK.md`.",
               f"* One task, {len(meta['submissions'])} submissions, {meta['runs']} runs: small. "
               "Percentages move by several points with one verdict.",
               f"* The reference solution option was **{meta['reference']}**: if it is `clean.py`, "

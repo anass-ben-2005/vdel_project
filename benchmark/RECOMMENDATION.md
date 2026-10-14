@@ -103,7 +103,7 @@ Per criterion: the fraction of a submission's runs equal to its most common valu
 
 ## 6. Reading of the numbers
 
-* Code Agent on `openai` (gpt-6.1-sol): overall exact agreement 51/60 (85%), within one level 60/60 (100%). It meets the one documented target (80% exact, BUILD_PLAN 4.5) on this benchmark. Criteria below the target: approach.
+* Code Agent on `openai` (gpt-6.1-sol): overall exact agreement 51/60 (85%), within one level 60/60 (100%). It meets the one documented target (80% exact, D-102) on this benchmark. Criteria below the target: approach.
 * This run measured ONE provider. It is not a comparison between models: repeat it with each candidate, then compare the sections 2 to 5 tables.
 * The Feedback Agent is not measured by this benchmark.
 * A disappointing number is a finding, not a failure (CLAUDE.md section 10); do not tune the labels or the prompt to this result.
@@ -112,7 +112,7 @@ Per criterion: the fraction of a submission's runs equal to its most common valu
 
 * **The ground truth was pre-labelled by an LLM** (`claude-code-llm`, from the code and the rubric, without test results) and **human-reviewed on a 10-row sample only** (`benchmark/results/review_sample.txt`); the other rows were not individually reviewed. Agreement with these labels is agreement with another model's reading, which can share its biases. If the judged model is from the same family as the labeller, agreement is probably inflated.
 * **The files' docstrings reveal the planted bug** (archetype and defect are written at the top of each benchmark file), so a judge can read the answer instead of finding it. One docstring is also wrong (PySpark has a `groupby` alias).
-* **`benchmark/TASK.md` is missing.** The task given to the judge is the paraphrase held in `benchmark/run_benchmark.py` (`TASK`); the original file the paraphrase refers to cannot be checked.
+* **The task given to the judge is a hand-kept paraphrase,** held in `benchmark/run_benchmark.py` and not re-parsed at run time from `benchmark/submissions/TASK.md`.
 * One task, 5 submissions, 3 runs: small. Percentages move by several points with one verdict.
 * The reference solution option was **clean.py**: if it is `clean.py`, that file was judged with itself as the reference.
 * The provider's fallback can change the serving model mid-run: see the models line in section 1 (taken from the call records, not from the configuration).
