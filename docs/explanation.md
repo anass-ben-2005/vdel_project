@@ -55,9 +55,9 @@ Four documents in the repo root are the **source of truth**. This codebase is a
 |---|---|
 | `VDEL_Modules_1_2_Build.md` | The seven variables' exact formulas, the schema, the GitHub collector, the error classifier — with code, for Modules 1 (variables) and 2 (telemetry). |
 | `VDEL_Modules_3_9_Build.md` | Memory, LLM gateway, the agents, the Reviewer (Modules 3–9) — not yet built. |
-| `VDEL_v1_Execution_Plan.md` | The M0–M7 milestone plan, task by task, with each milestone's Definition of Done. |
-| `vdel_complete_design_document.md` | Full design rationale, the memory-hierarchy philosophy, and **Sara** — the hand-computed worked example used to test the code. |
-| `CLAUDE.md` | A condensed summary of the above four, plus repository conventions (this is what an AI assistant reads automatically; it is *not* itself a source of new formulas). |
+| `CLAUDE.md` | A condensed summary of the source documents, plus repository conventions (this is what an AI assistant reads automatically; it is *not* itself a source of new formulas). |
+
+Two further source documents are not delivered. One is the milestone plan M0–M7, task by task, with each milestone's Definition of Done. The other is the full design rationale, which holds **Sara**, the hand-computed worked example the code is tested against (`tests/test_sara.py`).
 
 **Critical fact about how this codebase came to be:** an earlier pass at this repo was
 built *without* the four large source documents being available — only `CLAUDE.md`'s

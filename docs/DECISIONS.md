@@ -4048,7 +4048,7 @@ Tests:       tests/test_post_feedback.py (first / second / later commit, a later
              tests/test_demo.py (label follows the env var). Mutation checks: removing the pin fails both seed tests;
              reverting `build_feedback` to whole history fails both as-of tests.
 
-### D-095 -- the hourly task survives any character in a path (an apostrophe in `stage_a_l'etranger`); a startup failure is never silent
+### D-095 -- the hourly task survives any character in a path (an apostrophe in `<repo-folder>`); a startup failure is never silent
 Date:        2026-10-12
 Status:      DECIDED (scripts and tests only; the task is NOT registered, the real database, GitHub and roster untouched)
 Authority:   Anas (bug report: "VDEL hourly" ran at 02:43, LastTaskResult 1, nothing in logs/)
