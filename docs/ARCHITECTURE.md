@@ -187,6 +187,6 @@ Code Agent) or their source (either agent), and cannot post anything by itself.
 ## 8. What is not built
 
 Differential execution (D-036 designed, not built), the Reviewer and orchestrator, Performance and Pedagogy
-agents (dropped), the Coach, the knowledge graph and retrieval from Hanafi's side, a cron/systemd scheduler
+agents (dropped), the Coach, the knowledge graph and retrieval from the tutor-side collaborator, a cron/systemd scheduler
 script, an Airflow run, and any measurement of the Code Agent on `weather_etl`. The full list with impact is
 [KNOWN_ISSUES.md](KNOWN_ISSUES.md).

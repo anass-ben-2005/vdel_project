@@ -1,11 +1,11 @@
 # PROMPT_CHANGELOG.md — `agents/prompts.py`
 
-> BUILD_PLAN 4.6: **prompts are code — version them.** Every change to a string in
+> Build-plan task 4.6: **prompts are code — version them.** Every change to a string in
 > `agents/prompts.py` bumps `PROMPT_VERSION` and adds an entry here, newest last.
 >
 > The reason this file exists is that M4's deliverable is a *measurement*. A stability number
 > or an agreement rate is meaningless without knowing which prompt produced it, and prompt
-> iteration is the research in M4 (`BUILD_PLAN.md` 4.5). An entry that does not say what
+> iteration is the research in M4 (build-plan task 4.5). An entry that does not say what
 > failure mode the change addressed is not a useful entry — "improved wording" tells a future
 > reader nothing about whether to keep the change.
 >
@@ -29,7 +29,7 @@ in short: hallucinated quotes, prompt injection, halo/anchoring bias, unanchored
 wasted attention on findings a linter already produced, and tone-deaf feedback.
 
 **Benchmark result:** **not yet measured.** `benchmark/ground_truth.json` does not exist yet
-(blocked on Anas's per-criterion scores — `HANDOFF.md` open question 1), so accuracy against
+(blocked on the author's per-criterion scores), so accuracy against
 intended scores cannot be computed. Self-consistency across repeated runs is measurable
 without ground truth and has not been run either, because no `ANTHROPIC_API_KEY` is
 configured yet.
@@ -39,7 +39,7 @@ Spark/SQL", but all five benchmark submissions are pandas/Python, not Spark or S
 prompt currently instructs the judge to score the lower anchor and quote the line showing why
 when a criterion cannot be assessed. Whether that is the right treatment — versus marking the
 criterion not-applicable and excluding it from the aggregate — is a real design question and
-is deliberately **not** resolved by silently tuning the prompt. Raise with Dr. Ezzatul.
+is deliberately **not** resolved by silently tuning the prompt. Raise with the supervisor.
 
 ---
 

@@ -30,7 +30,7 @@ status. Decisions D-200 and up (the agents branch) are in
   notice in every `ASSIGNMENT.md`, a fail-closed per-student opt-out (`ai_notes` in the roster), and the
   `--ab-llm` experiment with a read-only `scripts/ab_report.py`; `docs/PILOT.md`.
 - Later stages of the branch (handoff documentation, authoring scaffolding, agents v2, pilot preparation)
-  add their own entries; see [docs/FINALIZE_PROGRESS.md](docs/FINALIZE_PROGRESS.md).
+  add their own entries (D-105 onward in [docs/DECISIONS.md](docs/DECISIONS.md)).
 
 ## The v1 operating loop (2026-10-07 to 2026-10-12)
 

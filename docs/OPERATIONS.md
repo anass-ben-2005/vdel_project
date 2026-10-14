@@ -20,7 +20,7 @@ manual `run_cycle` started while the task runs is refused too.
 ## 2. Before the first run (once)
 
 ```powershell
-cd "C:\Users\ASUS\Desktop\EMINES\internship\stage_a_l'etranger\projet\vdel"
+cd "<repo-folder>"
 
 # 1. Docker Desktop is running, then the database:
 docker compose up -d
@@ -212,7 +212,7 @@ system plus a small tmpfs scratch, a limit of 128 processes, 512 MB and 1 CPU, n
 separate mount; it is removed afterwards.
 
 ```powershell
-cd "C:\Users\ASUS\Desktop\EMINES\internship\stage_a_l'etranger\projet\vdel"
+cd "<repo-folder>"
 
 # 1. Build the image ONCE (needs network; the build context is docker\ only, so .env and backups\
 #    are never sent to Docker). The base image is pinned by digest in docker\grader.Dockerfile.
@@ -273,7 +273,7 @@ Find the three values with a read-only query (an attempt that failed at least on
 its graded commits):
 
 ```powershell
-cd "C:\Users\ASUS\Desktop\EMINES\internship\stage_a_l'etranger\projet\vdel"
+cd "<repo-folder>"
 docker exec vdel-postgres psql -U vdel -d vdel -c "SELECT a.student_id, a.attempt_id, t.commit_sha, count(*) FILTER (WHERE NOT t.passed) AS failed FROM test_results t JOIN attempts a USING (attempt_id) WHERE t.status = 'ok' GROUP BY 1,2,3 HAVING count(*) FILTER (WHERE NOT t.passed) > 0 ORDER BY max(t.ran_at) DESC LIMIT 5;"
 ```
 
@@ -312,7 +312,7 @@ The same rules as section 12: exactly one provider key, `LLM_PROVIDER` set, no k
 emptying the other keys in `.env`.
 
 ```powershell
-cd "C:\Users\ASUS\Desktop\EMINES\internship\stage_a_l'etranger\projet\vdel"
+cd "<repo-folder>"
 $env:LLM_PROVIDER = "<provider>"
 
 # 1. Read the plan and the maximum (calls nothing, writes nothing):
@@ -330,8 +330,8 @@ stops cleanly at the cap, writes what it has and exits with code 3), and
 without them the cost line says "not computed"). Exit codes: 0 done, 2 refused, 3 stopped at the cap.
 
 Read `benchmark/RECOMMENDATION.md` after it, section 7 first: the labels were pre-written by an LLM and
-reviewed by a human on 10 rows only, the files' docstrings give away the bug, and `benchmark/TASK.md` is
-missing. The previous RECOMMENDATION.md (the skeleton) is in git history.
+reviewed by a human on 10 rows only, the files' docstrings give away the bug, and the task given to the judge is a
+hand-kept paraphrase of `benchmark/submissions/TASK.md`. The previous RECOMMENDATION.md (the skeleton) is in git history.
 
 
 
@@ -360,7 +360,7 @@ switch are never revisited.
 ### See what the task runs now
 
 ```powershell
-cd "C:\Users\ASUS\Desktop\EMINES\internship\stage_a_l'etranger\projet\vdel"
+cd "<repo-folder>"
 $a = (Get-ScheduledTask -TaskName "VDEL hourly").Actions[0].Arguments
 [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($a -split ' ')[-1]))
 ```

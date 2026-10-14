@@ -72,7 +72,7 @@ read with a read-only `SELECT` on that day.
   measured 2026-09-02). Unclassified errors update no mastery (invariant 10) but they are counted in
   V5/V6 as a concept of their own, which is a finding, not a fix.
 - **Workaround.** Extend `collectors/error_classifier.py` from the observed logs.
-- **Recorded.** `docs/STATUS.md` (M1, 2026-09-02), D-096.
+- **Recorded.** D-096 (checked against the live table on 2026-09-02).
 
 ## Grading safety
 
@@ -108,7 +108,7 @@ read with a read-only `SELECT` on that day.
 ### 11. The Code Agent is an unmeasured judge
 - **Impact.** Its verdict is stored (`--with-code-agent`) and never posted. The benchmark ground truth
   was pre-labelled by an LLM and reviewed by a person on 10 rows only; its files' docstrings reveal the
-  planted bug; `benchmark/TASK.md` is missing; no `weather_etl` labels exist. The one real run
+  planted bug; the task given to the judge is a hand-kept paraphrase of `benchmark/submissions/TASK.md`; no `weather_etl` labels exist. The one real run
   (`benchmark/RECOMMENDATION.md`) measured one provider on five PySpark files.
 - **Workaround.** Read `scripts/code_agent_report.py` as an internal aid; do not act on a score.
 - **Recorded.** D-102, D-103, D-104, `benchmark/RECOMMENDATION.md` section 7.
@@ -117,7 +117,7 @@ read with a read-only `SELECT` on that day.
 - **Impact.** `statement` is null for the four `weather_etl` assignments, so the judge is told only the
   gap instructions. `sales_analyzer_*` has no entry and is judged on all four criteria, including
   "Idiomatic Spark/SQL".
-- **Workaround.** The course author's statements (Dr. Ezzatul or Hanafi). `config/judging.yaml` now holds
+- **Workaround.** The course author's statements (the supervisor or the tutor-side collaborator). `config/judging.yaml` now holds
   DRAFT statements for the four `weather_etl` stages (D-107); a draft is ignored by the loader, so nothing
   changes until a person marks one `reviewed`.
 - **Recorded.** D-103 item 3, D-104 (CONFIRM 2).
@@ -150,21 +150,21 @@ read with a read-only `SELECT` on that day.
 - **Impact.** `dags/vdel_pipeline.py` exists but `airflow` is not installed, so the M1 clause "the DAG runs
   green end to end" is unmet. The hourly task replaces it in practice.
 - **Workaround.** `requirements-airflow.txt` (a separate environment, Python 3.11).
-- **Recorded.** `docs/STATUS.md`, M1 (2026-08-25).
+- **Recorded.** the M1 verification run of 2026-08-25.
 
 ### 17. Test-suite trace pollution in the development database
 - **Impact.** `traces` cannot be deleted, so students named `_test_runner` and similar from early runs
   stay in the shared development database and appear in the event-sourcing proof as "no prior profile".
 - **Workaround.** None; it is cosmetic. The suite itself runs on a throwaway `vdel_test` database
   (D-064) and never connects to `vdel`.
-- **Recorded.** `docs/STATUS.md`, M2 (2026-08-25).
+- **Recorded.** the M2 verification run of 2026-08-25.
 
 ### 18. Open items that need a person
 - `student2` has a placeholder GitHub login: posting and delivery are refused for it.
 - Consent and data protection for a 3 to 5 student pilot are not written (Stage 6 drafts a notice for
   review).
 - A template-push column on `raw_commits` was proposed instead of recognising it by message (D-098).
-- Hanafi's hints (D-077) are not wired.
+- The tutor-side collaborator's hints (D-077) are not wired.
 
 ### 19. A duplicate gap id in another file silently re-points a gap
 - **Impact.** `gaps.gap_id` is the primary key and the seeder upserts with `ON CONFLICT (gap_id) DO UPDATE`,
@@ -177,7 +177,7 @@ read with a read-only `SELECT` on that day.
 ### 20. One Docker test failed once in a full run
 - **Impact.** In the stage-3 gate, `tests/test_grading_container.py::test_an_infinite_loop_times_out_and_the_container_is_killed`
   failed once in a full suite run (`leftover_containers()` found `vdel-grade-513b8dc2ed196cb8`), then passed in
-  the rerun of that file (24 passed) and in a second full run (1461 passed). No container was left afterwards
+  the rerun of that file (24 passed) and in a second full run (passed). No container was left afterwards
   (`docker ps -a --filter name=vdel-grade-` empty). My reading, not verified: the check ran while Docker was
   still removing the killed container (`assessment/test_runner.py` kills it, then `docker rm -f`), under the
   load of a full run. If the code path ever leaves a container behind, the symptom is the same.

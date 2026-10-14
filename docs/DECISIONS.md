@@ -8,6 +8,9 @@
 > question. That is also why it must stay small: pad it with implementation notes and the
 > real decisions get buried.
 
+> **For readers of the delivered repository.** Files named in these entries that are not in the repository stay with
+> the author. D-numbers are never renumbered.
+
 ## What belongs here
 
 - An architectural or interface choice, and the alternative rejected.
@@ -2645,7 +2648,7 @@ Defence:     "The model's correctness number is an explanation, not a grade. It 
 Date:        2026-10-10
 Status:      DECIDED; BUILT and tested with a mocked HTTP layer (tests/test_sync_template.py,
              33 tests). NOT yet run against real GitHub -- the first real dry-run on
-             anass-ben-2005/vdel-weather-etl-gapfill-anas is Anas's to run.
+             <owner>/vdel-weather-etl-gapfill-anas is Anas's to run.
 Authority:   Anas
 Context:     D-060 fixed the CI template, but `publish_repo.py` only creates repos, so the
              fix never reaches repos published before it. anas's hand-made repo still has
@@ -3553,7 +3556,7 @@ Date:        2026-10-11
 Status:      DECIDED (Anas, 2026-10-11). Evidence of a first live run; no code changed by it.
 Authority:   Anas
 Run:         `run_cycle --roster <scratch> --student student2`, scratch roster of the four student2
-             rows (owner anass-ben-2005, repo vdel-weather-etl-gapfill-student2), not
+             rows (owner <owner>, repo vdel-weather-etl-gapfill-student2), not
              config/roster.yaml. Dry-run first (reads only, baseline identical). Live run:
              collect +1 commit (4832ec3c32 `load: insert_readings`, weather_etl_load, 2026-10-11
              03:17:18+00) and +1 CI run (failure, AssertionError, py.testing); grade 1 commit,
@@ -4451,3 +4454,15 @@ Authority:   Anas (the finalisation brief). CONFIRM items are marked.
 4 `--ab-llm` (`agents/ab.py`, `scripts/ab_report.py`, `AgentsHook._feedback`): for every graded commit with a failing check the arm is `sha256("vdel-ab-v1:<attempt_id>:<commit_sha>")`, first byte even -> `llm`, odd -> `control` (pure, stable, about 50/50 over 2000 pairs in a test). It is stored as a `coach`/`intervention` trace (`agent` `ab_assignment`, with the arm, the salt and the rule), idempotent by a SELECT, BEFORE the agent runs, so a commit whose AI answer was rejected still counts as `llm`, and a stored arm wins over a later change of the rule. `control` -> the deterministic text alone, no agent, no provider call (and so no stored paragraph for the poster to add); `llm` -> the Feedback Agent exactly as without the flag (v1, or v2 with `--agents-v2`). A commit with no failing check is not in the experiment. The Code Agent is not part of it. `scripts/ab_report.py` is read-only and DESCRIPTIVE: per arm, the number of assigned commits and attempts, how many attempts have since frozen, how many have not (censored), and the mean and median number of graded pushes after the assigned commit up to and including the freezing one; its label and caveats say it is not a significance test. CONFIRM: the commit as the unit of randomisation (one attempt can be in both arms, so a student can see both kinds of note: chosen because feedback is per commit and the alternative, per attempt, would decide the arm before knowing there is anything to say), the hash, the salt, the outcome definition. The flag is not a switch of `register_task.ps1`.
 Limits:      (1) With a handful of students no difference in the report is evidence. (2) The notice is only on repositories rendered after this change. (3) `ai_notes` is read from the roster each cycle; an opt-out takes effect on the next graded commit, and it does not delete anything already sent. (4) Nothing here writes down consent, retention or deletion; the notice is information, not consent. (5) The role cannot run the owner's commands, so a pilot needs two connection strings.
 Tests:       `tests/test_pilot.py` (27): the role file as text (not a superuser, no create, no delete or truncate, password only a variable, traces INSERT only, grants equal to the writes derived from the code, nothing applies it, the instructions exist), the notice (appended, matches the prompts' facts, no prompt carries an identity), the opt-out (fails closed, hook, poster, other students untouched), the arms (stable, balanced, depend on both inputs, control makes no call and is stored once, llm runs the agent, a rejected answer is still recorded, no failing check means no record, a stored arm wins, the replay proof is unaffected), the flags, and the report. Mutation-checked: 11 of 11 mutants turn a test red (opt-out fail-open, hook, poster, control still calling, stored arm, no-failure assignment, an arm that ignores the commit, a role that can update traces / loses a grant / gets delete, the notice dropped).
+
+### D-111 -- the documentation handover: which documents are delivered and which stay private
+Date:        2026-10-14
+Status:      DECIDED and applied on the local branch `docs-apply`. Nothing pushed.
+Authority:   Anas (the handover brief).
+Context:     The framework is handed to a professor who must understand it, run it and continue developing it. Documents that are only the author's working files (session logs, evidence boards, analyses, assistant policy) must not travel with it.
+Decision:    1 Delivered: `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `VDEL_TEN_PROJECT_CURRICULUM.md`, `agents/PROMPT_CHANGELOG.md`, `benchmark/RECOMMENDATION.md`, `benchmark/submissions/TASK.md`, `tests/fixtures/agents/README.md`, and in `docs/`: `ARCHITECTURE`, `AUTHORING`, `DECISIONS`, `DECISIONS_AGENTS`, `GLOSSARY`, `INSTALL`, `KNOWN_ISSUES`, `OPERATIONS`, `PILOT`, `agents`, `explanation`, `resources_review`, and `docs/archive/` (`DEVELOPMENT_MAP`, `code_agent_flow`, with an index).
+2 Private, moved on disk into the git-ignored folder `private/` of the same repository folder and untracked (nothing deleted, nothing copied elsewhere): `STATUS` (evidence), `FINALIZE_PROGRESS` and `CURRENT_DEMO` (sessions), `CLEANUP_PLAN` and `DOCS_TRIAGE` (analysis), `CONTEXT_POLICY`, `MODEL_ROUTING`, `START_HERE`, `WORKFLOW` (dev-system).
+3 Names: the author keeps their name; the supervisor and the tutor-side collaborator are named by role in every delivered document except the older entries of this file, which are history and were not rewritten.
+4 References: `CLAUDE.md`, `VDEL_REDESIGN.md`, `VDEL_Modules_1_2_Build.md` and `VDEL_Modules_3_9_Build.md` stay cited as they are; sanitized copies are to be delivered later (`CLAUDE.md` at the root, the other three under `docs/design/`). Citations of `STATUS`, `HANDOFF`, `FINALIZE_PROGRESS`, `EXECUTION`, `BUILD_PLAN`, `SETUP`, the overnight report and `docs/reading/` were dropped or replaced by the fact they carried, in the delivered documents other than this file and `docs/archive/`.
+5 The read-only inspection queries of `CURRENT_DEMO` are `docs/OPERATIONS.md` section 18; its `TRUNCATE` step was not carried. The two entries that held the author's login now hold `<owner>`, and the mentions of the two archived documents in this file carry the `docs/archive/` path.
+Limits:      (1) Older entries of this file still name people and files that are not delivered; that is history. (2) Whether the repository is handed over with its full history or as a fresh repository is not decided here: the history still holds the moved documents, the author's login and local paths. (3) `benchmark/RECOMMENDATION.md` is generated, so its text changes only through `benchmark/run_real_benchmark.py`.
