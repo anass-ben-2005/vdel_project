@@ -96,6 +96,13 @@ is in [docs/GLOSSARY.md](docs/GLOSSARY.md).
 | [benchmark/submissions/TASK.md](benchmark/submissions/TASK.md) | The task the five benchmark submissions solve. |
 | [docs/resources_review.md](docs/resources_review.md) | How the learning resources in `config/resources.csv` were checked. |
 | [tests/fixtures/agents/README.md](tests/fixtures/agents/README.md) | Where every agent test fixture comes from. |
+| [docs/HOWTO_EXTEND.md](docs/HOWTO_EXTEND.md) | Pointers for adding a project, a gap, a check, an agent or a variable. |
+| [docs/VALIDATION.md](docs/VALIDATION.md) | What has been shown to work (command, date, source) and what has not. |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | The open work, and the open ownership and licence question. |
+| [docs/DATA_PROTECTION.md](docs/DATA_PROTECTION.md) | What student data is held, what leaves the machine, what is not yet decided. |
+| [docs/RELEASE_AND_UPGRADE.md](docs/RELEASE_AND_UPGRADE.md) | Versions, schema and formula upgrades, and how to check an upgrade. |
+| [CLAUDE.md](CLAUDE.md) | The condensed rules for the code: scope, architecture, schemas, the 16 invariants (also what an AI coding assistant reads). |
+| [docs/design/](docs/design/README.md) | The sanitized module and redesign documents the code cites. |
 | [docs/archive/](docs/archive/README.md) | Dated analyses kept for their reasoning, not as current references. |
 
 ## Status

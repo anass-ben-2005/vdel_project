@@ -119,7 +119,10 @@ decisions are numbered D-200 and up in `docs/DECISIONS_AGENTS.md`.
 | `docs/DECISIONS.md` | What was decided and why. Append-only |
 | `docs/KNOWN_ISSUES.md` | What is wrong or missing, with impact and workaround |
 | `docs/OPERATIONS.md` | How to run it |
-| `docs/ARCHITECTURE.md`, `docs/AUTHORING.md`, `docs/INSTALL.md`, `docs/GLOSSARY.md` | Orientation |
+| `docs/ARCHITECTURE.md`, `docs/AUTHORING.md`, `docs/INSTALL.md`, `docs/GLOSSARY.md`, `docs/HOWTO_EXTEND.md` | Orientation |
+| `docs/VALIDATION.md` | What has been shown to work, with command, date and source |
+| `docs/ROADMAP.md`, `docs/DATA_PROTECTION.md`, `docs/RELEASE_AND_UPGRADE.md` | The open work, the data held, how to upgrade |
+| `CLAUDE.md`, `docs/design/` | The rules for the code and the design documents it cites |
 | `CHANGELOG.md` | A map into the decisions |
 
 Do not state the same fact in two of them. A docstring states the **why**, citing the decision or the paper.
