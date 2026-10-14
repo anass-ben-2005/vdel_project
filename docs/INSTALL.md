@@ -4,8 +4,8 @@ For the person who sets the system up. After this, daily running is [OPERATIONS.
 What is checked and what is not is said inline: a step marked **not verified** was not run for this
 document.
 
-Contents: 1 What you need · 2 Get the code · 3 The database · 4 Secrets and `.env` · 5 The GitHub token ·
-6 An LLM key (optional) · 7 The grading container · 8 The roster and the curriculum · 9 Check the machine ·
+Contents: 1 What you need · 2 Get the code · 3 The database · 4 to 6 Configure secrets (`.env`, the GitHub token,
+an LLM key and a spending limit) · 7 The grading container · 8 The roster and the curriculum · 9 Check the machine ·
 10 A first cycle · 11 Run it every hour · 12 A first demo
 
 ## 1. What you need
@@ -60,36 +60,57 @@ the code needs Docker for the database. **Not verified** against a non-Docker se
 
 Backup before anything destructive: `docs/OPERATIONS.md` section 9.
 
-## 4. Secrets and `.env`
+## 4. Configure secrets: where `.env` lives and what goes in it
 
 ```bash
 cp .env.example .env
 ```
 
-`.env` is gitignored (never commit it); `.env.example` lists the variable **names** with one comment each.
-The ones to fill in:
+- **Where.** `.env` sits at the repository root, next to `.env.example`. The code loads it with
+  python-dotenv's `load_dotenv()` (`system/db.py:22`, `system/llm.py:139`, `scripts/doctor.py:545`,
+  `scripts/sync_template.py:360`), which looks in the calling file's folder and then in each parent folder, so it is
+  found whatever directory you run a command from (python-dotenv `find_dotenv`; it falls back to the current
+  directory only in a REPL or debugger).
+- **Never committed.** `.env` is the first line of `.gitignore` and `git ls-files .env` prints nothing (invariant 11).
+  `.env.example` is committed and holds **names only**. The doctor prints names, never values. If a key ever lands in a
+  commit, a log or a chat, revoke it at the provider and make a new one; deleting the commit is not enough.
+- **Blank is not unset.** A variable that is present but empty can crash the import (`LLM_PROVIDER=` fails at import,
+  `system/llm.py:167`; `FEATURE_WINDOW_DAYS=` fails at `features/compute_features.py:37`). That is why the optional
+  lines in the example are commented out: remove the `#` only to give a value.
 
-| Name | Value |
-|---|---|
-| `PG_DSN` | `postgresql://vdel:vdel@localhost:5433/vdel` for the compose database |
-| `GITHUB_TOKEN` | the token of section 5 |
+Every variable of `.env.example`:
 
-The others are optional and commented out in the example on purpose: **a blank value is not an unset
-one** (`LLM_PROVIDER=` makes the import fail). Remove the `#` only to give a value.
+| Name | Required | What it is for | Read in |
+|---|---|---|---|
+| `PG_DSN` | yes | the PostgreSQL connection string; the compose database is `postgresql://vdel:vdel@localhost:5433/vdel`. The test suite derives its own `<name>_test` database from it and never touches the real one (D-064) | `system/db.py:25-30` |
+| `GITHUB_TOKEN` | yes, for anything that talks to GitHub | the collector, the grader's checkout of a student commit, `publish_repo`, `deliver_next_attempt`, `sync_template`, `post_feedback` (section 5) | `collectors/collect_github.py:46-55`, `scripts/grade_collected.py:170`, `scripts/publish_repo.py:606` |
+| `LLM_PROVIDER` | only with `--with-llm` | which provider the gateway uses: `anthropic` (the default when unset), `openai`, `google` or `nvidia`; a typo stops the process at import | `system/llm.py:167` |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `NVIDIA_API_KEY` | only the one of your provider | the key for that provider (section 6) | `system/llm.py`, `scripts/doctor.py:55-60` |
+| `FEATURE_WINDOW_DAYS` | no | window in days for the learner features, default `14` | `features/compute_features.py:37` |
+| `VDEL_ALLOW_GITHUB_WRITE` | no | `1` lets the hourly task post feedback to GitHub; unset, it only logs that it WOULD post | `scripts/post_feedback.py:334`, `scripts/run_hourly.py` (module docstring) |
+| `VDEL_GRADING_SANDBOX` | no | `docker` grades student code in the `vdel-grader` container and never falls back to a subprocess (section 7) | `assessment/test_runner.py:141` |
+| `VDEL_GRADING_IMAGE` | no | the grading image when it is not the default `vdel-grader:1` | `assessment/test_runner.py:142-143` |
 
-## 5. The GitHub token
+Two more variables exist but are not for you to set: `VDEL_REQUIRE_DB=1` (you set it when you run the suite, section 9)
+and `VDEL_TESTING` (set only by `tests/conftest.py`; it makes the code refuse any database not ending in `_test`,
+`system/db.py`).
 
-A **classic** personal access token with scopes **`repo`** and **`workflow`**. `workflow` is needed to push
-`.github/workflows/ci.yml` into a student repository; without it publishing is refused before it creates
-anything. The token is read from `GITHUB_TOKEN`, sent only in an `Authorization` header or through git's
-`GIT_CONFIG_*` environment (never on a command line or in a URL), and never printed.
+## 5. Configure secrets: the GitHub token
+
+A **classic** personal access token with scopes **`repo`** and **`workflow`**, created in the GitHub account that will
+own the student repositories (the instructor account: `publish_repo` makes the repository owned by the token's user
+unless the roster names an owner). `workflow` is needed to push `.github/workflows/ci.yml` into a student repository;
+without it publishing is refused before it creates anything (`scripts/publish_repo.py:365`, `preflight_scopes`;
+`scripts/doctor.py:49`). The token is read from `GITHUB_TOKEN`, sent only in an `Authorization` header or through git's
+`GIT_CONFIG_*` environment (never on a command line or in a URL), and never printed. The exact menu names of GitHub's
+token page are not reproduced here (`TODO(verify)`: they change).
 
 `python -m scripts.doctor` makes exactly one `GET /user` (only when you run it) and prints the scope names
 GitHub returns. A fine-grained token sends no scope header, so the doctor says so and you check its
 repository permissions by hand. **Not verified:** that a fine-grained token with the right repository
 permissions works for every script.
 
-## 6. An LLM key (optional)
+## 6. Configure secrets: an LLM key, one provider, and a spending limit
 
 Nothing needs a key until you switch the agents on (`--with-llm`, or the task registered with `-WithLlm`).
 To use OpenAI:
@@ -100,11 +121,24 @@ LLM_PROVIDER=openai
 OPENAI_API_KEY=...
 ```
 
-Keep **one** provider key in `.env`: the gateway falls back to any other provider that has a key, which
-would spend somewhere you did not intend (`docs/OPERATIONS.md` section 12). The OpenAI model ids in
-`system/llm.py` were supplied by the author and are not verified against OpenAI's public list (D-225).
-The first real call is a manual, capped dry run: `docs/OPERATIONS.md` section 12. Every call has a cap per
-run and per day; see section 14 there.
+- **Keep one provider key in `.env`.** The gateway first tries the other models of your provider, and then **any other
+  provider that has a key set**, so a second key means calls can be billed to an account you did not choose
+  (`system/llm.py:684`, `_call_with_fallback`; `docs/OPERATIONS.md` section 12). The doctor warns when more than one
+  key is present (`scripts/doctor.py:372-384`).
+- **Set a spending limit at the provider before the first call.** The project's caps (10 provider calls per run and 20
+  per day by default) count calls, not money, a failed fallback attempt is not counted, and no prices are stored in
+  the repository (KNOWN_ISSUES item 13). A limit or a prepaid balance in the provider's billing settings is the only
+  cap on money. Where that setting is depends on the provider (`TODO(verify)`: the menu names).
+- The OpenAI model ids in `system/llm.py` were supplied by the author and are not verified against OpenAI's public list
+  (D-225). The first real call is a manual, capped dry run: `docs/OPERATIONS.md` section 12; every call has a cap per
+  run and per day (section 14 there).
+
+**Confirm the setup with the doctor** (`python -m scripts.doctor`, section 9). It prints one line per check and never a
+value. For a correct setup you should see `github token OK`, `github scopes OK has: ...` listing `repo` and `workflow`
+(`scripts/doctor.py:226-278`), `database OK connected ...` (your `PG_DSN`), `llm provider OK LLM_PROVIDER=openai` and
+`llm keys OK present: OPENAI_API_KEY` (`scripts/doctor.py:348-388`). `FAIL` means a required name is missing or the
+token was rejected (exit code 1); `WARN` means something to read, such as two provider keys or `LLM_PROVIDER` naming a
+provider whose key is not set.
 
 ## 7. The grading container (do this before a second student)
 

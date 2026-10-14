@@ -22,6 +22,17 @@ append-only log from which every belief can be rebuilt.
 | Preparing a **pilot** (3 to 5 students) | [docs/PILOT.md](docs/PILOT.md) |
 | A **supervisor or reviewer** (you want to know what is claimed and what is proven) | [docs/DECISIONS.md](docs/DECISIONS.md), [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md), [CHANGELOG.md](CHANGELOG.md) |
 
+## Reading order
+
+1. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/GLOSSARY.md](docs/GLOSSARY.md): how it fits together.
+2. [docs/INSTALL.md](docs/INSTALL.md): the machine, and sections 4 to 6, **Configure secrets** (`.env`, the GitHub
+   token, one LLM provider and a spending limit, confirmed with `python -m scripts.doctor`).
+3. [docs/OPERATIONS.md](docs/OPERATIONS.md) section 19, **Start from an empty database**, and section 20, **Deliver and
+   change what a student works on**.
+4. [docs/AUTHORING.md](docs/AUTHORING.md) section 10, **Change an existing assignment**, and
+   [docs/HOWTO_EXTEND.md](docs/HOWTO_EXTEND.md) for new projects.
+5. [docs/FIRST_WEEK.md](docs/FIRST_WEEK.md): the same path as a short sequence for a first week.
+
 ## What it does, in one pass
 
 1. A course author writes a **master project** with `# @gap:` markers; each marked block is something a
@@ -96,6 +107,7 @@ is in [docs/GLOSSARY.md](docs/GLOSSARY.md).
 | [benchmark/submissions/TASK.md](benchmark/submissions/TASK.md) | The task the five benchmark submissions solve. |
 | [docs/resources_review.md](docs/resources_review.md) | How the learning resources in `config/resources.csv` were checked. |
 | [tests/fixtures/agents/README.md](tests/fixtures/agents/README.md) | Where every agent test fixture comes from. |
+| [docs/FIRST_WEEK.md](docs/FIRST_WEEK.md) | A first week: what to read and do, in order. |
 | [docs/HOWTO_EXTEND.md](docs/HOWTO_EXTEND.md) | Pointers for adding a project, a gap, a check, an agent or a variable. |
 | [docs/VALIDATION.md](docs/VALIDATION.md) | What has been shown to work (command, date, source) and what has not. |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | The open work, and the open ownership and licence question. |
@@ -126,6 +138,6 @@ Version 1.0 is the tip of `main` at hand-over ([docs/RELEASE_AND_UPGRADE.md](doc
 [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md). Not built: differential testing, the Reviewer and orchestrator, the
 Coach, the knowledge graph. **The Code Agent is an unmeasured judge and its verdict is never shown to students.**
 
-Authors: Anass BENBELLA (intern, student side), with a tutor-side collaborator, under the supervisor Dr
+Author: Anass Benbella, under the supervision of Dr. Ezzatul Akmal.
 
 License: not decided yet; see the ownership question in docs/ROADMAP.md.
