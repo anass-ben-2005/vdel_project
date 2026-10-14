@@ -6,6 +6,12 @@
 > file — it will save you from re-deriving decisions that were already made, and from
 > repeating mistakes that were already made and fixed once.
 
+> **Dated banner (2026-10-14).** Written at milestones M0 to M4 and extended afterwards, so older sections describe
+> the code of their day. For the current picture read `docs/ARCHITECTURE.md`, `docs/agents.md` and `docs/DECISIONS.md`,
+> which are newer. A file named here as "not built" does not exist in the repository. Test counts are those of the
+> milestone being described; the suite is larger today. "Build-plan task n.m" and "the execution plan" refer to the
+> author's planning documents, which are not part of the repository; the facts they carried are stated in the text.
+
 ---
 
 ## 0. The one sentence that explains every design choice
@@ -30,8 +36,8 @@ activity), builds a private, continuously-updated model of what that student kno
 how they work, and will eventually use that model to (1) grade submissions with
 explainable AI agents and (2) coach students who are stuck.
 
-**People:** Anas is the intern building this (student-side). Hanafi is building the
-tutor-side (knowledge graph, RAG, personas) in parallel. Dr. Ezzatul Akmal supervises.
+**People:** Anas is the intern building this (student-side). A tutor-side collaborator is building the
+tutor-side (knowledge graph, RAG, personas) in parallel. A supervisor oversees the work.
 
 **This repository's job right now (M0 + M1) is narrow:** get real telemetry from GitHub
 into a database, and turn that telemetry into seven numeric variables that describe a
@@ -49,10 +55,9 @@ Four documents in the repo root are the **source of truth**. This codebase is a
 |---|---|
 | `VDEL_Modules_1_2_Build.md` | The seven variables' exact formulas, the schema, the GitHub collector, the error classifier — with code, for Modules 1 (variables) and 2 (telemetry). |
 | `VDEL_Modules_3_9_Build.md` | Memory, LLM gateway, the agents, the Reviewer (Modules 3–9) — not yet built. |
-| `VDEL_v1_Execution_Plan.md` | The M0–M7 milestone plan, task by task, with each milestone's Definition of Done. |
-| `vdel_complete_design_document.md` | Full design rationale, the memory-hierarchy philosophy, and **Sara** — the hand-computed worked example used to test the code. |
-| `CLAUDE.md` | A condensed summary of the above four, plus repository conventions (this is what an AI assistant reads automatically; it is *not* itself a source of new formulas). |
-| `BUILD_PLAN.md` | The task breakdown this repo's construction actually followed, mirroring the Execution Plan. |
+| `CLAUDE.md` | A condensed summary of the source documents, plus repository conventions (this is what an AI assistant reads automatically; it is *not* itself a source of new formulas). |
+
+Two further source documents are not delivered. One is the milestone plan M0–M7, task by task, with each milestone's Definition of Done. The other is the full design rationale, which holds **Sara**, the hand-computed worked example the code is tested against (`tests/test_sara.py`).
 
 **Critical fact about how this codebase came to be:** an earlier pass at this repo was
 built *without* the four large source documents being available — only `CLAUDE.md`'s
@@ -198,7 +203,7 @@ by `scripts/seed_data.py` and never overwritten by seeding again (`DO NOTHING` o
 conflict) — the live value is meant to be owned by the cohort estimator once one exists.
 
 **`traces`, `sessions`, `learner_profile`** (`sql/05_memory_tables.sql`) — **M2's
-tables.** The DDL is created now (BUILD_PLAN 0.3 asks for all five SQL files in M0) but
+tables.** The DDL is created now (build-plan task 0.3 asks for all five SQL files in M0) but
 **nothing in M1 writes to them yet**. `traces` has two Postgres `RULE`s that make
 `UPDATE` and `DELETE` silent no-ops — this is invariant 1 (append-only) **enforced by
 the database itself**, not by convention or code discipline. See §8 and §3.4.
@@ -288,7 +293,7 @@ repo can't corrupt another repo's data).
 ### 4.3 `scripts/init_db.py`
 
 Runs the five SQL files as raw multi-statement scripts (not through an ORM/migration
-tool — deliberately: `BUILD_PLAN` M0 warns explicitly against spending day one on
+tool — deliberately: the build plan M0 warns explicitly against spending day one on
 package/migration ceremony). Also runs `CREATE EXTENSION IF NOT EXISTS vector` first
 (pgvector — reserved for M3's RAG work, unused by anything in M0/M1, but the extension
 needs to exist before any future `vector` column is declared). Idempotent because every
@@ -342,7 +347,7 @@ re-fetching everything on every run would burn through that fast, especially bec
 **getting a commit's diff stats (`additions`/`deletions`/`files_changed`) requires a
 second, per-commit API call** — the list endpoint doesn't include them. The module
 document calls this "the expensive call." Seven optimizations exist for this, in a
-specified priority order (also mirrored in `BUILD_PLAN.md` 1.3):
+specified priority order (also mirrored in build-plan task 1.3):
 
 1. **Skip-if-present before the expensive per-commit detail call** (highest leverage —
    do this first). Before fetching a commit's detail, check if `raw_commits` already has
@@ -396,7 +401,7 @@ specified priority order (also mirrored in `BUILD_PLAN.md` 1.3):
   repo (optimization 7), returns `{"ok": count, "failed": [...], "stats": summary}`.
 - **`Stats` (added dataclass)** — counts `api_calls`, `detail_calls`,
   `commits_upserted`, `runs_upserted`, and the list of classifications made, so that
-  `BUILD_PLAN` 1.4's requirement — "confirm the second run makes almost no API calls" —
+  build-plan task 1.4's requirement — "confirm the second run makes almost no API calls" —
   can be answered with an actual printed number instead of an impression. `.summary()`
   also reports the classifier's match rate (see §6).
 
@@ -460,7 +465,7 @@ estimate for a concept the student's actual mistake had nothing to do with.
 
 ### 6.2 `match_rate(classifications)` — an addition, not in the source document
 
-The source document and `BUILD_PLAN` both require the classifier's match rate to be
+The source document and the build plan both require the classifier's match rate to be
 logged, but the document doesn't provide the helper function. Added here:
 `matched / total`, rounded to 3 places, `0.0` on an empty list. Deliberately **not**
 something to optimize by loosening rules — a low match rate is meant to be reported as a
@@ -499,15 +504,15 @@ the two files can't silently drift apart.
 > §7.1–§7.7 are the variables themselves. §7.8–§7.10 are what consumes them:
 > `compute_features.py`, the DAG, and now `memory/memory.py`. The section numbering is
 > kept as-is rather than promoting §7.10 to a top-level section, because `§11` (the
-> verification block) is cited from `DEVELOPMENT_MAP.md`, `HANDOFF.md`, `STATUS.md` and
-> `SETUP.md`, and renumbering would invalidate dated evidence in `STATUS.md`.
+> verification block) is cited from `docs/archive/DEVELOPMENT_MAP.md` and from the author's private notes,
+> and renumbering would invalidate dated evidence.
 
 **This is the mathematical core of the project.** Every module here is a
 **verbatim transcription** of `VDEL_Modules_1_2_Build.md` Part B — the formulas,
 constants, clamps and even variable names are the document's, not invented. Each
 module's docstring says so explicitly and cites its source paragraph. Every function is
 a **pure function**: no I/O, no database access, no globals mutated outside an explicit
-state object passed in. This is deliberate (`BUILD_PLAN` 1.6: "`mastery.update()` must
+state object passed in. This is deliberate (build-plan task 1.6: "`mastery.update()` must
 be a pure function... so it is unit-testable") — it's what makes `tests/test_mastery.py`
 and `tests/test_variables.py` able to check formulas in complete isolation from the
 database.
@@ -1093,12 +1098,12 @@ below); the version that shipped:
 - **How a weakness gets its id.** `w-{trace_id}` of the trace that records opening it, not
   B.5's `f"w-{len(weaknesses)+1:03d}"` — two concurrent opens could compute an identical
   counter value; `trace_id` is a Postgres `BIGSERIAL`, collision-free by construction.
-  `DECISIONS.md` D-010. Nothing downstream reads the format: `reflection.py`'s validation
+  `DECISIONS.md` D-010. Nothing downstream reads the format: `reflection.py` (not built)'s validation
   only checks membership in `existing_weakness_ids`.
 
 **The correction (`DECISIONS.md` D-011, superseding D-009).** The first attempt read
 "error class" as concept, reasoning from the weakness schema's `"concept"` key and
-`BUILD_PLAN 2.2`'s wording. `spec-verifier` found that count of authorities was wrong:
+build-plan task 2.2's wording. `spec-verifier` found that count of authorities was wrong:
 `variables/error_frequency.py`'s `recurrence_check` already existed, was already tested
 and cited (Becker 2016), and this document's own §7.6 already named it as *"the seam [M2]
 will plug into."* Demonstrated concretely: `classify_error()` maps both `'ambiguous
@@ -1174,8 +1179,8 @@ how the filter excludes it. **No document specifies this vocabulary**; it is int
 It lives inside `payload JSONB`, which the design document calls the "flexible letter" of its
 "structured envelope, flexible letter" pattern — the typed columns are the envelope, payload
 content is meant to evolve — so it is an addition inside a sanctioned space rather than a
-schema change. Anything that later writes a weakness transition (`reflection.py`, the
-staleness job) must follow the same convention or its transition will not replay.
+schema change. Anything that later writes a weakness transition (`reflection.py` and the
+staleness job, neither built) must follow the same convention or its transition will not replay.
 
 **A truncation bug caught by `spec-verifier`, worth recording because it was subtle.** An
 earlier draft applied `WEAKNESS_NOTE_MAX_CHARS` (B.5's 120-char cap on the note
@@ -1199,7 +1204,7 @@ components: when they are built, they must apply exactly what the rebuild derive
 Likewise a `stale` status can never be reproduced by a rebuild until the scheduled job that
 sets it writes its transition as a trace — recorded in the module's known-gaps list.
 
-### 7.11 `scripts/prove_event_sourcing.py` — the M2 proof (BUILD_PLAN 2.6)
+### 7.11 `scripts/prove_event_sourcing.py` — the M2 proof (build-plan task 2.6)
 
 Snapshot every `learner_profile` → `TRUNCATE learner_profile` → `rebuild_from_traces` for
 every student → deep-diff → print `IDENTICAL` or exactly which fields differ. This is the
@@ -1238,7 +1243,7 @@ from "key present and None".
 **One thing mutation testing found, worth recording because it is a mild surprise.** Removing
 the `TRUNCATE` entirely left every test passing — because `rebuild_from_traces` *replaces*
 each column rather than merging, so the rebuild overwrites the profile either way. The wipe
-still belongs: BUILD_PLAN specifies it, it is the demo's whole rhetorical core, and it is what
+still belongs: the build plan specifies it, it is the demo's whole rhetorical core, and it is what
 would expose a future rebuild that merged into existing state instead of deriving it. So
 `rows_after_wipe` is now recorded and asserted — **a step nothing checks is a step that can
 silently stop happening.**
@@ -1265,25 +1270,25 @@ one each fail exactly their own test.
 
 ---
 
-### 7.12 `agents/echo_agent.py` — the tracer bullet (BUILD_PLAN 2.4)
+### 7.12 `agents/echo_agent.py` — the tracer bullet (build-plan task 2.4)
 
 Rule-based, no LLM, no network, no cost. It judges a submission from one fact — the CI
 conclusion — and its real product is not the judgement but **the interface**: the `grade()`
 signature that M4's `agents/code_agent.py` must preserve so that milestone is an internals
-swap and not a refactor. `DEVELOPMENT_MAP.md` D.3 names this as one of the three integration
+swap and not a refactor. `docs/archive/DEVELOPMENT_MAP.md` D.3 names this as one of the three integration
 seams, and the reason it is worth a whole file is that the seam would otherwise be defined by
 whoever writes M4 first, under deadline.
 
 **Designed against four consumers, not one.** This is why the file is ~120 code lines rather
-than `BUILD_PLAN`'s estimated "~20": the estimate covers the rule, not the contract, and
-`BUILD_PLAN`'s own next sentence ("it must expose the same interface the real Code Agent will
+than the build plan's estimated "~20": the estimate covers the rule, not the contract, and
+the build plan's own next sentence ("it must expose the same interface the real Code Agent will
 use") is what the bulk serves.
 
 | Consumer | What it fixes |
 |---|---|
 | `Modules_3_9` D.5 `grade()` (line 906) | Positional order, the return triple `(verdict, trace_id, failures)` |
-| `system/orchestrator.py` (M6, line 1818) | Module-level sync function named `grade`, callable via `asyncio.to_thread` |
-| `agents/reviewer.py`'s `detect_disagreement` (M6, line 1535) | The verdict **object's** attribute surface |
+| `system/orchestrator.py` (M6, not built; line 1818 of the module document) | Module-level sync function named `grade`, callable via `asyncio.to_thread` |
+| `agents/reviewer.py`'s `detect_disagreement` (M6, not built; line 1535 of the module document) | The verdict **object's** attribute surface |
 | `memory/memory.py` | The only door (invariant 2) |
 
 Neither the orchestrator nor the Reviewer exists yet, so those two comparisons are against
@@ -1352,14 +1357,14 @@ absence is pinned by a test, so reintroducing it has to be a decision rather tha
 quotes. It cites the `ci_run` trace instead. The reading this relies on — that invariant 6's
 string-matching clause governs LLM-authored verdicts, whose named defence is hallucination,
 and that a deterministic agent with no generative step satisfies its purpose by citing the
-event — is *plausible but not authorised*, and is logged OPEN for Dr. Ezzatul rather than
+event — is *plausible but not authorised*, and is logged OPEN for the supervisor rather than
 recorded as a decision. M4 must not lean on it until it is settled.
 
 **Tests:** 32, in `tests/test_echo_agent.py`, split into seam tests (which pin the interface,
 including a literal reproduction of the orchestrator's printed call shape) and behaviour
-tests (the mapping and Option A). Suite total: **196 passed, 1 xfailed**.
+tests (the mapping and Option A). Suite total at that milestone: **196 passed, 1 xfailed**.
 
-### 7.13 `system/llm.py` — the LLM Gateway (M3, BUILD_PLAN 3.1)
+### 7.13 `system/llm.py` — the LLM Gateway (M3, build-plan task 3.1)
 
 The provider abstraction every LLM call in this project must pass through — invariant 3's
 actual enforcement point, not just its name. Transcribed from `VDEL_Modules_3_9_Build.md`
@@ -1371,7 +1376,7 @@ one hardcoded behavior 400s on the model this repo now defaults to.
 **Two doors, not one.** `judge(prompt, schema) -> (T, CallRecord)` has no `temperature`
 parameter — it always judges at 0. `generate(prompt, *, temperature) -> (str, CallRecord)`
 takes a caller-chosen temperature for the non-judging calls (`reflection.py`'s weekly
-narrative). Splitting the door makes invariant 4 checkable rather than merely discouraged:
+narrative; not built). Splitting the door makes invariant 4 checkable rather than merely discouraged:
 a `temperature` argument appearing anywhere under `agents/` is a grep away, and `system/llm.py`
 is the *only* module `pyproject.toml`'s `flake8-tidy-imports.banned-api` permits to import
 `anthropic` or `openai` — every other module fails `ruff check .` for trying, which is
@@ -1383,7 +1388,7 @@ failure, and raises `SchemaValidationError` (carrying both attempts' `CallRecord
 retry also fails — invariant 5, structurally: a caller cannot receive an unvalidated value,
 because there is none to return. This is a deliberate divergence from the source document's
 own executable code, which retries inside the *agent* (D.5, calling `llm_call` twice); the
-document's gateway docstring and `BUILD_PLAN.md` both side with the gateway instead, so the
+document's gateway docstring and the build plan both side with the gateway instead, so the
 document disagrees with itself and CLAUDE.md's "documents win" tiebreak doesn't resolve it.
 
 **Generic over schema.** `judge` takes the pydantic model as an argument; it never defines
@@ -1457,9 +1462,9 @@ regressed to a guessed dict shape. `pyproject.toml`'s invariant-3 import ban was
 `"google.genai"` and verified empirically — three import forms tested, and a throwaway file
 outside `system/llm.py` confirmed to actually fail lint before being deleted (not just
 assumed to work because the ban entry was added). No real network call anywhere in the file.
-Suite total: **336 passed, 1 xfailed**.
+Suite total at that milestone: **336 passed, 1 xfailed**.
 
-**Known gaps:** `agents/validation.py`'s evidence string-matching (BUILD_PLAN 4.4) is not
+**Known gaps:** `agents/validation.py`'s evidence string-matching (build-plan task 4.4) is not
 here and never will be — this gateway knows about transport, schemas, cost and caching,
 nothing about rubrics. `cohort_cost` lives in `benchmark/run_benchmark.py` (H, 689), not
 this module, despite invariant 3 reading as though the whole gateway were one file.
@@ -1481,14 +1486,14 @@ running 222s, correctly fell back, all seven demo beats still passed. 8 new test
 `_classify_transport_error`/`_call_with_fallback` at all. Full record: `docs/DECISIONS.md`
 D-051.
 
-### 7.14 `benchmark/submissions/` — the five canary submissions (M3, BUILD_PLAN 3.2)
+### 7.14 `benchmark/submissions/` — the five canary submissions (M3, build-plan task 3.2)
 
 A new task, not Sara's A2 — `TASK.md` states it: given a PySpark `orders` DataFrame with
 one row per order *line*, return total revenue and distinct order count per customer per
 calendar month. Concept `spark.aggregation`. Keeping this independent of the M1/M2 Sara
 fixtures matters because M4's ground truth must not be written by looking at a task the
 system has already graded once — the whole reason 3.2 is unblocked before `code_agent.py`
-exists (`HANDOFF.md`, 2026-08-12).
+exists (2026-08-12).
 
 All five files expose the identical entry point, `compute_monthly_revenue(orders) ->
 DataFrame`, so `benchmark/run_benchmark.py` (3.3) can call every archetype the same way.
@@ -1524,7 +1529,7 @@ F821, `ruff check benchmark/submissions/copy_paste.py` still reports F401 and F4
 **Tests:** `tests/test_benchmark_submissions.py` — 12 tests: each file exists and parses as
 valid Python (a syntax smoke check only; `subtly_wrong.py` and `broken.py` are *supposed* to
 be wrong at runtime), the directory has exactly the five expected files and no others, every
-file defines `compute_monthly_revenue`, and `TASK.md` exists. Suite total: **232 passed,
+file defines `compute_monthly_revenue`, and `TASK.md` exists. Suite total at that milestone: **232 passed,
 1 xfailed.**
 
 **Known gaps:** `benchmark/ground_truth.json` (the second half of 3.2 — intended per-criterion
@@ -1533,9 +1538,9 @@ are Anas's to state, not to invent, so that file is the next task, not part of t
 
 ---
 
-### 7.15 `agents/validation.py` — the evidence check (M4, BUILD_PLAN 4.4)
+### 7.15 `agents/validation.py` — the evidence check (M4, build-plan task 4.4)
 
-`BUILD_PLAN` calls `validate_evidence` "the most important function in M4", and the reason is
+the build plan calls `validate_evidence` "the most important function in M4", and the reason is
 invariant 6: every rubric score carries verbatim evidence quotes, string-matched against the
 actual submission, and a fabricated quote rejects the verdict. Every other stage of the Code
 Agent produces a *judgement*; this one produces a **fact** — the quoted text was found in the
@@ -1570,7 +1575,7 @@ imports nothing from `memory`, `system`, or `psycopg2`.
 only for `unmatched_quote`, not for `missing_evidence`. Invariant 6's rejecting clause is
 specifically "a fabricated quote rejects the verdict" and says nothing about an absent one,
 and D.6 resolves that case as "flagged for human review, not silently trusted". This is a
-defensible reading rather than a null one, and it is an **open question for Dr. Ezzatul**,
+defensible reading rather than a null one, and it is an **open question for the supervisor**,
 recorded alongside D-018 which asks the mirror-image question about Echo citing an event
 rather than a quote.
 
@@ -1586,7 +1591,7 @@ locally-declared `CRITERIA` tuple safe from drifting against Echo's.
 
 ---
 
-### 7.16 `agents/tools.py` — the deterministic stage (M4, BUILD_PLAN 4.2)
+### 7.16 `agents/tools.py` — the deterministic stage (M4, build-plan task 4.2)
 
 Stage 1 of the agent skeleton: run free, zero-variance checks and hand their findings to the
 judge as verified facts. Deterministic-first — never pay an LLM to notice an unused import
@@ -1633,7 +1638,7 @@ paths without needing to uninstall anything.
 
 ---
 
-### 7.17 `agents/prompts.py` — the judge prompt (M4, BUILD_PLAN 4.3, 4.6)
+### 7.17 `agents/prompts.py` — the judge prompt (M4, build-plan task 4.3, 4.6)
 
 Every element defends a **named** failure mode; the table in the module docstring is
 authoritative. An element that cannot name what it defends is deleted rather than kept "just
@@ -1690,7 +1695,7 @@ silently tuning the prompt.
 
 ---
 
-### 7.18 `agents/code_agent.py` — the first real judge (M4, BUILD_PLAN 4.1)
+### 7.18 `agents/code_agent.py` — the first real judge (M4, build-plan task 4.1)
 
 The five-stage skeleton, with the LLM as **one stage in the middle** rather than the whole
 thing: tools → assemble → judge → validate → commit. Every stage that is not stage 3 replaces
@@ -1752,24 +1757,24 @@ whole pipeline rather than only at the tool stage, and
 `test_schema_failure_propagates_rather_than_defaulting` pins that two invalid attempts write
 no verdict at all rather than a placeholder.
 
-Suite total after M4: **314 passed, 1 xfailed** (the xfail unchanged — see §7.2).
+Suite total after M4 (a later run is larger): **314 passed, 1 xfailed** (the xfail unchanged — see §7.2).
 
-**Known gaps, corrected 2026-08-25 (`EXECUTION.md` §3.2 caught this stale):** the line above
+**Known gaps, corrected 2026-08-25 (the execution plan §3.2 caught this stale):** the line above
 used to say nothing had been run against a real model for want of an `ANTHROPIC_API_KEY`.
 That was true when written and is not true now — `GOOGLE_API_KEY` is set and Google has been
 a live provider since D-032 (`5770cbd`). `code_agent.grade()` has since run live, for real,
 twice (D-049): once against `anas`'s real `weather_etl_transform` submission (`trace_id=48238`),
 once again via `scripts/demo.py`'s Beat 6 (`trace_id=49505`, §7.21 below) — both real verdicts,
 every evidence quote independently string-matched against the actual submitted file. What is
-still genuinely missing is BUILD_PLAN 4.5's stability table (3 runs per benchmark submission)
+still genuinely missing is build-plan task 4.5's stability table (3 runs per benchmark submission)
 and `benchmark/ground_truth.json` (§7.14) — those need Anas's own labels, not another API key,
 and M4's "≥80% exact agreement" DoD clause cannot be measured without them.
 
 ---
 
-### 7.19 The assessment layer (`assessment/*.py`) — added 2026-08-25, `EXECUTION.md` §3.4
+### 7.19 The assessment layer (`assessment/*.py`) — added 2026-08-25, the execution plan §3.4
 
-This whole layer was missing from this document until now — a real gap `EXECUTION.md` §3.4
+This whole layer was missing from this document until now — a real gap the execution plan §3.4
 caught: the code existed (Stage A/B, `docs/DECISIONS.md` D-035/D-036/D-043/D-045/D-046) but
 was never written up here. Five files, one job each, in the order a submission actually
 flows through them.
@@ -1790,7 +1795,7 @@ comment, everything else untouched.
 KT-IDEM item: which gaps get hidden for *this* student's *this* attempt is a seeded,
 reproducible choice, conditioned on the student's current mastery per concept (cold-start
 default when there's no observation yet). Two students calling this for the same assignment
-get different `variant_id`s by construction, not by chance — proven live, `EXECUTION.md`
+get different `variant_id`s by construction, not by chance — proven live, the execution plan
 Beat 2, `anas` and `student2` on `weather_etl_extract`.
 
 **`assessment/scope_check.py` — the invariant-14 boundary, as code.**
@@ -1828,7 +1833,7 @@ trace (success iff all the gap's hidden tests passed), written through
 `Memory.record_mastery_observation`, which writes nothing if the (attempt, gap) already has one.
 It is attributed to the gap's first concept, timed at the commit, and followed by `update_mastery`.
 A local run, a `collection_error`/`timeout`, a commit missing from `raw_commits`, or a stub is
-never an observation. Commits must be graded oldest first (`grade_collected` does). Proven live: `EXECUTION.md` Beat 3 (`12 failed, 3 passed` against an unsolved
+never an observation. Commits must be graded oldest first (`grade_collected` does). Proven live: the execution plan Beat 3 (`12 failed, 3 passed` against an unsolved
 render, then `4/4 passed` once `anas` actually solved `extract.py` for real — same function,
 two real outcomes, no code changed in between).
 
@@ -2060,9 +2065,9 @@ the running code, checked directly rather than assumed from the design doc:
   `tests_total`), and the thing that fills them, `test_runner.py`, is real and proven live
   (§7.19 above). What was **not** built, and is not planned for v1, is the differential-input
   layer the original design specified in `assessment/diff_runner.py` — reduced (D-036,
-  `EXECUTION.md` §5) to "a failing hidden test's own assertion message is the concrete
+  the execution plan §5) to "a failing hidden test's own assertion message is the concrete
   counterexample." No `diff_runner.py` exists; this is a deliberate cut, not an oversight —
-  see `BUILD_PLAN.md`'s M4b block.
+  see the build plan's M4b block.
 - **V9 (Out-of-Scope Edit Rate)** — `scope_check.py` computes it correctly (§7.19) but
   nothing calls it from a live path and persists the result into `attempts.out_of_scope_lines`
   yet. Built, not wired.
@@ -2080,7 +2085,7 @@ elsewhere in this document (§7.19's `test_runner.grade_attempt`, §5's collecto
 `Memory`, §7.18's `code_agent.grade`, §7.11's `prove`/`report`) — this file reimplements
 none of them, so a bug found while running the demo is a bug in the function it called, not
 in this script. Fixed throughout to real data: student `anas`, project `weather_etl`, the
-real repo already pushed to `anass-ben-2005/vdel-weather-etl-gapfill-anas`.
+real repo already pushed to `<owner>/vdel-weather-etl-gapfill-anas`.
 
 **Beat 3 persists nothing (D-076).** It grades through `grade_without_persisting`, which hands
 `grade_attempt` one connection and always rolls it back: the hidden tests still run for real in a
@@ -2144,7 +2149,7 @@ perfectly."* This module is exactly that diagnosis function, and only that — t
 "Feedback Agent" C10 also names, which would consume this output and write the
 explanation, is M5/M6-era (`CLAUDE.md`'s scope table: M5 dropped, M6 needs ≥2 agents to
 aggregate) and deliberately not built here. **Not wired into `scripts/demo.py` or any
-`EXECUTION.md` Stage A–E item** — commissioned directly, ground-laying for the
+the execution plan Stage A–E item** — commissioned directly, ground-laying for the
 still-deferred Feedback Agent, the same trigger as M6 itself.
 
 `diagnose(cur, attempt_id, as_of_commit_sha=None) -> Diagnosis` — (D-094: with a sha, only the history up to and including that commit) (D-098: a template push is never part of the history) real reads only, zero writes, zero LLM calls,
@@ -2410,7 +2415,7 @@ know where the designed seams are for when it's time:
 |---|---|---|
 | `update_mastery` (fast path), the recurrence rule, `rebuild_from_traces` | M2 pieces 2–4 | `memory/memory.py` exists with `log_trace`/`get_profile`/`snapshot_profile`; every method already takes an optional `conn` so the fast path can write profile+trace atomically. DAG's `update_profiles` task now calls `sync_features_ref` (D-034) — the rest of this row is historical, predating those pieces' construction |
 | A Code Agent verdict against a *real* model | Needs `ANTHROPIC_API_KEY` | `agents/code_agent.py` (§7.18) is built and calls the gateway, but every test fakes the one `llm.judge()` call — nothing has run against a live provider |
-| The M4 stability table (BUILD_PLAN 4.5) | Needs a key, and ground truth for the accuracy half | 3 runs × 5 submissions is unmeasured; `benchmark/ground_truth.json` (§7.14) is still unwritten |
+| The M4 stability table (build-plan task 4.5) | Needs a key, and ground truth for the accuracy half | 3 runs × 5 submissions is unmeasured; `benchmark/ground_truth.json` (§7.14) is still unwritten |
 | A verdict moving mastery | Open decision, not a missing feature | `MASTERY_TRACE_KINDS` is `{"ci_run", "mastery_observation"}`; the rubric→BKT mapping is a stop-and-ask (§7.18) |
 | `_discipline()`'s `cleanliness` wired to real lint counts | M5 | `agents/tools.py` (§7.16) now produces the ruff/sqlfluff findings this needs, but `compute_features.py` does not yet consume them |
 | Tiered LLM error classification | Optimization 6 in the source doc, deferred | `error_classifier.py`'s rule table is v1-only |

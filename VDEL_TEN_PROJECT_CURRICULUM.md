@@ -161,7 +161,7 @@ def test_enrich_with_timestamp_malformed_input(): ...
 
 **Project 1 concept tally:** py.data_structures ×4, py.errors_debugging ×2, py.testing
 ×2, sql.select_filter ×2. Nine gaps, four files — matches the "5–9 assignments per
-project" range from the meeting.
+project" range agreed with the course author.
 
 ---
 
@@ -377,7 +377,7 @@ iot_sensors/
 
 | File | Function | Gap | Concept | Difficulty |
 |---|---|---|---|---|
-| `repartition.py` | `repartition_by_sensor(df, n)` | choosing `n` with a stated reason (instruction requires a one-line rationale in the commit, per the meeting's "explain your approach" ask) | `spark.partitioning` | 0.7 |
+| `repartition.py` | `repartition_by_sensor(df, n)` | choosing `n` with a stated reason (instruction requires a one-line rationale in the commit, per the course author's "explain your approach" ask) | `spark.partitioning` | 0.7 |
 | `aggregate.py` | `hourly_readings_summary(df)` | `.cache()` before two downstream aggregations, `.unpersist()` after | `spark.caching` | 0.6 |
 | `aggregate.py` | `readings_per_sensor(df)` | reinforcement of `spark.aggregation` | `spark.aggregation` | 0.6 |
 | `tune.py` | `join_with_sensor_metadata(readings, metadata)` | broadcast join for a small dimension table — the instruction shows `.explain()` output and asks the student to fix the plan | `spark.perf_tuning` | 0.8 |
@@ -478,7 +478,7 @@ realistically scoped.**
 | INSERT/parameterised-write discipline (Project 1 `load.py`) | `sql.select_filter` | No `sql.write`/`sql.insert` concept exists in the yaml; `sql.select_filter`'s `typical_evidence` ("correct... rows") is the closest attested match |
 | pandas `groupby` (Project 2) | `sql.aggregation` | Deliberate reuse — the underlying skill (grouping to the right grain) is identical whether expressed in SQL or pandas; inventing `pandas.groupby` as a separate concept would fragment one skill into two IDs |
 
-None of these are silent — each is named here so a future session (or your supervisor,
+None of these are silent — each is named here so a future session (or the supervisor,
 reading this) can decide whether `concepts.yaml` should grow to ~25 with real IDs for
 these, closing the gap the yaml's own header comment already names as open.
 

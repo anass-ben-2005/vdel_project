@@ -1,8 +1,7 @@
 # DECISIONS_AGENTS.md: decisions taken on the agents branch (D-200 and up)
 
-Numbered from D-200 so they never collide with `docs/DECISIONS.md` on main. Append-only. When the
-branches merge, the owner of DECISIONS.md can copy these over under the next free numbers (keep
-the D-2xx ids in the text so the code comments still resolve).
+Numbered from D-200 so they never collide with `docs/DECISIONS.md`. Append-only. The branches have merged;
+these entries stay in this file under their D-2xx ids, which are never renumbered (code comments cite them).
 
 Status values: **BRIEF** = the overnight brief asked for it. **UNATTENDED** = taken during the
 unattended night without the author; the alternative is written so each can be reversed cheaply.
@@ -128,7 +127,7 @@ Consequence: any stability number produced by the old benchmark measured cache r
 ### D-214 Shared-file edits made on this branch
 Status: UNATTENDED
 Decision: `.gitignore` (+3 `!docs/...` lines so the new docs and the CSV template are trackable
-without `git add -f`; `docs/AGENTS_OVERNIGHT_REPORT.md` stays ignored; `+.vdel/`); `pyproject.toml`
+without `git add -f`; `+.vdel/`); `pyproject.toml`
 `extend-exclude` += `tests/fixtures/agents/code` (a fixture that does not compile on purpose).
 Alternative: a `.txt` extension for the broken fixture and `-f` when adding docs. Rejected: the
 first hides the file type from ruff's explicit-path linting the Code Agent relies on; the second

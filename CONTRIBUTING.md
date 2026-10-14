@@ -73,6 +73,7 @@ A real call is a deliberate, manual, capped act: `scripts/llm_first_call.py` and
 - **Never edit the real `config/roster.yaml` from code or a test.** Use `scripts/roster_apply.py`, by hand, or
   a temporary copy in a test.
 - **Secrets stay in `.env`.** Print their names, never their values; `.env.example` lists names only.
+- **`python -m scripts.<name> --help` runs `init_db`, `seed_data`, `smoke_test` and `normalise_test_names` instead of printing help** (no `argparse`; the first two write to the database, idempotently): read the docstring instead (`docs/KNOWN_ISSUES.md` item 25).
 
 ## Prompts are code
 
@@ -119,7 +120,10 @@ decisions are numbered D-200 and up in `docs/DECISIONS_AGENTS.md`.
 | `docs/DECISIONS.md` | What was decided and why. Append-only |
 | `docs/KNOWN_ISSUES.md` | What is wrong or missing, with impact and workaround |
 | `docs/OPERATIONS.md` | How to run it |
-| `docs/ARCHITECTURE.md`, `docs/AUTHORING.md`, `docs/INSTALL.md`, `docs/GLOSSARY.md` | Orientation |
+| `docs/ARCHITECTURE.md`, `docs/AUTHORING.md`, `docs/INSTALL.md`, `docs/GLOSSARY.md`, `docs/HOWTO_EXTEND.md` | Orientation |
+| `docs/VALIDATION.md` | What has been shown to work, with command, date and source |
+| `docs/ROADMAP.md`, `docs/DATA_PROTECTION.md`, `docs/RELEASE_AND_UPGRADE.md` | The open work, the data held, how to upgrade |
+| `CLAUDE.md`, `docs/design/` | The rules for the code and the design documents it cites |
 | `CHANGELOG.md` | A map into the decisions |
 
 Do not state the same fact in two of them. A docstring states the **why**, citing the decision or the paper.
@@ -134,5 +138,5 @@ section 10).
 
 ## On Windows
 
-This project lives in a folder whose name contains an apostrophe (`stage_a_l'etranger`). Quote every path
+The author's working folder has a name that contains an apostrophe, and yours may contain spaces or other special characters. Quote every path
 in PowerShell and use `-LiteralPath`; `scripts/windows/task_command.ps1` and D-095 explain what broke.

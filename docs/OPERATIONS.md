@@ -20,7 +20,7 @@ manual `run_cycle` started while the task runs is refused too.
 ## 2. Before the first run (once)
 
 ```powershell
-cd "C:\Users\ASUS\Desktop\EMINES\internship\stage_a_l'etranger\projet\vdel"
+cd "<repo-folder>"
 
 # 1. Docker Desktop is running, then the database:
 docker compose up -d
@@ -81,7 +81,7 @@ else. Files older than 14 days are deleted at the start of each run. `logs\` is 
 to `logs\`. Since the first line of a run is now written before anything else, a missing `START` line
 means `run_hourly` never started: the failure happened in the task's own wrapper or in Python's start-up.
 
-**Cause found on 2026-10-12.** The project folder `stage_a_l'etranger` contains an apostrophe. The first
+**Cause found on 2026-10-12.** The project folder name contained an apostrophe. The first
 version of `register_task.ps1` put the folder inside a single-quoted PowerShell string
 (`Set-Location -LiteralPath '<folder>'`), so the apostrophe ended the string, the command did not parse
 (`TerminatorExpectedAtEndOfString`) and nothing ran. Fixed: the command is now passed encoded, every
@@ -212,7 +212,7 @@ system plus a small tmpfs scratch, a limit of 128 processes, 512 MB and 1 CPU, n
 separate mount; it is removed afterwards.
 
 ```powershell
-cd "C:\Users\ASUS\Desktop\EMINES\internship\stage_a_l'etranger\projet\vdel"
+cd "<repo-folder>"
 
 # 1. Build the image ONCE (needs network; the build context is docker\ only, so .env and backups\
 #    are never sent to Docker). The base image is pinned by digest in docker\grader.Dockerfile.
@@ -273,7 +273,7 @@ Find the three values with a read-only query (an attempt that failed at least on
 its graded commits):
 
 ```powershell
-cd "C:\Users\ASUS\Desktop\EMINES\internship\stage_a_l'etranger\projet\vdel"
+cd "<repo-folder>"
 docker exec vdel-postgres psql -U vdel -d vdel -c "SELECT a.student_id, a.attempt_id, t.commit_sha, count(*) FILTER (WHERE NOT t.passed) AS failed FROM test_results t JOIN attempts a USING (attempt_id) WHERE t.status = 'ok' GROUP BY 1,2,3 HAVING count(*) FILTER (WHERE NOT t.passed) > 0 ORDER BY max(t.ran_at) DESC LIMIT 5;"
 ```
 
@@ -312,7 +312,7 @@ The same rules as section 12: exactly one provider key, `LLM_PROVIDER` set, no k
 emptying the other keys in `.env`.
 
 ```powershell
-cd "C:\Users\ASUS\Desktop\EMINES\internship\stage_a_l'etranger\projet\vdel"
+cd "<repo-folder>"
 $env:LLM_PROVIDER = "<provider>"
 
 # 1. Read the plan and the maximum (calls nothing, writes nothing):
@@ -330,8 +330,8 @@ stops cleanly at the cap, writes what it has and exits with code 3), and
 without them the cost line says "not computed"). Exit codes: 0 done, 2 refused, 3 stopped at the cap.
 
 Read `benchmark/RECOMMENDATION.md` after it, section 7 first: the labels were pre-written by an LLM and
-reviewed by a human on 10 rows only, the files' docstrings give away the bug, and `benchmark/TASK.md` is
-missing. The previous RECOMMENDATION.md (the skeleton) is in git history.
+reviewed by a human on 10 rows only, the files' docstrings give away the bug, and the task given to the judge is a
+hand-kept paraphrase of `benchmark/submissions/TASK.md`. The previous RECOMMENDATION.md (the skeleton) is in git history.
 
 
 
@@ -360,7 +360,7 @@ switch are never revisited.
 ### See what the task runs now
 
 ```powershell
-cd "C:\Users\ASUS\Desktop\EMINES\internship\stage_a_l'etranger\projet\vdel"
+cd "<repo-folder>"
 $a = (Get-ScheduledTask -TaskName "VDEL hourly").Actions[0].Arguments
 [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($a -split ' ')[-1]))
 ```
@@ -494,3 +494,23 @@ Turning it on needs a person to write the posting step too: nothing calls the mo
 python -m scripts.run_hourly --with-llm --ab-llm     # half of the failing commits get the deterministic text alone
 python -m scripts.ab_report                          # read-only: commits-to-pass per arm, descriptive only
 ```
+
+## 18. Looking at the data (read-only)
+
+Three `SELECT`s that show what the collector and the feature computation stored. They change nothing; run them
+whenever you want to see a student's raw activity or the computed variables.
+
+```powershell
+# the newest commits the collector has seen
+docker exec -it vdel-postgres psql -U vdel -d vdel -c "SELECT student_id, assignment_id, committed_at, additions, deletions, files_changed FROM raw_commits ORDER BY committed_at DESC LIMIT 20;"
+
+# the newest CI runs and how each failure was classified
+docker exec -it vdel-postgres psql -U vdel -d vdel -c "SELECT student_id, assignment_id, conclusion, error_class, concept_id, started_at FROM raw_workflow_runs ORDER BY started_at DESC LIMIT 20;"
+
+# the latest computed variables (expanded display, because they are JSONB columns)
+docker exec -it vdel-postgres psql -U vdel -d vdel -c "\x" -c "SELECT student_id, computed_at, window_days, mastery, engineering_discipline, effort_regulation, pace, error_response, error_frequency FROM learner_features ORDER BY computed_at DESC LIMIT 1;"
+```
+
+To rebuild the features from the raw tables run `python -m features.compute_features` (idempotent; it writes one new
+row only for a student with new activity). Never empty `raw_commits` or `raw_workflow_runs` to "start again" on a
+database that holds real students: the collector's cursor and the attempt history depend on them.

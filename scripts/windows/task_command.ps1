@@ -4,7 +4,7 @@
 
   Why it looks like this. The first version put the project folder inside a single-quoted
   PowerShell literal: Set-Location -LiteralPath '<folder>'. A folder with an apostrophe
-  (stage_a_l'etranger) ended the string early, the command did not parse, the task finished with
+  (a folder whose name contains an apostrophe) ended the string early, the command did not parse, the task finished with
   LastTaskResult 1 and nothing was logged. Three layers:
 
     1. The command is passed as -EncodedCommand (base64 of the UTF-16LE text). The command line

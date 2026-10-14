@@ -1,8 +1,8 @@
 # VDEL agents: inventory, contracts, integration requests
 
-Branch `feature/agents`. This file is owned by the agents branch. Decisions taken on this
-branch are in `docs/DECISIONS_AGENTS.md` (D-200 and up, so they never collide with
-`docs/DECISIONS.md` on main).
+The inventory and contracts of the agents (written on the `feature/agents` branch, since merged). Decisions taken
+during that work are in `docs/DECISIONS_AGENTS.md` (D-200 and up, kept in a separate file so the ids never collide
+with `docs/DECISIONS.md`).
 
 Contents: 1 Inventory · 2 Gateway interfaces · 3 Fake LLM harness · 4 Code Agent · 5 Feedback
 Agent · 6 Resources · 7 Pipeline · 8 Budget · 9 Benchmark · 10 Architecture and rules ·
@@ -22,8 +22,8 @@ Agent · 6 Resources · 7 Pipeline · 8 Budget · 9 Benchmark · 10 Architecture
 | (support) tools | `agents/tools.py` | no | a file path | `ToolReport`s (ruff, sqlfluff), static only | none |
 | (support) prompts | `agents/prompts.py` | no | task, code, linter text, mastery slice | one prompt string; `PROMPT_VERSION` | none |
 
-There is **no Feedback Agent on main**: `scripts/post_feedback.py` is "feedback v0", a
-deterministic text builder (no LLM). The Feedback Agent is built on this branch (section 5).
+The Feedback Agent exists: `agents/feedback_agent.py` (v1) and `agents/feedback_v2.py` (v2, behind `--agents-v2`),
+described in section 5. `scripts/post_feedback.py` builds the deterministic text and posts it (no LLM).
 
 ### 1.2 Details per agent
 
@@ -48,7 +48,7 @@ swap of internals.
 |---|---|---|
 | Reviewer (`agents/reviewer.py`, pure-Python arithmetic + objective-vs-LLM disagreement flag) | LATER (M6) | needs at least two agents to aggregate; `CLAUDE.md` §3; `VDEL_REDESIGN.md` §13 lists it as Phase 4 |
 | Orchestrator (`system/orchestrator.py`) | LATER (M6) | same reason; the snapshot rule (H.2) is reserved in `Memory.snapshot_profile`. `agents/pipeline.py` (section 7) is a deliberately small stand-in, not the M6 orchestrator |
-| Performance + Pedagogy Agents | DROPPED (M5) | overlap folds into the Code Agent's idiomatic criterion; revisit when course materials and Hanafi's SKG v1 exist (`CLAUDE.md` §3, `VDEL_REDESIGN.md` §15) |
+| Performance + Pedagogy Agents | DROPPED (M5) | overlap folds into the Code Agent's idiomatic criterion; revisit when course materials and the tutor-side collaborator's SKG v1 exist (`CLAUDE.md` §3, `VDEL_REDESIGN.md` §15) |
 | Coach (M7), Execution agent, Data Quality agent | STRETCH / not built | gated on M6 and personas |
 | LLM-asserted correctness | REMOVED | D-036 / invariant 13: correctness is decided by executed hidden tests |
 

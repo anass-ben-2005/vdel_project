@@ -41,7 +41,7 @@ decision drives the agent list (§1 below), the skills, the hooks, and the commi
 generic productivity setup would be the wrong setup for this project.
 
 Second-order consequence, which the setup also has to serve: Anas has to **defend** this
-work to Dr. Ezzatul. Code he cannot re-derive by hand is code he cannot defend. So the
+work to the supervisor. Code he cannot re-derive by hand is code he cannot defend. So the
 setup optimises for `Implementation + Understanding + Demonstrability` (§24), and the
 verification discipline doubles as the learning mechanism — re-deriving a number by hand is
 both the check and the lesson.
@@ -118,7 +118,7 @@ contradicts the narrative.
 This is recorded as a strict `xfail` plus a companion test that fails if 0.47 ever *becomes*
 reachable. **This is correct engineering and must not be "resolved" by tuning parameters to
 hit the target.** It is an open question for the worked example's author: transcription slip,
-or a slice taken at a different point in the sequence? Ask Dr. Ezzatul. Presented properly,
+or a slice taken at a different point in the sequence? Ask the supervisor. Presented properly,
 this is a *strength* in a supervision meeting — "I found a discrepancy in the design's worked
 example and pinned it with a test instead of hiding it."
 
@@ -147,7 +147,7 @@ there is a cohort. Report them as such; do not invent a synthetic cohort to make
 | `benchmark/submissions/` (×5) | M3 | `BUILD_PLAN` 3.2 | clean / subtly-wrong / correct-but-inefficient / copy-paste-looking / broken |
 | `benchmark/ground_truth.json` | M3 | `BUILD_PLAN` 3.2 | Intended per-criterion scores + one-line justification each |
 | `benchmark/run_benchmark.py` | M3 | `BUILD_PLAN` 3.3 | 3 runs × candidates × 5 submissions; stability, JSON validity, ranking, cost |
-| `benchmark/RECOMMENDATION.md` | M3 | `BUILD_PLAN` 3.4 | Signed off with Hanafi; PDPA note; `verified as of <date>` |
+| `benchmark/RECOMMENDATION.md` | M3 | `BUILD_PLAN` 3.4 | Signed off with the tutor-side collaborator; PDPA note; `verified as of <date>` |
 | `agents/code_agent.py` | M4 | `Modules_3_9` | Replaces Echo internals; same interface |
 | `agents/tools.py` | M4 | `BUILD_PLAN` 4.2 | ruff over Python, sqlfluff over SQL; findings enter prompt as verified facts |
 | `agents/prompts.py` + CHANGELOG | M4 | `BUILD_PLAN` 4.3 | Every prompt element defends a named failure mode |
@@ -250,7 +250,7 @@ as an open question and move on. M1.5 is a checkpoint, not a research project.
 
 M3 depends only on M0, so it *could* go anywhere. It goes second because model choice is the
 **least reversible** decision in the project — every M4 prompt is tuned against a specific
-model — and because `BUILD_PLAN` flags it as the natural split point with Hanafi.
+model — and because `BUILD_PLAN` flags it as the natural split point with the tutor-side collaborator.
 
 **Pull task 3.2 (author the 5 benchmark submissions) forward into M2's week.** Rationale:
 
@@ -306,7 +306,7 @@ These are the interfaces to get right the first time; everything else is local.
    though the Code Agent already existed.**
 2. **`memory.py` as the only door.** Invariant 2. The moment one agent writes raw SQL to
    `traces`, the audit story is dead and `rebuild_from_traces` stops being a proof.
-3. **`retrieval.py` — the Hanafi contract.** The boundary with the tutor-side. Not built, but
+3. **`retrieval.py` — the tutor-side contract.** The boundary with the tutor-side. Not built, but
    its shape should be agreed early, because it's the one dependency outside Anas's control.
 
 ### D.4 External and human dependencies
@@ -315,8 +315,8 @@ These are the interfaces to get right the first time; everything else is local.
 |---|---|---|
 | GitHub API rate limit | Medium | Five optimisations in the collector; incremental `since=` |
 | LLM provider availability / pricing | Medium | Two providers behind `llm.py`; primary + fallback in RECOMMENDATION.md |
-| Hanafi (retrieval, RECOMMENDATION sign-off) | Medium | M3 is the designated split point; `retrieval.py` is a stub contract |
-| Dr. Ezzatul's Wednesday cadence | Low | The Tuesday-stop discipline |
+| Tutor-side collaborator (retrieval, RECOMMENDATION sign-off) | Medium | M3 is the designated split point; `retrieval.py` is a stub contract |
+| The supervisor's weekly cadence | Low | The Tuesday-stop discipline |
 | Cohort of one (V4, V2 alpha gate) | **Accepted** | Report as a structural finding, not a bug |
 
 ---

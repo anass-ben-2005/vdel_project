@@ -88,7 +88,7 @@ Verified (HTTP 200) but not used, kept as spares so each tier 1 concept has at m
 
 - **www.sqlite.org** (allowed domain, but its certificate failed validation from this machine): `lang_select.html`, `lang_expr.html`, `nulls.html`, `lang_aggfunc.html`. Open them in your browser; if they load, they are good SQLite-specific pages for `sql.select_filter` / `sql.aggregation`. The failure could also be this machine's clock or trust store.
 - **Off the allowed list, not fetched** (candidates only): the free Kaggle Learn courses (`kaggle.com/learn/pandas`, `kaggle.com/learn/intro-to-sql`, `kaggle.com/learn/python`) would fit `kind = kaggle` for `py.pandas`, `sql.select_filter`, `sql.aggregation`, `py.data_structures`. Verify the course pages and exact lesson URLs yourself before adding any.
-- **No resource for `airflow.idempotency`**: I found no official page in the allowed domains that treats idempotency (see Dropped). Hanafi may have a course page for it.
+- **No resource for `airflow.idempotency`**: I found no official page in the allowed domains that treats idempotency (see Dropped). The tutor-side collaborator may have a course page for it.
 
 ## What I could not judge
 

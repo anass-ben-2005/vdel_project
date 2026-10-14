@@ -8,6 +8,9 @@
 > question. That is also why it must stay small: pad it with implementation notes and the
 > real decisions get buried.
 
+> **For readers of the delivered repository.** Files named in these entries that are not in the repository stay with
+> the author. D-numbers are never renumbered.
+
 ## What belongs here
 
 - An architectural or interface choice, and the alternative rejected.
@@ -527,17 +530,17 @@ Defence:     "Invariant 6 is written to defend against hallucinated quotes. My r
 Date:        2026-08-12
 Status:      DECIDED
 Context:     `BUILD_PLAN.md`'s M3 header reads "parallelisable with M1–M2 (split with
-             Hanafi)", and `DEVELOPMENT_MAP.md` §C.5/§D.4 build on that assumption — Hanafi
+             Hanafi)", and `docs/archive/DEVELOPMENT_MAP.md` §C.5/§D.4 build on that assumption — Hanafi
              running some benchmark candidates in parallel with Anas. That split is not
              happening: Anas runs every candidate himself.
 Decision:    M3's benchmark work (3.1–3.3: `system/llm.py`, the five submissions, the 3-runs
              protocol) is solo. Recorded here as a scope correction — what actually happens,
              not a change to how M3 is done or what it measures. `BUILD_PLAN.md`'s M3 header
-             and `DEVELOPMENT_MAP.md` §C.5/§D.4 still describe the old assumption and are
+             and `docs/archive/DEVELOPMENT_MAP.md` §C.5/§D.4 still describe the old assumption and are
              *not* corrected by this entry — flagged in `HANDOFF.md` as a check before M3
              starts, left for a deliberate pass rather than an incidental one.
 Alternative: Leave the record as-is and treat the split informally as "not happening this
-             time". Rejected — `DEVELOPMENT_MAP.md` §C.5 uses the split as part of its
+             time". Rejected — `docs/archive/DEVELOPMENT_MAP.md` §C.5 uses the split as part of its
              argued reasoning for M3's ordering ("BUILD_PLAN flags it as the natural split
              point with Hanafi"), so a silently wrong assumption sits inside a defended
              argument, not just a schedule.
@@ -727,7 +730,7 @@ Decision:    `_call_anthropic` sends `temperature=0.0` explicitly on models that
              at a substituted value the caller never asked for.
 Alternative: (a) Send `temperature=0` unconditionally, matching the document verbatim, and let
              the default-tier judging path 400 in production. Rejected — this is exactly the
-             failure class `DEVELOPMENT_MAP.md §0` names as the project's recurring risk: code
+             failure class `docs/archive/DEVELOPMENT_MAP.md §0` names as the project's recurring risk: code
              that runs, looks plausible, and is wrong in a way nothing catches until it's
              executed for real. (b) Roll the default tier back to `claude-sonnet-4-6`, which
              still accepts an explicit 0, and leave Sonnet 5 out of `MODEL_TIERS` until this is
@@ -803,7 +806,7 @@ Decision:    No agent, now or later, executes submitted code. The tool stage is 
              promoted from an implicit design property to explicit invariant **12**,
              numbered alongside the eleven in `CLAUDE.md` §7, and propagated everywhere the
              invariant count is stated: `CLAUDE.md` itself (§7, the doc-contract table, the
-             sub-agent list), `docs/explanation.md` §8, `docs/DEVELOPMENT_MAP.md`, and both
+             sub-agent list), `docs/explanation.md` §8, `docs/archive/DEVELOPMENT_MAP.md`, and both
              `.claude/agents/reviewer.md` and `.claude/commands/commit.md`, which now check
              and cite "twelve invariants," not eleven.
 Alternative: (a) Leave it as an unstated design property, inferred from what the tool stage
@@ -861,7 +864,7 @@ Alternative: (a) Real Spark execution (a throwaway venv, per the earlier discuss
              production system is permanently forbidden from using, so a pass there would
              prove less about the actual Code Agent than the pandas translation does. (b) No
              execution-shaped check at all — trust the docstrings' claims as written.
-             Rejected — this project's own history (`DEVELOPMENT_MAP.md` §0: the BKT sign bug,
+             Rejected — this project's own history (`docs/archive/DEVELOPMENT_MAP.md` §0: the BKT sign bug,
              the fabricated `duration_s`) is three separate incidents of code that read as
              correct and wasn't; a translation that's actually run and diffed catches the
              same class of error a linter or a read-through can miss.
@@ -1280,7 +1283,7 @@ Authority:   Anas
 Context:     `CLAUDE.md` is untracked via `.gitignore` (commit `acffca6`, 2026-08-04): "kept
              locally as the authority every formula in `variables/` is transcribed from...
              but not meant for the public repo," bundled with `BUILD_PLAN.md`, the four
-             `VDEL_*` module docs, and `explanation.md`. `DEVELOPMENT_MAP.md` (2026-08-10,
+             `VDEL_*` module docs, and `explanation.md`. `docs/archive/DEVELOPMENT_MAP.md` (2026-08-10,
              six days later) describes `CLAUDE.md` as the permanent, auto-loaded Tier-1
              document and recommends `docs/explanation.md` be tracked — without revisiting
              the earlier gitignore rule. Investigated per this session's Step 3 (`git blame`
@@ -1290,10 +1293,10 @@ Decision:    Keep `.gitignore` as it is. `CLAUDE.md`, `BUILD_PLAN.md`, the four 
              module docs, and `explanation.md` all stay untracked and local-only.
 Alternative: Narrow the rule to exclude only the proprietary module docs, tracking
              `CLAUDE.md` (and/or `explanation.md`) going forward, matching
-             `DEVELOPMENT_MAP.md`'s framing. Considered, not taken.
-Cost:        The tension this entry records stays open: `DEVELOPMENT_MAP.md` describes
+             `docs/archive/DEVELOPMENT_MAP.md`'s framing. Considered, not taken.
+Cost:        The tension this entry records stays open: `docs/archive/DEVELOPMENT_MAP.md` describes
              `CLAUDE.md` and `explanation.md` in language that implies they're tracked
-             project artifacts, but they are not. Anyone relying on `DEVELOPMENT_MAP.md`'s
+             project artifacts, but they are not. Anyone relying on `docs/archive/DEVELOPMENT_MAP.md`'s
              description without checking `.gitignore` first would be wrong about that.
 Defence:     "I found the real, deliberate reason `CLAUDE.md` is untracked, flagged that a
              later document's framing doesn't quite match it, and asked rather than changing
@@ -2645,7 +2648,7 @@ Defence:     "The model's correctness number is an explanation, not a grade. It 
 Date:        2026-10-10
 Status:      DECIDED; BUILT and tested with a mocked HTTP layer (tests/test_sync_template.py,
              33 tests). NOT yet run against real GitHub -- the first real dry-run on
-             anass-ben-2005/vdel-weather-etl-gapfill-anas is Anas's to run.
+             <owner>/vdel-weather-etl-gapfill-anas is Anas's to run.
 Authority:   Anas
 Context:     D-060 fixed the CI template, but `publish_repo.py` only creates repos, so the
              fix never reaches repos published before it. anas's hand-made repo still has
@@ -3553,7 +3556,7 @@ Date:        2026-10-11
 Status:      DECIDED (Anas, 2026-10-11). Evidence of a first live run; no code changed by it.
 Authority:   Anas
 Run:         `run_cycle --roster <scratch> --student student2`, scratch roster of the four student2
-             rows (owner anass-ben-2005, repo vdel-weather-etl-gapfill-student2), not
+             rows (owner <owner>, repo vdel-weather-etl-gapfill-student2), not
              config/roster.yaml. Dry-run first (reads only, baseline identical). Live run:
              collect +1 commit (4832ec3c32 `load: insert_readings`, weather_etl_load, 2026-10-11
              03:17:18+00) and +1 CI run (failure, AssertionError, py.testing); grade 1 commit,
@@ -4045,7 +4048,7 @@ Tests:       tests/test_post_feedback.py (first / second / later commit, a later
              tests/test_demo.py (label follows the env var). Mutation checks: removing the pin fails both seed tests;
              reverting `build_feedback` to whole history fails both as-of tests.
 
-### D-095 -- the hourly task survives any character in a path (an apostrophe in `stage_a_l'etranger`); a startup failure is never silent
+### D-095 -- the hourly task survives any character in a path (an apostrophe in `<repo-folder>`); a startup failure is never silent
 Date:        2026-10-12
 Status:      DECIDED (scripts and tests only; the task is NOT registered, the real database, GitHub and roster untouched)
 Authority:   Anas (bug report: "VDEL hourly" ran at 02:43, LastTaskResult 1, nothing in logs/)
@@ -4342,10 +4345,10 @@ Tests:       tests/test_run_real_benchmark.py (23, fake LLM only, handlers block
 ### D-103 -- the Code Agent hardened: delimiters, private-copy linters, per-assignment config, gap-line scope, real persistence
 Date:        2026-10-12
 Status:      DECIDED and implemented. Not committed. The Code Agent is still NOT wired into the hook or anything that runs on a schedule (a test keeps that true): this task made it safe and storable, not active.
-Authority:   Anas (the request, starting from docs/code_agent_flow.md). The numbers and names marked CONFIRM are mine.
-Before:      THE WHOLE FILE went into the prompt: `agents/code_agent.py:167` (`code = path.read_text(...)`) fed `agents/prompts.py:233` (`{code}`) at commit eb9727c. No gap range was used by the Code Agent (docs/code_agent_flow.md section 7), the ruff findings were not gap-scoped either (`agents/tools.py:133-144` at that commit), and the master's own code, present in every file, was judged as the student's.
+Authority:   Anas (the request, starting from docs/archive/code_agent_flow.md). The numbers and names marked CONFIRM are mine.
+Before:      THE WHOLE FILE went into the prompt: `agents/code_agent.py:167` (`code = path.read_text(...)`) fed `agents/prompts.py:233` (`{code}`) at commit eb9727c. No gap range was used by the Code Agent (docs/archive/code_agent_flow.md section 7), the ruff findings were not gap-scoped either (`agents/tools.py:133-144` at that commit), and the master's own code, present in every file, was judged as the student's.
 1 Delimiters:  `prompts.escape_markers`: every run of 3+ `<` or `>` (and the full-width forms) in the submission AND in the linter findings built from it becomes `[LT3]` / `[GT3]`, visibly, so the only delimiters in a prompt are ours; the injection rule says so. `PROMPT_VERSION` v2 -> v3 (changelog entry), payload `agent` `code_agent_v3`. A quote of a line that held a marker is accepted in its original or its escaped form. With all four criteria and a clean file the only prompt difference is the three-line addition to the injection rule; the rubric table is byte-identical (its sha256 is pinned in a test). Not covered: other homoglyphs; a marker we do not use.
-2 Tools:      `agents/tools.py`. `vet_source` refuses (a `skipped` report from the tools, `SubmissionSkipped` from `grade`; never a lint) a missing file, a non-file, a symbolic link or Windows junction (the file, or any directory between `checkout_root` and it), a path outside `checkout_root` (lexically and after `resolve()`), and a file above `MAX_FILE_BYTES` = 200000 (CONFIRM: a chosen number, not a measurement). Only that file is copied, as `submission.py` / `submission.sql`, into a fresh empty temp directory, and the tool runs there (`cwd=`). ruff: `--isolated --no-cache --select E4,E7,E9,F` (the defaults, now explicit). sqlfluff: `--ignore-local-config --config <ours>`, dialect `ansi`, templater `raw` (no jinja, so no `library_path`). FOUND while testing, with a positive control for each: ruff 0.16.1 DOES obey a student's `ruff.toml`, `.ruff.toml` and `pyproject.toml` placed beside the file (F401 disappears), which closes the "not verified" of docs/code_agent_flow.md section 3; and sqlfluff 4.2.2 DOES import and run the Python module that a student's `.sqlfluff`, `tox.ini`, `setup.cfg` or `pyproject.toml` names in `library_path` (the control writes a marker file). Both are now blocked, and the tests prove it with a marker file that must not appear and findings identical to a clean directory's. The private empty directory is the PRIMARY barrier; `--isolated` and `--ignore-local-config` additionally keep out the operator's own user-level config, and only a structural test catches their removal (a mutation test showed the behavioural tests do not). `assessment/lint_scope.py` (V2) uses the same functions: same rules, now explicit.
+2 Tools:      `agents/tools.py`. `vet_source` refuses (a `skipped` report from the tools, `SubmissionSkipped` from `grade`; never a lint) a missing file, a non-file, a symbolic link or Windows junction (the file, or any directory between `checkout_root` and it), a path outside `checkout_root` (lexically and after `resolve()`), and a file above `MAX_FILE_BYTES` = 200000 (CONFIRM: a chosen number, not a measurement). Only that file is copied, as `submission.py` / `submission.sql`, into a fresh empty temp directory, and the tool runs there (`cwd=`). ruff: `--isolated --no-cache --select E4,E7,E9,F` (the defaults, now explicit). sqlfluff: `--ignore-local-config --config <ours>`, dialect `ansi`, templater `raw` (no jinja, so no `library_path`). FOUND while testing, with a positive control for each: ruff 0.16.1 DOES obey a student's `ruff.toml`, `.ruff.toml` and `pyproject.toml` placed beside the file (F401 disappears), which closes the "not verified" of docs/archive/code_agent_flow.md section 3; and sqlfluff 4.2.2 DOES import and run the Python module that a student's `.sqlfluff`, `tox.ini`, `setup.cfg` or `pyproject.toml` names in `library_path` (the control writes a marker file). Both are now blocked, and the tests prove it with a marker file that must not appear and findings identical to a clean directory's. The private empty directory is the PRIMARY barrier; `--isolated` and `--ignore-local-config` additionally keep out the operator's own user-level config, and only a structural test catches their removal (a mutation test showed the behavioural tests do not). `assessment/lint_scope.py` (V2) uses the same functions: same rules, now explicit.
 3 Config:     `config/judging.yaml` + `config/judging.py` (not in the database). Per assignment: `criteria` (the subset that applies), `note` (why) and `statement` (an assignment-level description; null). The four weather_etl assignments drop "idiomatic" (Idiomatic Spark/SQL) and say why in the config; the default, and so the PySpark benchmark, keeps all four. The task text is now the gap instructions in FILE order (`ORDER BY line_start`; in extract.py the retry loop comes first but `g_ext_parse` sorts before `g_ext_retry`), through `agents/pipeline.load_assignment_inputs`. `grade(criteria=, rubric_table=)`: the criteria asked reach the rubric text, the output schema block, the evidence rule and the schema the GATEWAY enforces (`verdict_model`, a dynamic subclass that requires exactly those scores, so a judge that omits one is retried and then rejected as before). A dropped criterion is stored as null; evidence filed under one is `unknown_criterion`. CONFIRM: `statement` is null for every weather_etl assignment (TODO(author): nothing is invented); `sales_analyzer_*` has no entry, so it keeps all four criteria, because it was not asked for.
 4 Scope:      `agents/scope.py`. `grade(scope=ScopeSpec(master_text, hide_gap_ids))` judges only the lines the student wrote inside the gaps plus `CONTEXT_LINES` = 3 (CONFIRM: chosen) on each side, found with the existing machinery: `render_student_file_with_ranges` for the released ranges and `scope_check.in_gap_submitted_ranges` to map them onto the submitted file. Lines left out are marked `[... n line(s) not shown ...]`; a quote must come from a shown line (not the marker, not a hidden line); the ruff findings are filtered to the student's lines (invariant 14) with `scope_check.filter_lint_findings`. If the lines cannot be extracted (master unparsable, no gap, the variant hides none, the stub left unchanged or the gap deleted, another master version) the call is skipped with the reason, with NO fallback to the whole file. `scope_spec_for_attempt(cur, attempt_id)` reads the variant's gaps and the master the way `lint_scope.record` does. Without `scope` the call is the old whole-file one (what the benchmark and the demo do).
 5 Persistence: `grade(attempt_id=, commit_sha=, conn=)` (all three together, else `ValueError`) stores ONE `code_agent`/`verdict` trace through `Memory.log_trace` (memory.py unchanged) with `attempt_id`, `commit_sha`, `submission_sha256` (a hash, never the file), `prompt_version`, `provider`, `model`, `criteria`, `scope`, the scores, the evidence quotes (excerpts the judge chose), the tool reports, `rejected`, `flagged` and `research_only`. Before judging it looks for a verdict with the same (attempt, commit) and returns it without a provider call: a second call writes nothing and asks nobody. `rejected` is true when there is ANY evidence failure (CONFIRM: stricter than `flagged`, which keeps its older meaning, a fabricated quote); a rejected verdict is stored, not dropped (invariant 5). `run_agents_for_commit(persist_code_verdict=True)` does this in the caller's transaction; `persist=True` still raises `IntegrationPending` (a test pins it). Nothing schedules either, so no verdict is written by any automatic path. A skipped file is a `skipped` pipeline step, not a failure.
@@ -4451,3 +4454,25 @@ Authority:   Anas (the finalisation brief). CONFIRM items are marked.
 4 `--ab-llm` (`agents/ab.py`, `scripts/ab_report.py`, `AgentsHook._feedback`): for every graded commit with a failing check the arm is `sha256("vdel-ab-v1:<attempt_id>:<commit_sha>")`, first byte even -> `llm`, odd -> `control` (pure, stable, about 50/50 over 2000 pairs in a test). It is stored as a `coach`/`intervention` trace (`agent` `ab_assignment`, with the arm, the salt and the rule), idempotent by a SELECT, BEFORE the agent runs, so a commit whose AI answer was rejected still counts as `llm`, and a stored arm wins over a later change of the rule. `control` -> the deterministic text alone, no agent, no provider call (and so no stored paragraph for the poster to add); `llm` -> the Feedback Agent exactly as without the flag (v1, or v2 with `--agents-v2`). A commit with no failing check is not in the experiment. The Code Agent is not part of it. `scripts/ab_report.py` is read-only and DESCRIPTIVE: per arm, the number of assigned commits and attempts, how many attempts have since frozen, how many have not (censored), and the mean and median number of graded pushes after the assigned commit up to and including the freezing one; its label and caveats say it is not a significance test. CONFIRM: the commit as the unit of randomisation (one attempt can be in both arms, so a student can see both kinds of note: chosen because feedback is per commit and the alternative, per attempt, would decide the arm before knowing there is anything to say), the hash, the salt, the outcome definition. The flag is not a switch of `register_task.ps1`.
 Limits:      (1) With a handful of students no difference in the report is evidence. (2) The notice is only on repositories rendered after this change. (3) `ai_notes` is read from the roster each cycle; an opt-out takes effect on the next graded commit, and it does not delete anything already sent. (4) Nothing here writes down consent, retention or deletion; the notice is information, not consent. (5) The role cannot run the owner's commands, so a pilot needs two connection strings.
 Tests:       `tests/test_pilot.py` (27): the role file as text (not a superuser, no create, no delete or truncate, password only a variable, traces INSERT only, grants equal to the writes derived from the code, nothing applies it, the instructions exist), the notice (appended, matches the prompts' facts, no prompt carries an identity), the opt-out (fails closed, hook, poster, other students untouched), the arms (stable, balanced, depend on both inputs, control makes no call and is stored once, llm runs the agent, a rejected answer is still recorded, no failing check means no record, a stored arm wins, the replay proof is unaffected), the flags, and the report. Mutation-checked: 11 of 11 mutants turn a test red (opt-out fail-open, hook, poster, control still calling, stored arm, no-failure assignment, an arm that ignores the commit, a role that can update traces / loses a grant / gets delete, the notice dropped).
+
+### D-111 -- the documentation handover: which documents are delivered and which stay private
+Date:        2026-10-14
+Status:      DECIDED and applied on the local branch `docs-apply`. Nothing pushed.
+Authority:   Anas (the handover brief).
+Context:     The framework is handed to a professor who must understand it, run it and continue developing it. Documents that are only the author's working files (session logs, evidence boards, analyses, assistant policy) must not travel with it.
+Decision:    1 Delivered: `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `VDEL_TEN_PROJECT_CURRICULUM.md`, `agents/PROMPT_CHANGELOG.md`, `benchmark/RECOMMENDATION.md`, `benchmark/submissions/TASK.md`, `tests/fixtures/agents/README.md`, and in `docs/`: `ARCHITECTURE`, `AUTHORING`, `DECISIONS`, `DECISIONS_AGENTS`, `GLOSSARY`, `INSTALL`, `KNOWN_ISSUES`, `OPERATIONS`, `PILOT`, `agents`, `explanation`, `resources_review`, and `docs/archive/` (`DEVELOPMENT_MAP`, `code_agent_flow`, with an index).
+2 Private, moved on disk into the git-ignored folder `private/` of the same repository folder and untracked (nothing deleted, nothing copied elsewhere): `STATUS` (evidence), `FINALIZE_PROGRESS` and `CURRENT_DEMO` (sessions), `CLEANUP_PLAN` and `DOCS_TRIAGE` (analysis), `CONTEXT_POLICY`, `MODEL_ROUTING`, `START_HERE`, `WORKFLOW` (dev-system).
+3 Names: the author keeps their name; the supervisor and the tutor-side collaborator are named by role in every delivered document except the older entries of this file, which are history and were not rewritten.
+4 References: `CLAUDE.md`, `VDEL_REDESIGN.md`, `VDEL_Modules_1_2_Build.md` and `VDEL_Modules_3_9_Build.md` stay cited as they are; sanitized copies are to be delivered later (`CLAUDE.md` at the root, the other three under `docs/design/`). Citations of `STATUS`, `HANDOFF`, `FINALIZE_PROGRESS`, `EXECUTION`, `BUILD_PLAN`, `SETUP`, the overnight report and `docs/reading/` were dropped or replaced by the fact they carried, in the delivered documents other than this file and `docs/archive/`.
+5 The read-only inspection queries of `CURRENT_DEMO` are `docs/OPERATIONS.md` section 18; its `TRUNCATE` step was not carried. The two entries that held the author's login now hold `<owner>`, and the mentions of the two archived documents in this file carry the `docs/archive/` path.
+Limits:      (1) Older entries of this file still name people and files that are not delivered; that is history. (2) Whether the repository is handed over with its full history or as a fresh repository is not decided here: the history still holds the moved documents, the author's login and local paths. (3) `benchmark/RECOMMENDATION.md` is generated, so its text changes only through `benchmark/run_real_benchmark.py`.
+
+### D-112 -- the authority documents are delivered, sanitized (supersedes D-039)
+Date:        2026-10-14
+Status:      DECIDED and applied on the local branch `docs-apply`. Nothing pushed.
+Authority:   Anas (the handover brief).
+Context:     D-039 kept `CLAUDE.md` and the other internal documents out of git. Code comments cite `CLAUDE.md` in 36 files, `VDEL_REDESIGN.md` in 24, `VDEL_Modules_1_2_Build.md` in 19 and `VDEL_Modules_3_9_Build.md` in 11, and the project rule is that those documents win over the code; a maintainer who cannot open them cannot follow that rule.
+Decision:    1 `CLAUDE.md` is tracked at the repository root and `VDEL_REDESIGN.md`, `VDEL_Modules_1_2_Build.md`, `VDEL_Modules_3_9_Build.md` under `docs/design/` (with an index), each in a sanitized copy: names became roles, the school and employer neutral, meeting and schedule talk reworded. Formulas, numbers, schemas, section numbers, invariant numbers and line positions are unchanged (the code cites some of them by line). Section 11 of `CLAUDE.md` is now a short neutral section (how to run the suite, the baseline and ruff, plus the three stop-and-ask triggers it already held).
+2 Still ignored: `BUILD_PLAN.md`, `EXECUTION.md`, `SETUP.md`, `VDEL_v1_Execution_Plan.md`, `vdel_complete_design_document.md`, `docs/HANDOFF.md`, `docs/FRAMEWORK_STATUS.md`, `docs/reading/`, `docs/*OVERNIGHT_REPORT.md`, `private/`. The ignore rules of the three root originals are anchored to the root (`/VDEL_REDESIGN.md` and so on) so the `docs/design/` copies are tracked.
+3 The original `CLAUDE.md` was copied unchanged to the git-ignored `private/untracked-originals/` before the sanitized file replaced it at the root.
+Limits:      (1) The sanitized copies are the maintainer's reference, not the author's private working copies, which still exist. (2) `VDEL_TEN_PROJECT_CURRICULUM.md` line 457 cites `VDEL_REDESIGN.md` section 4.3, which does not exist in the original either. (3) Older entries of this file that name the ignored documents are history.

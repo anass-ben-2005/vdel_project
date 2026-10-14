@@ -205,7 +205,9 @@ def test_the_recommendation_comes_from_the_numbers_and_states_its_limits(tmp_pat
     assert f"{overall['exact_n']}/{overall['n']}" in text
     assert "PARTIAL RUN" not in text and "ONE provider" in text
     for limit in ("pre-labelled by an LLM", "claude-code-llm", "human-reviewed on a 10-row sample",
-                  "docstrings reveal the planted bug", "`benchmark/TASK.md` is missing",
+                  "docstrings reveal the planted bug",
+                  "The task given to the judge is a hand-kept paraphrase",
+                  "not re-parsed at run time from `benchmark/submissions/TASK.md`",
                   "Non-applicable rows in this ground truth: 0"):
         assert limit in text, limit
     assert "Estimated cost | not computed" in text
