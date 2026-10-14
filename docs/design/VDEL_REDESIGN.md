@@ -786,7 +786,7 @@ resources ──► Feedback Agent
 
 ## 13.2 What survives unchanged from the current design
 
-Event sourcing · the blackboard · `traces` append-only · `learner_profile` derived · the LLM Gateway as the single choke point · temperature 0 for judging · pydantic schema validation with one corrective retry · evidence string-matching · submission-as-data delimiters · BKT with the upgrade ladder · the `retrieve()` contract as Hanafi's swap-in point.
+Event sourcing · the blackboard · `traces` append-only · `learner_profile` derived · the LLM Gateway as the single choke point · temperature 0 for judging · pydantic schema validation with one corrective retry · evidence string-matching · submission-as-data delimiters · BKT with the upgrade ladder · the `retrieve()` contract as the tutor-side swap-in point.
 
 **That is most of the architecture.** The redesign replaces the assessment layer and leaves the intelligence layer intact — which is itself evidence the original boundaries were drawn correctly, and is the strongest thing you can say about the revision in your presentation.
 
