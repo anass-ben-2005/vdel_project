@@ -6,8 +6,8 @@ How a change reaches a running installation without damaging its data. Facts are
 
 Version 1.0 is **the tip of `main` at hand-over**: the behaviour recorded in `docs/DECISIONS.md` up to D-112 and in
 `docs/DECISIONS_AGENTS.md`, with the documents of `README.md`. No commit is tagged in this repository: the history that
-is delivered is rebuilt, so a tag here would name a commit the recipient does not have. `pyproject.toml` still says
-version `0.1.0`; it is not a release marker. `CHANGELOG.md` has a "v1.0" entry grouped by theme. A later release should
+is delivered is rebuilt, so a tag here would name a commit the recipient does not have. `pyproject.toml` says
+version `1.0.0`; nothing reads it (no `importlib.metadata`, `__version__` or test), so it only labels the package. `CHANGELOG.md` has a "v1.0" entry grouped by theme. A later release should
 be a tag on a validated commit (see [VALIDATION.md](VALIDATION.md)), and `CHANGELOG.md` should then follow the tags.
 
 ## 2. The database schema
