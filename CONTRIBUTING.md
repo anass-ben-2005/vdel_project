@@ -134,5 +134,5 @@ section 10).
 
 ## On Windows
 
-This project lives in a folder whose name contains an apostrophe (`stage_a_l'etranger`). Quote every path
+The author's working folder has a name that contains an apostrophe, and yours may contain spaces or other special characters. Quote every path
 in PowerShell and use `-LiteralPath`; `scripts/windows/task_command.ps1` and D-095 explain what broke.

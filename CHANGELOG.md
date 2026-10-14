@@ -43,7 +43,7 @@ plan mode, an internal report, task switches.
 **Delivery, feedback, operation.** D-086 v1 operating decisions; D-089 feedback by GitHub issue; D-090
 `deliver_next_attempt` and a new private repo per attempt; D-091 the hourly task and `docs/OPERATIONS.md`;
 D-092 grading in a Docker container; D-094 feedback "as of the commit"; D-095 the task survives any path
-character (the apostrophe in `stage_a_l'etranger`); D-097 single-assignment repos ship only importable
+character (an apostrophe in the project folder name); D-097 single-assignment repos ship only importable
 visible tests (resolves D-096); D-098 the template push is not a student action (formula v8).
 
 **Robustness and honesty.** D-093 hooks never run at checkout, and what a force-push, a future-dated commit

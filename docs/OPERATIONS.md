@@ -81,7 +81,7 @@ else. Files older than 14 days are deleted at the start of each run. `logs\` is 
 to `logs\`. Since the first line of a run is now written before anything else, a missing `START` line
 means `run_hourly` never started: the failure happened in the task's own wrapper or in Python's start-up.
 
-**Cause found on 2026-10-12.** The project folder `stage_a_l'etranger` contains an apostrophe. The first
+**Cause found on 2026-10-12.** The project folder name contained an apostrophe. The first
 version of `register_task.ps1` put the folder inside a single-quoted PowerShell string
 (`Set-Location -LiteralPath '<folder>'`), so the apostrophe ended the string, the command did not parse
 (`TerminatorExpectedAtEndOfString`) and nothing ran. Fixed: the command is now passed encoded, every
