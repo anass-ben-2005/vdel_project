@@ -126,6 +126,6 @@ Version 1.0 is the tip of `main` at hand-over ([docs/RELEASE_AND_UPGRADE.md](doc
 [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md). Not built: differential testing, the Reviewer and orchestrator, the
 Coach, the knowledge graph. **The Code Agent is an unmeasured judge and its verdict is never shown to students.**
 
-Authors: Anass BENBELLA (intern, student side), with a tutor-side collaborator, under the supervisor.
+Authors: Anass BENBELLA (intern, student side), with a tutor-side collaborator, under the supervisor Dr
 
 License: not decided yet; see the ownership question in docs/ROADMAP.md.
