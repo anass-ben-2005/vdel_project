@@ -1,7 +1,7 @@
 """D-095 -- the command the hourly Windows task runs, tested by RUNNING what register_task builds.
 
 The bug: the project folder sat inside a single-quoted PowerShell literal, and a folder name with
-an apostrophe (stage_a_l'etranger) ended the string early -> the command did not parse ->
+an apostrophe ended the string early -> the command did not parse ->
 LastTaskResult 1 and an empty log. These tests build the command with the real generator
 (scripts/windows/task_command.ps1, dot-sourced), put every awkward character in the folder AND in
 the python path (apostrophe, spaces, ampersand, brackets), and run the generated argument string
