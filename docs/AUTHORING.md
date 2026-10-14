@@ -167,7 +167,7 @@ assignments:
   shown to students.
 - **`status: draft` entries are never used.** `config/checks.py` ignores them: `description_for` and `entries`
   return a description only when the status is `reviewed`, so a draft can reach neither a prompt nor a student.
-  The fifteen entries for the four `weather_etl` assignments were drafted by an assistant from the hidden
+  The fifteen entries for the four `weather_etl` assignments were drafted from the hidden
   tests; **the course author must read each against its test and change `draft` to `reviewed`** (or reword it).
 - Every hidden test needs exactly one entry; `scripts/validate_master.py` reports a missing one, an entry for
   a test that does not exist, and a gap that disagrees with the test's marker.
@@ -179,7 +179,7 @@ readability, idiomatic). `config/judging.yaml` says, per assignment, which crite
 "idiomatic" because it is plain Python, not Spark or SQL), a `note` saying why, and a `statement`: one to three
 sentences describing the exercise, put in front of the gap instructions. A statement is `null`, a plain string
 (taken as reviewed), or `{text: "...", status: draft | reviewed}`; **only a reviewed one is used**
-(`config/judging.py` ignores a draft). The four `weather_etl` statements are drafts written by an assistant
+(`config/judging.py` ignores a draft). The four `weather_etl` statements are drafts written
 from the master files (D-107): read each and mark it `reviewed`. `sales_analyzer_*` has no entry, so it is
 judged on all four criteria with no statement. The task text is otherwise the gap instructions in **file
 order**.

@@ -65,7 +65,7 @@ fabricated, there being no generative step to fabricate it. The reading this fil
 under is that invariant 6's string-matching clause governs LLM-authored verdicts, its named
 defence being hallucination. **That reading is not authorised**: invariant 6 is written
 unconditionally, and whether a deterministic agent satisfies it by citing an event is a
-question for Dr. Ezzatul, logged OPEN alongside the Sara 0.47 finding. M4 must not lean on
+question for the supervisor, logged OPEN alongside the Sara 0.47 finding. M4 must not lean on
 this reading for its own no-quote cases until it is settled.
 
 Known gaps and named choices, none silent:

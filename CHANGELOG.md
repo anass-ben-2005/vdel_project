@@ -1,13 +1,41 @@
 # CHANGELOG
 
 Built from [docs/DECISIONS.md](docs/DECISIONS.md), the append-only record of what was decided and why,
-which is the authority; this file is a map into it. There are no version tags yet, so entries are grouped
+which is the authority; this file is a map into it. Version 1.0 is the tip of `main` at hand-over and carries no
+tag (`docs/RELEASE_AND_UPGRADE.md`); the older entries are grouped
 by period and theme, newest first, each with the decision numbers to read. Dates are the `Date:` lines of
 the decisions. A decision whose title says OPEN was open when written; read the entry for its current
 status. Decisions D-200 and up (the agents branch) are in
 [docs/DECISIONS_AGENTS.md](docs/DECISIONS_AGENTS.md) (D-100 explains why).
 
-## Unreleased: the `v1-finalize` branch (2026-10-13)
+## v1.0 (2026-10-14)
+
+The state of `main` at hand-over, grouped by theme. The reasoning is in [docs/DECISIONS.md](docs/DECISIONS.md) (D-001
+to D-112) and [docs/DECISIONS_AGENTS.md](docs/DECISIONS_AGENTS.md) (D-200 to D-225); what has been shown to work is in
+[docs/VALIDATION.md](docs/VALIDATION.md) and what is wrong or open in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) and
+[docs/ROADMAP.md](docs/ROADMAP.md).
+
+- **Grading.** Correctness is decided by executed hidden tests, never by a model (D-036), attributed to gaps by a marker
+  read from the JUnit report (D-046); a stage freezes at 100 % (D-045); `grade_collected` (D-056) runs in a sandboxed copy
+  with an explicit environment (D-065) and optionally in a Docker container (D-092); a hidden file that cannot be imported is
+  not the student's fault (D-066); mastery is one observation per (attempt, gap) (D-079, formula v5), an unattempted stub is
+  not a failure (D-084, v6), cleanliness is gap-scoped lint (D-088, v7), the template push is not a student action (D-098, v8).
+- **Agents.** An agent verdict never feeds mastery (D-061); the Feedback Agent in the hourly loop behind `--with-llm`
+  (D-099) and the hardened Code Agent behind `--with-code-agent` (D-103, D-104); the gateway's fallback chain and timeout
+  (D-049, D-051); `--agents-v2` with Feedback Agent v2 and Code Agent v2 (D-108, D-109), and the locked "Going further"
+  note (D-109); the `--ab-llm` experiment (D-110); a capped real benchmark run (D-102).
+- **Delivery.** `publish_repo` (D-057), `sync_template` (D-062), feedback as one GitHub issue per attempt (D-089),
+  `deliver_next_attempt` and a new private repository per attempt (D-090), single-assignment repositories (D-097), the
+  operating decisions (D-086) and pilot preparation: a non-owner database role (not applied), the student data notice
+  and a per-student opt-out (D-110).
+- **Tooling.** The suite on a throwaway database (D-064), `run_cycle` (D-071), the hourly task (D-091, D-095),
+  `doctor` and `roster_apply` (D-105), `checks.yaml` and `validate_master` (D-107).
+- **Documentation.** The documents rewritten for hand-over (D-106); which documents are delivered and which stay private
+  (D-111); the authority documents delivered in sanitized form (D-112, `CLAUDE.md` and `docs/design/`); new:
+  `docs/VALIDATION.md`, `docs/ROADMAP.md`, `docs/DATA_PROTECTION.md`, `docs/RELEASE_AND_UPGRADE.md`,
+  `docs/HOWTO_EXTEND.md`.
+
+## The finalisation stages (the `v1-finalize` branch, merged, 2026-10-13)
 
 - **D-105** Stage 1 hygiene: `docs/` tracked; dependencies pinned; `.env.example` names only;
   `scripts/doctor.py` (read-only readiness checks); `scripts/roster_apply.py` (backup, diff, `--yes`);
@@ -101,5 +129,5 @@ what CI evidences, is not mastery evidence; D-018 whether invariant 6 binds a de
 
 D-001 a verification pass before M2; D-002 benchmark authoring pulled forward; D-003 the Sara `spark.joins`
 discrepancy stays a strict `xfail`; D-004 V4 and V2's alpha gate are structurally degenerate at a cohort of one;
-D-005 the Claude Code setup built around specification verification; D-006 GitHub collection deferred (D-087
+D-005 the development setup built around specification verification; D-006 GitHub collection deferred (D-087
 adds an addendum).

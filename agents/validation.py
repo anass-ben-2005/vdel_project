@@ -72,7 +72,7 @@ MATCH_WHITESPACE = "whitespace_normalised"
 # fabricated quote rejects the verdict"; it does not say the same of an unevidenced score,
 # and D.6 resolves that case as "flagged for human review, not silently trusted". So a
 # missing quote flags and a fabricated quote rejects. The asymmetry is deliberate and is an
-# open question worth putting to Dr. Ezzatul alongside D-018, which asks the mirror-image
+# open question worth putting to the supervisor alongside D-018, which asks the mirror-image
 # question about Echo citing an event rather than a quote.
 REJECTING_KINDS = frozenset({UNMATCHED_QUOTE})
 

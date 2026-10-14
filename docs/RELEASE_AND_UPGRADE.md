@@ -2,12 +2,13 @@
 
 How a change reaches a running installation without damaging its data. Facts are cited; gaps say `TODO(verify)`.
 
-## 1. There are no release tags yet
+## 1. What "v1.0" means
 
-`CHANGELOG.md` says so: entries are grouped by period and theme, newest first, each with the decision numbers to
-read. `pyproject.toml` declares version `0.1.0`. What "v1" means is the set of behaviour in `docs/DECISIONS.md` up to
-D-110 (the finalisation stages) plus D-111 and D-112 (documentation). `TODO(verify)`: choose a first tag, tag the
-commit that was validated (see [VALIDATION.md](VALIDATION.md)), and make `CHANGELOG.md` follow the tags.
+Version 1.0 is **the tip of `main` at hand-over**: the behaviour recorded in `docs/DECISIONS.md` up to D-112 and in
+`docs/DECISIONS_AGENTS.md`, with the documents of `README.md`. No commit is tagged in this repository: the history that
+is delivered is rebuilt, so a tag here would name a commit the recipient does not have. `pyproject.toml` says
+version `1.0.0`; nothing reads it (no `importlib.metadata`, `__version__` or test), so it only labels the package. `CHANGELOG.md` has a "v1.0" entry grouped by theme. A later release should
+be a tag on a validated commit (see [VALIDATION.md](VALIDATION.md)), and `CHANGELOG.md` should then follow the tags.
 
 ## 2. The database schema
 
@@ -49,7 +50,7 @@ VDEL_REQUIRE_DB=1 python -m pytest -q              # on its own throwaway databa
 ruff check .
 ```
 
-With every new flag off, the two baseline outputs must be identical; if they cannot be, the change touches real
+An upgrade is verified when the baseline differs only by rows the upgrade is meant to add. With every new flag off, the two baseline outputs must be identical; if they cannot be, the change touches real
 data and needs a decision entry that says so (`CONTRIBUTING.md`, "The loop for every change").
 Re-register the scheduled task only after reading `docs/OPERATIONS.md` section 14: re-registering replaces the
 whole command.

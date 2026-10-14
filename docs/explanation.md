@@ -1,6 +1,6 @@
 # VDEL Student-Side — Implementation Explanation (M0–M4)
 
-> Written for an AI (or human) picking up this codebase cold, with no memory of how it
+> Written for anyone picking up this codebase cold, with no memory of how it
 > was built. It explains what exists, why it exists in this exact shape, where every
 > number and formula comes from, and what is still open. Read this before touching any
 > file — it will save you from re-deriving decisions that were already made, and from
@@ -55,7 +55,7 @@ Four documents in the repo root are the **source of truth**. This codebase is a
 |---|---|
 | `VDEL_Modules_1_2_Build.md` | The seven variables' exact formulas, the schema, the GitHub collector, the error classifier — with code, for Modules 1 (variables) and 2 (telemetry). |
 | `VDEL_Modules_3_9_Build.md` | Memory, LLM gateway, the agents, the Reviewer (Modules 3–9) — not yet built. |
-| `CLAUDE.md` | A condensed summary of the source documents, plus repository conventions (this is what an AI assistant reads automatically; it is *not* itself a source of new formulas). |
+| `CLAUDE.md` | A condensed summary of the source documents, plus repository conventions (it is *not* itself a source of new formulas). |
 
 Two further source documents are not delivered. One is the milestone plan M0–M7, task by task, with each milestone's Definition of Done. The other is the full design rationale, which holds **Sara**, the hand-computed worked example the code is tested against (`tests/test_sara.py`).
 

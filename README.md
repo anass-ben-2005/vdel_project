@@ -101,19 +101,31 @@ is in [docs/GLOSSARY.md](docs/GLOSSARY.md).
 | [docs/ROADMAP.md](docs/ROADMAP.md) | The open work, and the open ownership and licence question. |
 | [docs/DATA_PROTECTION.md](docs/DATA_PROTECTION.md) | What student data is held, what leaves the machine, what is not yet decided. |
 | [docs/RELEASE_AND_UPGRADE.md](docs/RELEASE_AND_UPGRADE.md) | Versions, schema and formula upgrades, and how to check an upgrade. |
-| [CLAUDE.md](CLAUDE.md) | The condensed rules for the code: scope, architecture, schemas, the 16 invariants (also what an AI coding assistant reads). |
+| [CLAUDE.md](CLAUDE.md) | The condensed rules for the code: scope, architecture, schemas, the 16 invariants. |
 | [docs/design/](docs/design/README.md) | The sanitized module and redesign documents the code cites. |
 | [docs/archive/](docs/archive/README.md) | Dated analyses kept for their reasoning, not as current references. |
 
 ## Status
 
-Built and running for one student (`anas`) and tested end to end: telemetry and features, the
-event-sourced memory, hidden-test grading with a Docker sandbox, per-commit feedback by GitHub issue,
-delivery of the next attempt, the hourly Windows task, and the two agents behind flags. Not built:
-differential testing, the Reviewer and orchestrator, the Coach, the knowledge graph. What is unproven or
-wrong is listed in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md); in particular **the Code Agent is an
-unmeasured judge and its verdict is never shown to students**.
+Version 1.0 is the tip of `main` at hand-over ([docs/RELEASE_AND_UPGRADE.md](docs/RELEASE_AND_UPGRADE.md)).
 
-Authors: Anass BENBELLA (intern, student side), with a tutor-side collaborator, under the supervisor.
+**Validated live** (command, date and source for each are in [docs/VALIDATION.md](docs/VALIDATION.md)):
+
+- the hourly cycle: collection, grading in a Docker container, mastery and features, feedback posted as a GitHub issue comment;
+- real calls to an OpenAI model by the Feedback Agent (an AI paragraph posted after the validator accepted it) and by the Code Agent (verdict stored, never posted);
+- a second GitHub account end to end: a private repository, a collaborator invitation, collection and grading of its commits, the freeze, delivery of the next attempt;
+- the event-sourcing replay (wipe the profile, replay the traces, get an identical profile), the seven demo beats and the full test suite.
+
+**Built, not proven live:**
+
+- the v2 agents (`--agents-v2`) with a real model, and the Code Agent as a judge (the benchmark labels were pre-written by an LLM and the production prompt was never benchmarked), so "Going further" stays locked;
+- publishing and delivery for many students (today one student and one stage at a time);
+- the pilot database role, which has never been executed, and consent and retention, which are not written down ([docs/DATA_PROTECTION.md](docs/DATA_PROTECTION.md)).
+
+**Open:** the next steps are in [docs/ROADMAP.md](docs/ROADMAP.md) and what is wrong today in
+[docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md). Not built: differential testing, the Reviewer and orchestrator, the
+Coach, the knowledge graph. **The Code Agent is an unmeasured judge and its verdict is never shown to students.**
+
+Authors: Anass BENBELLA (intern, student side), with a tutor-side collaborator, under the supervisor Dr
 
 License: not decided yet; see the ownership question in docs/ROADMAP.md.

@@ -2,8 +2,8 @@
 
 BUILD_PLAN 1.1: "A loader that validates it and fails loudly on an unknown prerequisite
 id." Loudly is the operative word -- a typo in a prerequisite is a silent broken edge in
-the graph Hanafi's knowledge model will later depend on, and silence is how it survives
-to production.
+the graph the tutor-side collaborator's knowledge model will later depend on, and silence is how it
+survives to production.
 """
 
 from __future__ import annotations
