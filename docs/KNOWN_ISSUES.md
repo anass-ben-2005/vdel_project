@@ -3,7 +3,7 @@
 Each entry: what it is, the impact, the workaround that exists today, and where it is recorded.
 "Not verified" means nobody ran it. Nothing here is a plan: the planned fixes are in the
 `Later` lists of the decisions cited. Added 2026-10-13 (D-105); facts about the live database were
-read with a read-only `SELECT` on that day.
+read with a read-only `SELECT` and refreshed on 2026-10-14.
 
 ## Data and grading
 
@@ -13,7 +13,7 @@ read with a read-only `SELECT` on that day.
   stale open attempt 1 keeps receiving commits that belong to a frozen attempt 2. It is the reason
   `deliver_next_attempt --force` needs `--i-understand`.
 - **Workaround.** Do not use `--force`. Deliver attempt N+1 only after attempt N is frozen (its hidden
-  tests reached 100% on a pushed commit). Ten attempts are open in the live database today; that is
+  tests reached 100% on a pushed commit). Thirteen attempts are open in the live database (read on 2026-10-14); that is
   the normal state of an attempt that is not finished, not a symptom.
 - **Recorded.** D-072, D-090 (`Later`), `docs/OPERATIONS.md` section 8.
 
@@ -21,8 +21,8 @@ read with a read-only `SELECT` on that day.
 - **Impact.** The collector asks GitHub only for commits newer than the largest stored
   `committed_at`, which is the COMMITTER date and is chosen by the student. One commit dated in the
   future moves that point past every honest later commit, which then stop being collected and graded.
-  The live database has no future-dated commit today (`SELECT ... WHERE committed_at > now()` returned
-  no row).
+  The live database had no future-dated commit on 2026-10-14 (`SELECT ... WHERE committed_at > now()` returned
+  0).
 - **Workaround.** When a student says "I pushed and nothing happened", run
   `SELECT max(committed_at) FROM raw_commits WHERE student_id = 'X'` first. No script in this
   repository repairs a poisoned point: the fix proposed in D-093 (re-list without `since`, or clamp a
@@ -49,18 +49,17 @@ read with a read-only `SELECT` on that day.
 
 ### 5. Commits with no assignment (`assignment_id IS NULL`)
 - **Impact.** A commit that touches no assignment file, or files of several, is stored but not graded.
-  Read on 2026-10-13, the live database has four such rows: two template pushes
-  (`Initial commit: weather_etl gapfill for ...`, anas and student2) and two `ci: sync template (D-060)`
-  commits of anas. The request that asked for this entry says three; I did not find which three it
-  means and list all four. Under formula v8 the template push and the sync commits are not student
+  Read on 2026-10-14, the live database has five such rows: three template pushes
+  (`Initial commit: weather_etl gapfill for ...`: anas, student2 and a test student) and two `ci: sync template (D-060)`
+  commits of anas. Under formula v8 the template push and the sync commits are not student
   actions (D-098, D-060), so they do not enter V3, V6 or the feedback.
-- **Workaround.** None needed for those four. A genuine student commit with a NULL attribution would be
+- **Workaround.** None needed for those five. A genuine student commit with a NULL attribution would be
   silently ungraded: `run_cycle --dry-run` prints how many unattributed commits it sees.
 - **Recorded.** D-043, D-098, `scripts/grade_collected.py` (module docstring).
 
 ### 6. Several formula versions live side by side; "v9" does not exist in the repository
 - **Impact.** `learner_features` keeps every row with the `formula_ver` it was computed with, so rows
-  of v2, v3, v5, v7 and v8 coexist for the two live students (`python -m scripts.baseline`). The code
+  of v2, v3, v5, v7 and v8 coexist across the three students with feature rows on 2026-10-14 (`python -m scripts.baseline`). The code
   computes `FORMULA_VER = "v8"` (`features/compute_features.py:100`). A "formula v9" is not mentioned in
   the code or in `docs/DECISIONS.md`: I found nothing to describe and did not invent it. If v9 is a
   planned change, it needs a decision entry before it is built.
