@@ -47,6 +47,9 @@ What has been proven is in [VALIDATION.md](VALIDATION.md); what is wrong today i
 7. **Designed but not built** (each has a named seam and trigger in `CLAUDE.md` section 3 and
    `docs/ARCHITECTURE.md` section 8): the Reviewer and orchestrator, the Coach, the knowledge graph and retrieval
    from the tutor side, differential testing (D-036), an Airflow run (KNOWN_ISSUES item 16).
+8. **A per-project manifest.** Replace the hard-wired registration in `scripts/seed_data.py` `main()` (and its copy in
+   `tests/conftest.py`) by a small manifest per project (stages, order), so adding a project needs no code edit
+   (`docs/HOWTO_EXTEND.md` section 1, step 8).
 
 ## 2. Ownership and licence (open question)
 
